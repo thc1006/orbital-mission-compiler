@@ -11,7 +11,7 @@ Build the ground-side ORCHIDE-aligned mission plan compiler: schema validation â
 | M1 | Policy validation + golden evals | Done |
 | M2 | Argo rendering + K3s lab scripts + Kueue manifests + OPA/Argo smoke | Done |
 | M2.5 | Agent workflow hardening (settings.json, PostToolUse hook) | Done |
-| 3A | Policy negative tests (5 tests, 4 deny rules) | Done |
+| 3A | Policy negative tests (12 tests, 10 deny rules) | Done |
 | 3B | Golden eval expansion (6-field comparison) | Done |
 | 3C | Hera dead dependency removed | Done |
 | 3D | Python version alignment (>=3.10) | Done |
