@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ResourceClass(str, Enum):
@@ -51,8 +51,8 @@ class AIService(BaseModel):
 class MissionEvent(BaseModel):
     timestamp: str
     event_type: MissionEventType
-    orbit: Optional[int] = None
-    duration_seconds: Optional[float] = None
+    orbit: Optional[int] = Field(default=None, ge=0)
+    duration_seconds: Optional[float] = Field(default=None, ge=0)
     instrument: Optional[str] = None
     sensor: Optional[str] = None
     ground_visibility: bool = False
@@ -84,6 +84,13 @@ class MissionPlan(BaseModel):
     mission_id: str
     client_id: Optional[str] = None
     events: List[MissionEvent]
+
+    @field_validator("mission_id")
+    @classmethod
+    def mission_id_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("mission_id must not be empty")
+        return v
 
 
 class WorkflowIntent(BaseModel):
