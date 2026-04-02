@@ -12,13 +12,13 @@ from .schemas import MissionPlan, WorkflowIntent, ResourceClass, WorkflowStep
 logger = logging.getLogger(__name__)
 
 
-def _sanitize_k8s_name(name: str) -> str:
+def _sanitize_k8s_name(name: str, max_len: int = 63) -> str:
     """Sanitize a string to be a valid RFC 1123 DNS label (K8s container/resource name)."""
     s = name.lower()
     s = re.sub(r"[^a-z0-9-]", "-", s)
     s = re.sub(r"-+", "-", s)
     s = s.strip("-")
-    return s[:63] or "step"
+    return s[:max_len] or "step"
 
 
 def load_mission_plan(path: str | Path) -> MissionPlan:
@@ -225,7 +225,7 @@ def render_kueue_job(
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
-            "generateName": f"{_sanitize_k8s_name(intent.workflow_name)}-",
+            "generateName": f"{_sanitize_k8s_name(intent.workflow_name, max_len=62)}-",
             "namespace": namespace,
             "labels": {
                 "kueue.x-k8s.io/queue-name": queue_name,
