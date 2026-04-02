@@ -17,11 +17,13 @@ events:
         steps:
           - name: preprocess
             image: ghcr.io/example/preprocess:0.1.0
+            phase: preprocessing
             resource_class: cpu
             command: ["sh", "-c"]
             args: ["echo preprocess"]
           - name: detect-ships
             image: ghcr.io/example/ship-detector:0.1.0
+            phase: ai
             resource_class: gpu
             fallback_resource_class: cpu
             needs_acceleration: true
@@ -31,6 +33,7 @@ events:
             args: ["echo detect"]
           - name: postprocess
             image: ghcr.io/example/postprocess:0.1.0
+            phase: postprocessing
             resource_class: cpu
             command: ["sh", "-c"]
             args: ["echo postprocess"]
@@ -40,6 +43,7 @@ events:
         steps:
           - name: classify-clouds
             image: ghcr.io/example/cloud-classifier:0.1.0
+            phase: ai
             resource_class: cpu
             command: ["sh", "-c"]
             args: ["echo classify"]
@@ -57,11 +61,13 @@ events:
         steps:
           - name: preprocess
             image: ghcr.io/example/preprocess:0.1.0
+            phase: preprocessing
             resource_class: cpu
             command: ["sh", "-c"]
             args: ["echo preprocess"]
           - name: detect-fire
             image: ghcr.io/example/fire-detector:0.1.0
+            phase: ai
             resource_class: gpu
             fallback_resource_class: cpu
             needs_acceleration: true
@@ -71,6 +77,7 @@ events:
             args: ["echo detect-fire"]
           - name: postprocess
             image: ghcr.io/example/postprocess:0.1.0
+            phase: postprocessing
             resource_class: cpu
             command: ["sh", "-c"]
             args: ["echo postprocess"]

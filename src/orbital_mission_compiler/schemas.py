@@ -16,9 +16,21 @@ class MissionEventType(str, Enum):
     DOWNLOAD = "download"
 
 
+class StepPhase(str, Enum):
+    PREPROCESSING = "preprocessing"
+    AI = "ai"
+    POSTPROCESSING = "postprocessing"
+
+
+class ExecutionMode(str, Enum):
+    SEQUENTIAL = "sequential"
+    PARALLEL = "parallel"
+
+
 class WorkflowStep(BaseModel):
     name: str
     image: str
+    phase: Optional[StepPhase] = None
     resource_class: ResourceClass = ResourceClass.CPU
     fallback_resource_class: Optional[ResourceClass] = None
     needs_acceleration: bool = False
@@ -32,6 +44,7 @@ class AIService(BaseModel):
     service_id: str
     priority: int = Field(ge=0, le=100)
     landscape_type: Optional[str] = None
+    execution_mode: ExecutionMode = ExecutionMode.SEQUENTIAL
     steps: List[WorkflowStep] = Field(min_length=1)
 
 
