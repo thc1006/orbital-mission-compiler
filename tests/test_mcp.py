@@ -75,12 +75,15 @@ def test_explain_policy_tool(server):
     assert "raw" in result
 
 
-# ── build_server registers all 4 tools ───────────────────────────────
+# ── build_server registers all tools ──────────────────────────────────
 
 
-def test_build_server_registers_four_tools(server):
-    """build_server should register exactly 4 MCP tools."""
+def test_build_server_registers_all_tools(server):
+    """build_server should register all MCP tools."""
     tools = asyncio.run(server.list_tools())
     tool_names = {t.name for t in tools}
-    expected = {"validate_plan", "compile_plan", "render_argo", "explain_policy"}
+    expected = {
+        "validate_plan", "compile_plan", "render_argo", "explain_policy",
+        "diff_plans", "check_timeline_conflicts",
+    }
     assert expected == tool_names
