@@ -15,6 +15,7 @@
       "orbit": null,
       "duration_seconds": null,
       "landscape_type": null,
+      "execution_mode": "sequential",
       "requires_gpu": true,
       "requires_fpga": false,
       "fallback_enabled": true

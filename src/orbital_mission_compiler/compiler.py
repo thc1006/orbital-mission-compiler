@@ -40,6 +40,7 @@ def compile_plan_to_intents(plan: MissionPlan) -> List[WorkflowIntent]:
                 "orbit": event.orbit,
                 "duration_seconds": event.duration_seconds,
                 "landscape_type": svc.landscape_type,
+                "execution_mode": svc.execution_mode.value,
                 "requires_gpu": bool(gpu_steps),
                 "requires_fpga": bool(fpga_steps),
                 "fallback_enabled": bool(fallback_steps),
