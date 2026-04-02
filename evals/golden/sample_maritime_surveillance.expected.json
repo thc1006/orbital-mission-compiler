@@ -2,11 +2,20 @@
   {
     "service_id": "maritime-surveillance",
     "priority": 90,
-    "workflow_name": "mission-alpha-maritime-surveillance-2026-04-15-10-30-00",
+    "workflow_name": "mission-alpha-maritime-surveillance-2026-04-15t10-30-00z",
     "steps": [
-      {"name": "preprocess", "resource_class": "cpu"},
-      {"name": "detect-ships", "resource_class": "gpu"},
-      {"name": "postprocess", "resource_class": "cpu"}
+      {
+        "name": "preprocess",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "detect-ships",
+        "resource_class": "gpu"
+      },
+      {
+        "name": "postprocess",
+        "resource_class": "cpu"
+      }
     ],
     "resource_hints": {
       "event_timestamp": "2026-04-15T10:30:00Z",

@@ -2,11 +2,20 @@
   {
     "service_id": "wildfire-detection",
     "priority": 75,
-    "workflow_name": "mission-beta-wildfire-detection-2026-04-16-09-15-00",
+    "workflow_name": "mission-beta-wildfire-detection-2026-04-16t09-15-00z",
     "steps": [
-      {"name": "preprocess", "resource_class": "cpu"},
-      {"name": "detect-wildfire", "resource_class": "gpu"},
-      {"name": "postprocess", "resource_class": "cpu"}
+      {
+        "name": "preprocess",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "detect-wildfire",
+        "resource_class": "gpu"
+      },
+      {
+        "name": "postprocess",
+        "resource_class": "cpu"
+      }
     ],
     "resource_hints": {
       "event_timestamp": "2026-04-16T09:15:00Z",

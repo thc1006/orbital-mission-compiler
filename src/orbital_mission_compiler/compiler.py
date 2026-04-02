@@ -59,7 +59,7 @@ def compile_plan_to_intents(plan: MissionPlan) -> List[WorkflowIntent]:
                     mission_id=plan.mission_id,
                     service_id=svc.service_id,
                     priority=svc.priority,
-                    workflow_name=f"{plan.mission_id}-{svc.service_id}-{event.timestamp.replace(':', '-').replace('T', '-').replace('Z', '')}".lower(),
+                    workflow_name=_sanitize_k8s_name(f"{plan.mission_id}-{svc.service_id}-{event.timestamp}"),
                     steps=svc.steps,
                     resource_hints=hints,
                 )
@@ -225,7 +225,7 @@ def render_kueue_job(
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
-            "generateName": f"{_sanitize_k8s_name(intent.workflow_name[:50])}-",
+            "generateName": f"{_sanitize_k8s_name(intent.workflow_name)}-",
             "namespace": namespace,
             "labels": {
                 "kueue.x-k8s.io/queue-name": queue_name,

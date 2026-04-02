@@ -2,7 +2,7 @@
   {
     "service_id": "maritime-surveillance",
     "priority": 1,
-    "workflow_name": "mission-orchide-demo-maritime-surveillance-2029-10-06-00-23-00",
+    "workflow_name": "mission-orchide-demo-maritime-surveillance-2029-10-06t00-23-00z",
     "steps": [
       {
         "name": "preprocess",
@@ -33,7 +33,7 @@
   {
     "service_id": "cloud-detection",
     "priority": 2,
-    "workflow_name": "mission-orchide-demo-cloud-detection-2029-10-06-00-23-00",
+    "workflow_name": "mission-orchide-demo-cloud-detection-2029-10-06t00-23-00z",
     "steps": [
       {
         "name": "classify-clouds",
@@ -56,7 +56,7 @@
   {
     "service_id": "fire-detection",
     "priority": 1,
-    "workflow_name": "mission-orchide-demo-fire-detection-2029-10-06-00-30-00",
+    "workflow_name": "mission-orchide-demo-fire-detection-2029-10-06t00-30-00z",
     "steps": [
       {
         "name": "preprocess",
