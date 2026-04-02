@@ -5,7 +5,6 @@ Fields: DATESZ, ORBIT, EV, DT_EV, INST, TYPE, VISI, WORKFLOW, PRIORITY.
 """
 
 from orbital_mission_compiler.schemas import (
-    MissionPlan,
     MissionEvent,
     MissionEventType,
     AIService,

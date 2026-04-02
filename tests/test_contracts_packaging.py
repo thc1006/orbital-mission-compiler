@@ -19,6 +19,12 @@ def test_packaging_contracts_importable():
         PolicyHints,
         PackageManifest,
     )
+    assert ApplicationIdentity is not None
+    assert ApplicationInput is not None
+    assert ApplicationOutput is not None
+    assert RuntimePreference is not None
+    assert PolicyHints is not None
+    assert PackageManifest is not None
 
 
 # ── ApplicationIdentity ──────────────────────────────────────────────

@@ -22,6 +22,11 @@ def test_simulation_contracts_importable():
         SimulationTimeline,
         SimulationResult,
     )
+    assert AcquisitionReplayEvent is not None
+    assert DownloadWindowEvent is not None
+    assert WorkflowTrigger is not None
+    assert SimulationTimeline is not None
+    assert SimulationResult is not None
 
 
 # ── AcquisitionReplayEvent ────────────────────────────────────────────
