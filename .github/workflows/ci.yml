@@ -55,7 +55,8 @@ jobs:
             "https://github.com/open-policy-agent/opa/releases/download/${OPA_VERSION}/opa_linux_amd64_static"
           chmod +x "$HOME/.local/bin/opa"
           # Note: OPA v1.15.1 does not publish checksums.txt.
-          # Integrity relies on HTTPS + GitHub CDN + actions/cache.
+          # Download integrity relies on HTTPS + GitHub CDN only.
+          # Cache provides speed, not integrity verification.
 
       - name: Add OPA to PATH and verify
         run: |
