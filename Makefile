@@ -1,5 +1,6 @@
 PYTHON ?= python3
 PACKAGE = orbital_mission_compiler
+export PYTHONPATH := src:.
 
 .PHONY: verify test lint fmt compile-sample render-samples argo-smoke opa-smoke demo-phase2 eval print-tree
 
