@@ -13,7 +13,7 @@ ORCHIDE references:
 from __future__ import annotations
 
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class FileRegistration(BaseModel):
@@ -22,7 +22,7 @@ class FileRegistration(BaseModel):
     filename: str
     media_type: str = ""
     source: str = ""
-    size_bytes: int = 0
+    size_bytes: int = Field(default=0, ge=0)
 
 
 class FileQuery(BaseModel):
@@ -38,6 +38,6 @@ class FileRecord(BaseModel):
     filename: str
     media_type: str = ""
     source: str = ""
-    size_bytes: int = 0
+    size_bytes: int = Field(default=0, ge=0)
     path: str = ""
     registered_at: str = ""

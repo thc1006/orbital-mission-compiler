@@ -13,7 +13,7 @@ ORCHIDE references:
 from __future__ import annotations
 
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class UplinkStatus(str, Enum):
@@ -26,9 +26,9 @@ class DownlinkRequest(BaseModel):
     """Contract for requesting a file to be transmitted to ground."""
 
     filename: str
-    priority: int = 1
+    priority: int = Field(default=1, ge=0)
     ground_station_id: str = ""
-    estimated_size_bytes: int = 0
+    estimated_size_bytes: int = Field(default=0, ge=0)
 
 
 class UplinkAck(BaseModel):

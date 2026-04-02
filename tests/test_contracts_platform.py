@@ -24,6 +24,9 @@ def test_storage_contracts_importable():
         FileQuery,
         FileRecord,
     )
+    assert FileRegistration is not None
+    assert FileQuery is not None
+    assert FileRecord is not None
 
 
 def test_file_registration():
@@ -68,6 +71,9 @@ def test_monitor_contracts_importable():
         LogEntry,
         HealthStatus,
     )
+    assert MetricPoint is not None
+    assert LogEntry is not None
+    assert HealthStatus is not None
 
 
 def test_metric_point():
@@ -114,6 +120,8 @@ def test_communication_contracts_importable():
         DownlinkRequest,
         UplinkAck,
     )
+    assert DownlinkRequest is not None
+    assert UplinkAck is not None
 
 
 def test_downlink_request():
@@ -158,6 +166,8 @@ def test_security_contracts_importable():
         AuthToken,
         IntegrityCheck,
     )
+    assert AuthToken is not None
+    assert IntegrityCheck is not None
 
 
 def test_auth_token():
