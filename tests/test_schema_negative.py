@@ -132,11 +132,17 @@ def test_reject_negative_duration():
 
 
 def test_reject_empty_mission_id():
-    """mission_id must not be empty string."""
+    """mission_id must not be empty string (with valid events)."""
     from orbital_mission_compiler.schemas import MissionPlan
 
-    with pytest.raises(ValidationError):
-        MissionPlan(mission_id="", events=[])
+    valid_event = MissionEvent(
+        timestamp="2029-01-01T00:00:00Z",
+        event_type=MissionEventType.DOWNLOAD,
+        duration_seconds=100.0,
+        ground_visibility=True,
+    )
+    with pytest.raises(ValidationError, match="mission_id"):
+        MissionPlan(mission_id="", events=[valid_event])
 
 
 def test_reject_empty_events():
