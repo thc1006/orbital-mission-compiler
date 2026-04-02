@@ -5,8 +5,6 @@ A ground-side, cloud-native mission plan compiler for satellite operations. Vali
 [![CI](https://github.com/thc1006/satellite-mission-compiler/actions/workflows/ci.yml/badge.svg)](https://github.com/thc1006/satellite-mission-compiler/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19391965.svg)](https://doi.org/10.5281/zenodo.19391965)
 ![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue)
-![Coverage](https://img.shields.io/badge/coverage-78%25-green)
-![Tests](https://img.shields.io/badge/tests-145%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-TBD-lightgrey)
 
 ---
@@ -62,13 +60,13 @@ This repo produces rendered YAML artifacts. It does not deploy to or control a l
 ```
 src/orbital_mission_compiler/   Core: schemas, compiler, policy, CLI, MCP
 configs/mission_plans/          Sample YAML mission plans
-configs/policies/               OPA/Rego policy rules (10 deny rules)
+configs/policies/               OPA/Rego policy rules
 contracts/                      Interface contracts (simulation, packaging, platform services)
 evals/golden/                   Golden translation test fixtures
-tests/                          145 tests across 19 files
+tests/                          Unit and integration test suite
 scripts/                        Smoke tests, install helpers, demo scripts
 .claude/                        Agent configs, hooks, skills, commands
-docs/                           14 architecture and research documents
+docs/                           Architecture and research documents
 ```
 
 ## ORCHIDE alignment
