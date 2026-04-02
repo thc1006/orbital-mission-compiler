@@ -106,7 +106,40 @@ def test_reject_download_without_visibility():
         )
 
 
-# ── 6. Valid edge cases that should NOT be rejected ───────────────────
+# ── 6. Numeric field constraints ──────────────────────────────────────
+
+
+def test_reject_negative_orbit():
+    """Orbit number must be non-negative."""
+    with pytest.raises(ValidationError, match="orbit"):
+        MissionEvent(
+            timestamp="2029-01-01T00:00:00Z",
+            event_type=MissionEventType.ACQUISITION,
+            instrument="INST_1",
+            orbit=-1,
+        )
+
+
+def test_reject_negative_duration():
+    """Duration must be non-negative."""
+    with pytest.raises(ValidationError, match="duration"):
+        MissionEvent(
+            timestamp="2029-01-01T00:00:00Z",
+            event_type=MissionEventType.DOWNLOAD,
+            duration_seconds=-10.0,
+            ground_visibility=True,
+        )
+
+
+def test_reject_empty_mission_id():
+    """mission_id must not be empty string."""
+    from orbital_mission_compiler.schemas import MissionPlan
+
+    with pytest.raises(ValidationError, match="mission_id"):
+        MissionPlan(mission_id="", events=[])
+
+
+# ── 7. Valid edge cases that should NOT be rejected ───────────────────
 
 
 def test_accept_valid_acquisition():
