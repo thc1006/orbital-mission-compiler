@@ -33,3 +33,14 @@ Whenever a dependency or version changes, add:
 3. install command,
 4. compatibility note,
 5. reason for selection or rejection.
+
+
+## Phase 2 demo sources
+- OPA CLI reference for `opa eval --stdin-input --data ...`: https://openpolicyagent.org/docs/cli
+- OPA docs front page examples for command-line evaluation: https://openpolicyagent.org/docs
+- Argo installation docs: https://argo-workflows.readthedocs.io/en/latest/installation/
+- Argo `argo lint` CLI docs: https://argo-workflows.readthedocs.io/en/latest/cli/argo_lint/
+- Kueue install docs: https://kueue.sigs.k8s.io/docs/installation/
+- Kueue concepts for `ClusterQueue`, `LocalQueue`, `ResourceFlavor`: https://kueue.sigs.k8s.io/docs/concepts/
+- Kueue job submission docs for `kueue.x-k8s.io/queue-name`: https://kueue.sigs.k8s.io/docs/tasks/run/jobs/
+- OpenTelemetry Collector Kubernetes install example: https://opentelemetry.io/docs/collector/install/kubernetes/

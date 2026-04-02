@@ -1,32 +1,40 @@
-from __future__ import annotations
-
-import compileall
 from pathlib import Path
+import compileall
+import sys
+import yaml
 
+REQUIRED = [
+    "README.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/00_transcript_grounding.md",
+    "docs/04_architecture.md",
+    "docs/07_installation_matrix.md",
+    "docs/12_phase2_local_demo.md",
+    "src/orbital_mission_compiler/compiler.py",
+    "tests/test_compiler.py",
+    "configs/mission_plans/sample_gpu_cpu_fallback.yaml",
+    "manifests/examples/argo-gpu-cpu-fallback.yaml",
+]
 
-def main() -> int:
-    required = [
-        Path("README.md"),
-        Path("AGENTS.md"),
-        Path("CLAUDE.md"),
-        Path("docs/00_transcript_grounding.md"),
-        Path("docs/07_installation_matrix.md"),
-        Path("src/orbital_mission_compiler/cli.py"),
-        Path("configs/mission_plans/sample_maritime_surveillance.yaml"),
-    ]
-    missing = [str(p) for p in required if not p.exists()]
-    if missing:
-        print("Missing required files:", missing)
-        return 1
+root = Path(__file__).resolve().parents[1]
+missing = [p for p in REQUIRED if not (root / p).exists()]
+if missing:
+    print("Missing required files:")
+    for p in missing:
+        print(f"- {p}")
+    sys.exit(1)
 
-    if not compileall.compile_dir("src", quiet=1):
-        print("Python syntax compilation failed")
-        return 1
+ok = compileall.compile_dir(str(root / "src"), quiet=1)
+if not ok:
+    print("Python syntax verification failed.")
+    sys.exit(1)
 
-    print("Basic syntax verification passed.")
-    print("NOTE: external installs, Kubernetes bootstrap, and GPU execution were not run here.")
-    return 0
+with (root / "manifests/examples/argo-gpu-cpu-fallback.yaml").open("r", encoding="utf-8") as f:
+    obj = yaml.safe_load(f)
+if obj.get("kind") != "Workflow":
+    print("manifests/examples/argo-gpu-cpu-fallback.yaml is not an Argo Workflow manifest")
+    sys.exit(1)
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+print("Basic syntax verification passed.")
+print("NOTE: external installs, Kubernetes bootstrap, OPA runtime, and GPU execution were not run here.")

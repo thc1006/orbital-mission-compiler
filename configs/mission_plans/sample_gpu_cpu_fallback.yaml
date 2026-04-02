@@ -1,0 +1,34 @@
+mission_id: mission-beta
+client_id: demo-user
+events:
+  - timestamp: "2026-04-16T09:15:00Z"
+    event_type: acquisition
+    instrument: sar-camera
+    sensor: sensor-b
+    ground_visibility: false
+    region_type: land
+    services:
+      - service_id: wildfire-detection
+        priority: 75
+        steps:
+          - name: preprocess
+            image: ghcr.io/example/preprocess:0.1.0
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo preprocess"]
+          - name: detect-wildfire
+            image: ghcr.io/example/fire-detector:0.1.0
+            resource_class: gpu
+            fallback_resource_class: cpu
+            needs_acceleration: true
+            preferred_node_selector:
+              accelerator: nvidia
+            command: ["sh", "-c"]
+            args: ["if [ -e /dev/nvidia0 ]; then echo gpu-path; else echo cpu-fallback; fi"]
+            metadata:
+              fallback_mode: soft-preference
+          - name: postprocess
+            image: ghcr.io/example/postprocess:0.1.0
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo postprocess"]

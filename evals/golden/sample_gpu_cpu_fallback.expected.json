@@ -1,7 +1,7 @@
 [
   {
-    "service_id": "maritime-surveillance",
-    "priority": 90,
+    "service_id": "wildfire-detection",
+    "priority": 75,
     "requires_gpu": true,
     "fallback_enabled": true
   }

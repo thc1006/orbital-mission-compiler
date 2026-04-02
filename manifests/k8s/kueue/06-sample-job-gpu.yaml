@@ -1,0 +1,27 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: orbital-demo-gpu-
+  namespace: orbital-demo
+  labels:
+    kueue.x-k8s.io/queue-name: orbital-demo-local
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        accelerator: nvidia
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: gpu-job
+          image: registry.k8s.io/e2e-test-images/agnhost:2.53
+          command: ["/bin/sh", "-c"]
+          args: ["echo gpu-workload; sleep 5"]
+          resources:
+            requests:
+              cpu: "1"
+              memory: 256Mi
+              nvidia.com/gpu: "1"

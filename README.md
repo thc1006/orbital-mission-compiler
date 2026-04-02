@@ -9,6 +9,8 @@ This repository does **not** claim to reproduce ORCHIDE. It focuses on the gaps 
 - keeping the system observable and agent-friendly,
 - staying buildable on Ubuntu 22.04 / 24.04 with optional K3s and optional GPU nodes.
 
+The design stays anchored in the transcript’s most concrete technical chain: **mission plan → workflow/priority translation → K3s/Argo execution → heterogeneous CPU/GPU/FPGA configuration → logs/metrics backhaul**. See `docs/00_transcript_grounding.md` and the original corrected transcript for grounding.
+
 ## What this scaffold is for
 
 This repo is a **developer lab** for building a “Mission Plan Compiler”:
@@ -33,6 +35,16 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -e ".[dev]"
 make verify
+make test
+make eval
+```
+
+### Phase 2: local demo surface
+```bash
+make render-samples
+make argo-smoke
+# optional, requires official OPA CLI installed
+make opa-smoke
 ```
 
 ### Optional local K3s + Argo + Kueue
@@ -40,6 +52,7 @@ make verify
 bash scripts/install_k3s.sh
 bash scripts/install_argo.sh
 bash scripts/install_kueue.sh
+bash scripts/kueue_demo_apply.sh
 ```
 
 ### Compile a sample mission plan
@@ -47,13 +60,25 @@ bash scripts/install_kueue.sh
 python -m orbital_mission_compiler.cli compile   --input configs/mission_plans/sample_maritime_surveillance.yaml   --output /tmp/sample_workflow.yaml
 ```
 
+### Render individual Argo manifests
+```bash
+python -m orbital_mission_compiler.cli render-argo   --input configs/mission_plans/sample_gpu_cpu_fallback.yaml   --output-dir out/fallback
+```
+
+## Phase-2 demo contents
+- **Minimal OPA execution**: `scripts/opa_smoke.sh`
+- **Argo manifest smoke test**: `scripts/argo_smoke.sh`
+- **Kueue queue example**: `manifests/k8s/kueue/`
+- **GPU/CPU fallback workflow sample**: `configs/mission_plans/sample_gpu_cpu_fallback.yaml` and `manifests/examples/argo-gpu-cpu-fallback.yaml`
+
 ## Key docs
 - `docs/00_transcript_grounding.md`
 - `docs/04_architecture.md`
 - `docs/05_breakthrough_direction.md`
 - `docs/07_installation_matrix.md`
 - `docs/09_validation_checklist.md`
+- `docs/12_phase2_local_demo.md`
 
 ## Status
 
-The repository skeleton, scripts, and Python code have been generated and syntax-checked locally. External tool installation, Kubernetes bootstrap, and GPU execution were **not** executed end-to-end in this environment. Treat this repo as a **research-backed scaffold**, not as an already-proven production deployment.
+The repository skeleton, scripts, Python code, and phase-2 demo files have been generated and syntax-checked locally. External tool installation, Kubernetes bootstrap, OPA runtime, Argo CLI lint, and GPU execution were **not** executed end-to-end in this environment. Treat this repo as a **research-backed scaffold**, not as an already-proven production deployment.

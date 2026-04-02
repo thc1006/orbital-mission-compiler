@@ -1,0 +1,7 @@
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: orbital-demo-local
+  namespace: orbital-demo
+spec:
+  clusterQueue: orbital-demo-cq

@@ -20,10 +20,12 @@ class WorkflowStep(BaseModel):
     name: str
     image: str
     resource_class: ResourceClass = ResourceClass.CPU
+    fallback_resource_class: Optional[ResourceClass] = None
     needs_acceleration: bool = False
     command: List[str] = Field(default_factory=list)
     args: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    preferred_node_selector: Dict[str, str] = Field(default_factory=dict)
 
 
 class AIService(BaseModel):

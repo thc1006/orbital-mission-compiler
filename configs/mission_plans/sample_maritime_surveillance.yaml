@@ -19,7 +19,10 @@ events:
           - name: detect-ships
             image: ghcr.io/example/ship-detector:0.1.0
             resource_class: gpu
+            fallback_resource_class: cpu
             needs_acceleration: true
+            preferred_node_selector:
+              accelerator: nvidia
             command: ["python", "-m", "app.detect"]
             args: ["--input", "/data/prepared", "--output", "/data/results"]
           - name: postprocess

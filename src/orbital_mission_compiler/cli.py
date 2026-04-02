@@ -3,7 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 
-from .compiler import compile_file, load_mission_plan, compile_plan_to_intents
+from .compiler import (
+    compile_file,
+    load_mission_plan,
+    compile_plan_to_intents,
+    write_individual_workflows,
+)
 from .policy import eval_policy
 
 
@@ -15,13 +20,17 @@ def build_parser() -> argparse.ArgumentParser:
     compile_p.add_argument("--input", required=True)
     compile_p.add_argument("--output", required=True)
 
+    render_p = sub.add_parser("render-argo", help="Render individual Argo Workflow manifests")
+    render_p.add_argument("--input", required=True)
+    render_p.add_argument("--output-dir", required=True)
+
     inspect_p = sub.add_parser("inspect", help="Inspect compiled workflow intents")
     inspect_p.add_argument("--input", required=True)
 
     policy_p = sub.add_parser("policy", help="Evaluate policy pack with OPA if available")
     policy_p.add_argument("--input", required=True)
     policy_p.add_argument("--bundle", default="configs/policies")
-    policy_p.add_argument("--decision", default="data.orbitalmission.allow")
+    policy_p.add_argument("--decision", default="data.orbitalmission")
 
     return parser
 
@@ -29,6 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_compile(args):
     payload = compile_file(args.input, args.output)
     print(json.dumps({"status": "ok", "workflows": len(payload["workflows"])}, indent=2))
+
+
+def cmd_render_argo(args):
+    written = write_individual_workflows(args.input, args.output_dir)
+    print(json.dumps({"status": "ok", "files": [str(p) for p in written]}, indent=2))
 
 
 def cmd_inspect(args):
@@ -43,7 +57,7 @@ def cmd_policy(args):
     payload = plan.model_dump(mode="json")
     rc, out = eval_policy(args.bundle, payload, args.decision)
     print(out)
-    raise SystemExit(rc if rc in (0, 1) else 0)
+    raise SystemExit(rc if rc in (0, 1, 2) else 0)
 
 
 def main():
@@ -51,6 +65,8 @@ def main():
     args = parser.parse_args()
     if args.command == "compile":
         cmd_compile(args)
+    elif args.command == "render-argo":
+        cmd_render_argo(args)
     elif args.command == "inspect":
         cmd_inspect(args)
     elif args.command == "policy":

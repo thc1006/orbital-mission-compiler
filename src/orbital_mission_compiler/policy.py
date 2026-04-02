@@ -19,15 +19,15 @@ def eval_policy(bundle_dir: str | Path, input_payload: Dict[str, Any], decision:
         [
             "opa",
             "eval",
-            "-f",
-            "pretty",
-            "-d",
+            "--format=json",
+            "--stdin-input",
+            "--data",
             str(bundle_dir),
-            "-I",
             decision,
         ],
         input=json.dumps(input_payload).encode("utf-8"),
         capture_output=True,
         check=False,
     )
-    return proc.returncode, (proc.stdout or proc.stderr).decode("utf-8")
+    out = (proc.stdout or proc.stderr).decode("utf-8")
+    return proc.returncode, out
