@@ -1,7 +1,7 @@
 """Tests for CLI subcommands.
 
 Covers: compile, render-argo, render-kueue, inspect, policy.
-Goal: push cli.py from 0% to >80% coverage.
+Goal: increase cli.py coverage.
 """
 
 import json

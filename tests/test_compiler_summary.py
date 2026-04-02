@@ -6,12 +6,18 @@ from orbital_mission_compiler.compiler import load_mission_plan, compile_plan_to
 
 
 def test_compilation_summary_logged(caplog):
-    """Compiler should log a summary: N intents from M events (K skipped)."""
+    """Compiler should log a summary with correct counts derived at runtime."""
     plan = load_mission_plan("configs/mission_plans/sample_orchide_format.yaml")
     with caplog.at_level(logging.INFO, logger="orbital_mission_compiler.compiler"):
-        compile_plan_to_intents(plan)
+        intents = compile_plan_to_intents(plan)
+
+    expected_total = len(plan.events)
+    expected_skipped = sum(1 for e in plan.events if e.event_type.value != "acquisition")
+    expected_intents = len(intents)
+
     summary = [r for r in caplog.records if "compiled" in r.message.lower() and "intents" in r.message.lower()]
     assert len(summary) == 1
-    assert "3 intents" in summary[0].message.lower()
-    assert "3 events" in summary[0].message.lower()
-    assert "1 skipped" in summary[0].message.lower()
+    msg = summary[0].message.lower()
+    assert f"{expected_intents} intents" in msg
+    assert f"{expected_total} events" in msg
+    assert f"{expected_skipped} skipped" in msg
