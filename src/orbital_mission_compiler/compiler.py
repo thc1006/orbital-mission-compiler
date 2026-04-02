@@ -137,11 +137,18 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
 
         safe_name = _sanitize_k8s_name(step.name)
         dag_task: Dict[str, Any] = {"name": safe_name, "template": template_name}
-        # Sequential: linear chain (A→B→C). Parallel: no dependencies (all start at once).
-        execution_mode = intent.resource_hints.get("execution_mode", "sequential")
-        if execution_mode == "sequential" and idx > 0:
-            dag_task["depends"] = _sanitize_k8s_name(intent.steps[idx - 1].name)
         dag_tasks.append(dag_task)
+
+    # Apply DAG dependencies based on execution_mode.
+    # Sequential: linear chain (A→B→C). Parallel: no dependencies.
+    # Unknown values default to sequential (safe: prevents accidental parallelism).
+    execution_mode = intent.resource_hints.get("execution_mode", "sequential")
+    if execution_mode not in ("sequential", "parallel"):
+        logger.warning("Unknown execution_mode %r, defaulting to sequential", execution_mode)
+        execution_mode = "sequential"
+    if execution_mode == "sequential":
+        for i in range(1, len(dag_tasks)):
+            dag_tasks[i]["depends"] = dag_tasks[i - 1]["name"]
 
     wf_annotations: Dict[str, str] = {
         "orbital/priority": str(intent.priority),

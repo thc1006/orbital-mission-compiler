@@ -67,11 +67,19 @@ def _make_intent(execution_mode: ExecutionMode):
 # ── Sequential (existing behavior, regression test) ──────────────────
 
 
+def _get_dag_tasks(wf):
+    """Find the 'main' template's DAG tasks by name (not index)."""
+    for tmpl in wf["spec"]["templates"]:
+        if tmpl["name"] == "main":
+            return tmpl["dag"]["tasks"]
+    raise ValueError("No 'main' template found")
+
+
 def test_sequential_dag_has_linear_dependencies():
     """Sequential mode: each step depends on previous (A→B→C)."""
     intent = _make_intent(ExecutionMode.SEQUENTIAL)
     wf = render_argo_workflow(intent)
-    dag_tasks = wf["spec"]["templates"][0]["dag"]["tasks"]
+    dag_tasks = _get_dag_tasks(wf)
 
     assert len(dag_tasks) == 3
     assert "depends" not in dag_tasks[0]  # first has no deps
@@ -86,7 +94,7 @@ def test_parallel_dag_has_no_dependencies():
     """Parallel mode: all steps run simultaneously (no depends)."""
     intent = _make_intent(ExecutionMode.PARALLEL)
     wf = render_argo_workflow(intent)
-    dag_tasks = wf["spec"]["templates"][0]["dag"]["tasks"]
+    dag_tasks = _get_dag_tasks(wf)
 
     assert len(dag_tasks) == 3
     for task in dag_tasks:
@@ -123,6 +131,6 @@ def test_orchide_plan_sequential_by_default():
         load_mission_plan("configs/mission_plans/sample_orchide_format.yaml")
     )
     wf = render_argo_workflow(intents[0])
-    dag_tasks = wf["spec"]["templates"][0]["dag"]["tasks"]
+    dag_tasks = _get_dag_tasks(wf)
     # Default is sequential: tasks 1,2 should have depends
     assert dag_tasks[1].get("depends") is not None
