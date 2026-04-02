@@ -76,8 +76,11 @@ make eval                       # golden translation checks
 - [x] `contracts/simulation.py` — 5 models (AcquisitionReplayEvent, DownloadWindowEvent, WorkflowTrigger, SimulationTimeline, SimulationResult)
 - [x] 7 tests, all pass. No runtime logic.
 
-#### 5.2–5.6 Remaining contracts
-- [ ] `contracts/packaging.py` — OCI image spec (D3.1 §5.1)
+#### 5.2 Packaging contracts
+- [x] `contracts/packaging.py` — 6 models (ApplicationIdentity, ApplicationInput, ApplicationOutput, RuntimePreference, PolicyHints, PackageManifest)
+- [x] 10 tests, all pass. No OCI build logic.
+
+#### 5.3–5.6 Remaining contracts
 - [ ] `contracts/storage.py` — Storage Manager (D3.1 §3.2.1.2)
 - [ ] `contracts/monitor.py` — Monitor Manager (D3.1 §3.2.1.5)
 - [ ] `contracts/communication.py` — Communication Manager (D3.1 §3.2.1.1.3)
