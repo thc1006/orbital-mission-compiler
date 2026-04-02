@@ -5,6 +5,26 @@ from pathlib import Path
 
 from .compiler import load_mission_plan, compile_plan_to_intents
 
+PLANS_DIR = Path("configs/mission_plans")
+GOLDEN_DIR = Path("evals/golden")
+
+
+def _discover_cases() -> tuple[list[tuple[Path, Path]], list[Path]]:
+    """Auto-discover eval cases: for each golden .expected.json, find matching plan.
+
+    Returns (cases, orphans) where orphans are golden files with no matching plan.
+    """
+    cases = []
+    orphans = []
+    for golden in sorted(GOLDEN_DIR.glob("*.expected.json")):
+        stem = golden.name.removesuffix(".expected.json")
+        plan = PLANS_DIR / f"{stem}.yaml"
+        if plan.exists():
+            cases.append((plan, golden))
+        else:
+            orphans.append(golden)
+    return cases, orphans
+
 
 def _run_case(mission_file: Path, golden_file: Path) -> tuple[bool, str]:
     plan = load_mission_plan(mission_file)
@@ -29,16 +49,14 @@ def _run_case(mission_file: Path, golden_file: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    cases = [
-        (
-            Path("configs/mission_plans/sample_maritime_surveillance.yaml"),
-            Path("evals/golden/sample_maritime_surveillance.expected.json"),
-        ),
-        (
-            Path("configs/mission_plans/sample_gpu_cpu_fallback.yaml"),
-            Path("evals/golden/sample_gpu_cpu_fallback.expected.json"),
-        ),
-    ]
+    cases, orphans = _discover_cases()
+    if orphans:
+        for o in orphans:
+            print(f"EVAL ERROR: golden file {o.name} has no matching plan in {PLANS_DIR}")
+        return 1
+    if not cases:
+        print("EVAL ERROR: no eval cases discovered")
+        return 1
     failed = []
     for mission, golden in cases:
         ok, msg = _run_case(mission, golden)
