@@ -17,18 +17,27 @@ from orbital_mission_compiler.compiler import (
 from orbital_mission_compiler.policy import eval_policy
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-_ALLOWED_PLANS = _REPO_ROOT / "configs" / "mission_plans"
-_ALLOWED_BUNDLES = _REPO_ROOT / "configs" / "policies"
+_ALLOWED_PLANS = (_REPO_ROOT / "configs" / "mission_plans").resolve()
+_ALLOWED_BUNDLES = (_REPO_ROOT / "configs" / "policies").resolve()
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    """Check if child path is strictly within parent directory."""
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 
 
 def _validate_plan_path(path: str) -> Path:
     """Validate plan path is within configs/mission_plans/. CWE-22 prevention."""
     candidate = Path(path)
-    # Absolute paths or any parent traversal → reject
     if candidate.is_absolute() or ".." in candidate.parts:
         raise ValueError(f"Path outside allowed directory: {path}")
+    # Only accept filenames — resolve against allowed dir
     resolved = (_ALLOWED_PLANS / candidate.name).resolve()
-    if not str(resolved).startswith(str(_ALLOWED_PLANS.resolve())):
+    if not _is_within(resolved, _ALLOWED_PLANS):
         raise ValueError(f"Path outside allowed directory: {path}")
     if not resolved.exists():
         raise ValueError(f"Plan file not found: {path}")
@@ -38,7 +47,7 @@ def _validate_plan_path(path: str) -> Path:
 def _validate_bundle_path(bundle: str) -> Path:
     """Validate bundle path is within configs/policies/. CWE-22 prevention."""
     resolved = Path(bundle).resolve()
-    if not str(resolved).startswith(str(_ALLOWED_BUNDLES.resolve())):
+    if not _is_within(resolved, _ALLOWED_BUNDLES):
         raise ValueError(f"Bundle path outside allowed directory: {bundle}")
     return resolved
 
@@ -80,9 +89,9 @@ def build_server():
         path: str, bundle: str = "configs/policies", decision: str = "data.orbitalmission"
     ) -> dict:
         safe_path = _validate_plan_path(path)
-        _validate_bundle_path(bundle)
+        safe_bundle = _validate_bundle_path(bundle)
         plan = load_mission_plan(safe_path)
-        rc, out = eval_policy(bundle, plan.model_dump(mode="json"), decision)
+        rc, out = eval_policy(str(safe_bundle), plan.model_dump(mode="json"), decision)
         return {"exit_code": rc, "raw": out}
 
     return server

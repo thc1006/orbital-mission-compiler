@@ -44,3 +44,11 @@ def test_validate_bundle_accepts_default():
 
     result = _validate_bundle_path("configs/policies")
     assert result.exists()
+
+
+def test_validate_bundle_rejects_prefix_sibling():
+    """configs/policies_evil must be rejected (common prefix bypass)."""
+    from orbital_mission_compiler.mcp.server import _validate_bundle_path
+
+    with pytest.raises(ValueError, match="outside allowed"):
+        _validate_bundle_path("configs/policies_evil")
