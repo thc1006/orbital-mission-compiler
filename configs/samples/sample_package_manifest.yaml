@@ -1,0 +1,40 @@
+# Sample PackageManifest — ground-side application packaging contract.
+# This is a CONTRACT example, not a real OCI build spec.
+# References: ORCHIDE D3.1 §2.4.1.1, §5.1, slide 10.
+
+identity:
+  service_id: fire-detection
+  version: "1.0.0"
+  image: "ghcr.io/example/fire-detector:1.0.0"
+  description: "Detects wildfire hotspots from satellite thermal imagery."
+
+phase: ai
+
+inputs:
+  - name: preprocessed-image
+    media_type: image/tiff
+    source_path: /data/prepared
+  - name: land-mask
+    media_type: application/octet-stream
+    source_path: /data/aux/land_mask.bin
+
+outputs:
+  - name: fire-detections
+    media_type: application/json
+    destination_path: /data/results/fire_detections.json
+  - name: confidence-map
+    media_type: image/tiff
+    destination_path: /data/results/confidence.tiff
+
+runtime:
+  resource_class: gpu
+  fallback_resource_class: cpu
+  needs_acceleration: true
+  min_memory_mb: 1024
+  min_cpu_millicores: 500
+
+policy:
+  max_execution_seconds: 120
+  requires_ground_visibility: false
+  allowed_landscape_types:
+    - land

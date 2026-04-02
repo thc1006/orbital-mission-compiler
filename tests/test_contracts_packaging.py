@@ -165,3 +165,19 @@ def test_package_manifest_minimal():
     assert manifest.inputs == []
     assert manifest.outputs == []
     assert manifest.phase is None
+
+
+# ── Sample manifest file ─────────────────────────────────────────────
+
+
+def test_sample_package_manifest_exists_and_loads():
+    """A sample package manifest YAML must exist and load into PackageManifest."""
+    from pathlib import Path
+    import yaml
+    from contracts.packaging import PackageManifest
+
+    path = Path("configs/samples/sample_package_manifest.yaml")
+    assert path.exists(), "sample manifest file must exist"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    manifest = PackageManifest(**data)
+    assert manifest.identity.service_id != ""
