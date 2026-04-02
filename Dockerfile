@@ -13,7 +13,8 @@ COPY manifests /workspace/manifests
 COPY tests /workspace/tests
 
 RUN pip install --no-cache-dir . \
-    && useradd -m appuser
+    && useradd -m appuser \
+    && chown -R appuser:appuser /workspace
 
 USER appuser
 

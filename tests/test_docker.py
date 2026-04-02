@@ -1,6 +1,6 @@
 """Tests for Docker image build and basic functionality.
 
-Issue #13. Skips if docker CLI is not available.
+Issue #13. Skips if docker CLI or daemon is not available.
 """
 
 import shutil
@@ -8,9 +8,20 @@ import subprocess
 
 import pytest
 
-DOCKER_AVAILABLE = shutil.which("docker") is not None
 
-pytestmark = pytest.mark.skipif(not DOCKER_AVAILABLE, reason="docker CLI not available")
+def _docker_daemon_available() -> bool:
+    """Check both docker CLI exists and daemon is accessible."""
+    if not shutil.which("docker"):
+        return False
+    result = subprocess.run(
+        ["docker", "info"], capture_output=True, check=False, timeout=10,
+    )
+    return result.returncode == 0
+
+
+DOCKER_AVAILABLE = _docker_daemon_available()
+
+pytestmark = pytest.mark.skipif(not DOCKER_AVAILABLE, reason="docker daemon not available")
 
 IMAGE_TAG = "omc:test"
 
