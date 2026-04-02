@@ -1,10 +1,10 @@
 # Satellite Mission Compiler
 
-**Mission plan–to–workflow orchestration for cloud-native space operations.**
+> This repository is a ground-side ORCHIDE-aligned mission plan compiler.
+> It validates structured mission plans, applies policy guardrails, compiles workflow semantics, and renders admission-ready artifacts before anything reaches an onboard orchestrator.
+> Simulation, packaging, and platform services are represented here as interface contracts, not full implementations.
 
-Satellite Mission Compiler is a ground-side framework for turning structured satellite mission plans into validated, policy-aware workflow artifacts for Argo and Kubernetes.
-
-It is designed for cloud-native space operations where mission plans, workflow priorities, observability, and heterogeneous runtime hints must be modeled explicitly before deployment.
+Satellite Mission Compiler fills the gap that onboard platforms like [ORCHIDE](https://orchide-project.eu/) explicitly leave open: ORCHIDE's D3.1 limits scope to the on-satellite "Deferred Phase" and receives mission plans via a deployment interface, but does not generate, validate, or compile them. This project provides the ground-side toolchain for that purpose.
 
 ## What it does
 
@@ -19,7 +19,7 @@ It is designed for cloud-native space operations where mission plans, workflow p
 
 This repository is **not** a flight-ready onboard satellite runtime.
 
-It is a **ground-side mission-plan compiler and policy/admission scaffold** for cloud-native satellite operations.
+It is a **ground-side mission-plan compiler and policy/admission scaffold** for cloud-native satellite operations. It complements onboard platforms (such as ORCHIDE) rather than replacing them.
 
 ## Quick start
 
@@ -29,6 +29,10 @@ make test
 make eval
 make demo-phase2
 ```
+
+## Development workflow (TDD)
+
+All changes follow test-first development. See `AGENTS.md` for rules and `docs/06_execution_plan.md` for the phased roadmap.
 
 ## Project focus
 * Mission plan schema and validation

@@ -3,23 +3,34 @@
 Start here:
 1. `README.md`
 2. `docs/00_transcript_grounding.md`
-3. `docs/05_breakthrough_direction.md`
+3. `docs/13_market_positioning.md`
 4. `docs/04_architecture.md`
 5. `docs/07_installation_matrix.md`
 
-## Repo intent
-This repo is a **ground development scaffold** for a mission-plan-aware orchestration platform inspired by the ORCHIDE session. It intentionally focuses on:
-- mission plan → workflow compilation,
-- policy guardrails,
-- resource/admission semantics,
-- observability,
-- agent-ready tooling.
+## Mission statement
+Build the ground-side ORCHIDE-aligned mission plan compiler: schema validation → policy guardrails → workflow compilation → admission semantics, with interface contracts for simulation, packaging, and platform service integration.
 
-It intentionally does **not** pretend to solve:
-- radiation hardening,
-- full onboard HA,
-- OTA update guarantees,
-- complete satellite security posture.
+## Repo intent
+This repo is a **ground-side mission plan compiler** that complements onboard platforms like ORCHIDE. ORCHIDE's D3.1 states that it only covers the "Deferred Phase" (on-satellite workflow execution) and receives mission plans via a deployment interface — but does not generate, validate, or compile those plans. This repo fills that gap.
+
+Core mainline (implement):
+1. mission plan schema (aligned with ORCHIDE slide 9 format),
+2. policy guardrails (OPA/Rego — not present in ORCHIDE),
+3. custom translation layer: mission plan → workflow intent IR → Argo artifacts,
+4. workflow / admission rendering (Argo YAML + Kueue Job YAML).
+
+Extended (define contracts only, not implementations):
+- simulation, packaging, platform service contracts (Storage, Monitor, Communication, Security Manager).
+
+Optional (serve the mainline, do not lead it):
+- MCP interface, Claude Code hooks/skills/subagents, structured logging.
+
+It intentionally does **not** build:
+- a full developer platform or SDK,
+- a full simulation framework,
+- real EOS / Zot / Vector / OpenSearch / Prometheus integration,
+- onboard orchestration,
+- radiation hardening, full HA, OTA guarantees, or flight-ready claims.
 
 ## Working preferences
 - Prefer small, reviewable changes.
@@ -33,6 +44,8 @@ It intentionally does **not** pretend to solve:
 - Do not add dependencies unless the package name and install command are verified from official sources.
 - Do not remove transcript-grounding notes.
 - Do not write architecture claims that exceed what the transcript and docs support.
+- Do not claim to replace ORCHIDE; position as ground-side complement.
+- Refer to `docs/13_market_positioning.md` for competitive landscape context.
 
 ## Key implementation notes
 - Core logic lives in `src/orbital_mission_compiler/`.

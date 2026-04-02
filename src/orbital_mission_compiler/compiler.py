@@ -126,6 +126,65 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
     return workflow
 
 
+def render_kueue_job(
+    intent: WorkflowIntent,
+    queue_name: str = "orbital-demo-local",
+    namespace: str = "orbital-demo",
+) -> Dict[str, Any]:
+    requires_gpu = intent.resource_hints.get("requires_gpu", False)
+
+    # Pick the primary compute step (GPU step if present, else first step).
+    gpu_steps = [s for s in intent.steps if s.resource_class == ResourceClass.GPU]
+    primary = gpu_steps[0] if gpu_steps else intent.steps[0]
+
+    container: Dict[str, Any] = {
+        "name": primary.name,
+        "image": primary.image,
+        "command": primary.command or ["sh", "-c"],
+        "args": primary.args or [f'echo "run {primary.name}"'],
+        "resources": {
+            "requests": {
+                "cpu": "1",
+                "memory": "256Mi",
+            },
+        },
+    }
+    if requires_gpu:
+        container["resources"]["requests"]["nvidia.com/gpu"] = "1"
+        container["resources"]["limits"] = {"nvidia.com/gpu": "1"}
+
+    pod_spec: Dict[str, Any] = {
+        "restartPolicy": "Never",
+        "containers": [container],
+    }
+    if requires_gpu:
+        pod_spec["nodeSelector"] = {"accelerator": "nvidia"}
+        pod_spec["tolerations"] = [
+            {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
+        ]
+
+    job: Dict[str, Any] = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "generateName": f"{intent.workflow_name[:50]}-",
+            "namespace": namespace,
+            "labels": {
+                "kueue.x-k8s.io/queue-name": queue_name,
+                "mission-id": intent.mission_id,
+                "service-id": intent.service_id,
+                "priority": str(intent.priority),
+            },
+        },
+        "spec": {
+            "template": {
+                "spec": pod_spec,
+            },
+        },
+    }
+    return job
+
+
 def render_workflows_for_file(input_path: str | Path) -> List[Dict[str, Any]]:
     plan = load_mission_plan(input_path)
     intents = compile_plan_to_intents(plan)

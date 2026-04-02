@@ -20,17 +20,32 @@ flowchart TD
 ```
 
 ## Core modules
-1. **mission schema** — parse and validate structured plans.
-2. **policy pack** — reject unsafe or malformed plans before workflow emission.
-3. **compiler** — translate mission semantics into workflow intent.
-4. **renderer** — emit Argo-compatible manifests.
-5. **admission bridge** — optional Kueue-facing objects for quota / preemption semantics.
-6. **agent interface** — CLI + MCP.
-7. **eval harness** — golden tests for deterministic translation.
+1. **mission schema** (`schemas.py`) — parse and validate structured plans. Aligned with ORCHIDE slide 9: supports orbit, duration_seconds, per-service landscape_type, in addition to event_type, timestamp, instrument, ground_visibility, priority.
+2. **policy pack** (`policy.py` + `configs/policies/`) — reject unsafe or malformed plans before workflow emission.
+3. **compiler** (`compiler.py`) — translate mission semantics into workflow intent IR.
+4. **renderer** (`compiler.py`: `render_argo_workflow`, `render_kueue_job`) — emit Argo and Kueue manifests.
+5. **agent interface** (`cli.py` + `mcp/server.py`) — CLI + MCP (optional, serves the mainline).
+6. **eval harness** (`eval_runner.py` + `evals/golden/`) — golden tests for deterministic translation.
 
 ## Why this architecture
-It directly targets the strongest gap visible in the transcript:
-the speakers explain the stack and mention a mission-plan-to-workflow translation layer, but do not publish its semantics. This repo makes that layer explicit and testable.
+ORCHIDE implements an onboard "translation from Mission Plan to Argo workflow" (KubeCon EU 2026, slide 23) as embedded glue code inside its Mission Manager. However, ORCHIDE's D3.1 explicitly excludes mission plan generation, validation, and compilation from its scope. This repo fills that gap by making the ground-side compilation layer explicit, testable, and policy-aware.
+
+## Relationship to ORCHIDE
+```
+Ground (this repo)                    Onboard (ORCHIDE)
+─────────────────                     ─────────────────
+Mission Plan YAML                     
+  → Schema Validation (Pydantic)      
+  → Policy Guard (OPA/Rego)           ← not in ORCHIDE
+  → Argo Workflow Renderer            
+  → Kueue Job Renderer                ← not in ORCHIDE
+  → MCP Tools                         ← not in ORCHIDE
+        │                             
+        ▼ deploy via IF SO_MIS_DP     
+                                      Mission Manager receives plan
+                                        → Scheduler → Workflow Manager
+                                        → Argo → K3S → urunc/ukAccel
+```
 
 ## Non-goals
 - flight software

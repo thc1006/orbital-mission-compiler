@@ -32,6 +32,7 @@ events:
             args: ["--input", "/data/results", "--output", "/data/downlink"]
   - timestamp: "2026-04-15T10:42:00Z"
     event_type: download
+    duration_seconds: 268
     instrument: x-band
     sensor: downlink
     ground_visibility: true

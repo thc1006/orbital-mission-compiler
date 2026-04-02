@@ -10,12 +10,12 @@ The demo adds four concrete surfaces:
 4. a **GPU/CPU fallback workflow sample** that prefers GPU-labelled nodes but keeps a CPU-compatible execution path.
 
 ## Why this stage exists
-The corrected transcript makes three points especially actionable for a ground-side developer lab:
-- mission plans are the control entry point,
-- Argo/K3s are execution backends reached through an in-house translation layer,
-- applications can be configured for CPU, FPGA, or GPU resources.
+The ORCHIDE KubeCon EU 2026 presentation (slides 9, 10, 23) confirms three points actionable for a ground-side developer lab:
+- mission plans are the control entry point (slide 9),
+- Argo/K3s are execution backends reached through a custom translation layer (slide 23),
+- applications can be configured for CPU, FPGA, or GPU resources (slide 14).
 
-This repo therefore demonstrates the translation and validation surfaces first, without pretending to reproduce the onboard runtime itself.
+This repo demonstrates the ground-side translation and validation surfaces, complementing ORCHIDE's onboard orchestrator without reproducing it.
 
 ## Demo commands
 ```bash
@@ -49,6 +49,43 @@ This matches the transcript’s statement that applications are configured accor
 - `scripts/argo_smoke.sh`
 - `scripts/kueue_demo_apply.sh`
 - `scripts/demo_phase2.sh`
+
+## Agent workflow hardening
+
+The repository includes a Claude Code hook that automatically verifies changes after every file write or edit.
+
+### Configuration
+- `.claude/settings.json` — sets default permission mode to `plan` and registers the PostToolUse hook.
+- `.claude/hooks/run-verify-async.sh` — runs `verify.py` on every change; conditionally runs `pytest` or `eval_runner` depending on which subtree was modified.
+
+### How it works
+1. Claude Code writes or edits a file.
+2. The PostToolUse hook fires asynchronously.
+3. The hook resolves the modified file path from the tool input JSON.
+4. A path traversal guard ensures only project files are checked.
+5. `python3 scripts/verify.py` runs unconditionally.
+6. If the change is in `src/`, `tests/`, or `scripts/`, `pytest` also runs.
+7. If the change is in `configs/` or `evals/`, `eval_runner` also runs.
+
+### Overriding defaults
+To switch out of plan mode for a session, use `/permissions` inside Claude Code or set a local override in `.claude/settings.local.json`:
+```json
+{ "permissions": { "defaultMode": "acceptEdits" } }
+```
+
+## Kueue integration smoke test
+
+After installing Kueue and applying the demo queue objects, you can run an end-to-end admission test:
+
+```bash
+bash scripts/kueue_integration_smoke.sh configs/mission_plans/sample_gpu_cpu_fallback.yaml
+```
+
+This script:
+1. Compiles a mission plan into a Kueue-compatible Job via `render-kueue`.
+2. Submits the Job to the cluster with `kubectl create`.
+3. Verifies the Workload is created and admitted by Kueue's ClusterQueue.
+4. Cleans up the Job on exit.
 
 ## Verification boundaries
 These files are scaffolded and syntax-checked, but not all external tools were executed in this environment. The repository should still be treated as a **research-backed local demo scaffold**, not as a finished deployment kit.

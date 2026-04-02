@@ -26,10 +26,18 @@ This document summarizes the 2026-04 official-tool landscape relevant to the sca
 - **OpenTelemetry Operator 0.148.0** (optional; requires cert-manager)
 - **Prometheus Operator / Grafana** remain good deployment targets, but are not required for this scaffold MVP.
 
+## ORCHIDE onboard stack (for reference — not used in this repo)
+- **Zot Registry** — OCI image registry
+- **EOS** — distributed storage (POSIX FS)
+- **Vector (Datadog)** — log/metric aggregation on each node
+- **urunc** — unikernel OCI runtime (containerd shim)
+- **ukAccel** — in-house accelerator mediation layer (TCP, based on vAccel)
+- **QEMU/KVM** — hypervisor for unikernels
+- **MirageOS / Unikraft** — unikernel frameworks
+
 ## Python / agent tooling
 - **uv 0.11.1**
 - **Pydantic 2.12.5**
-- **Hera Workflows 6.0.0**
 - **FastMCP 3.2.0**
 - **FastAPI 0.135.3** (candidate, not selected for MVP)
 - **Ruff 0.15.8**

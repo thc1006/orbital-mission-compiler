@@ -2,7 +2,19 @@
   {
     "service_id": "maritime-surveillance",
     "priority": 90,
-    "requires_gpu": true,
-    "fallback_enabled": true
+    "workflow_name": "mission-alpha-maritime-surveillance-2026-04-15-10-30-00",
+    "steps": [
+      {"name": "preprocess", "resource_class": "cpu"},
+      {"name": "detect-ships", "resource_class": "gpu"},
+      {"name": "postprocess", "resource_class": "cpu"}
+    ],
+    "resource_hints": {
+      "event_timestamp": "2026-04-15T10:30:00Z",
+      "ground_visibility": false,
+      "region_type": "ocean",
+      "requires_gpu": true,
+      "requires_fpga": false,
+      "fallback_enabled": true
+    }
   }
 ]

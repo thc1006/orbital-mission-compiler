@@ -8,11 +8,11 @@ The transcript describes a mismatch between:
 - and the need to extract useful information before downlink.
 
 ## Engineering gap
-The session explains the broad stack, but leaves several practical questions open:
-1. How is a mission plan validated before workflow generation?
-2. How are priority and preemption semantics represented?
-3. How are resource hints turned into actual scheduling or admission decisions?
-4. How can these decisions be tested deterministically on the ground?
+ORCHIDE (EU grant 101135595) builds the onboard platform that executes mission plans on the satellite. Its D3.1 architecture document explicitly limits scope to the "Deferred Phase" — it receives and executes plans but does not generate, validate, or compile them. This leaves several ground-side questions open:
+1. How is a mission plan validated before deployment to the satellite?
+2. How are priority and preemption semantics verified before uplink?
+3. How are resource hints (CPU/GPU/FPGA) turned into admission decisions on the ground?
+4. How can these decisions be tested deterministically before touching the onboard system?
 
 ## Project framing
 This scaffold focuses on a ground development system that can:
