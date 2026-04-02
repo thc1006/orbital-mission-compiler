@@ -34,7 +34,7 @@ jobs:
 
       - name: Unit tests with coverage
         run: |
-          python3 -m pytest -q --cov=orbital_mission_compiler --cov-report=term-missing
+          python3 -m pytest -q --cov=orbital_mission_compiler --cov-report=term-missing --cov-fail-under=70
 
       - name: Golden evals
         run: python3 -m orbital_mission_compiler.eval_runner

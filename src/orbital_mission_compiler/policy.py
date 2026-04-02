@@ -4,7 +4,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any
 
 
 def opa_available() -> bool:
@@ -14,7 +14,7 @@ def opa_available() -> bool:
 OPA_TIMEOUT_SECONDS = 30
 
 
-def eval_policy(bundle_dir: str | Path, input_payload: Dict[str, Any], decision: str) -> Tuple[int, str]:
+def eval_policy(bundle_dir: str | Path, input_payload: dict[str, Any], decision: str) -> tuple[int, str]:
     if not opa_available():
         return 2, "opa CLI not found; skipping policy evaluation"
 

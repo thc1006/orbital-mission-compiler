@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import List, Optional, Dict, Any
+from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -30,14 +30,14 @@ class ExecutionMode(str, Enum):
 class WorkflowStep(BaseModel):
     name: str
     image: str
-    phase: Optional[StepPhase] = None
+    phase: StepPhase | None = None
     resource_class: ResourceClass = ResourceClass.CPU
-    fallback_resource_class: Optional[ResourceClass] = None
+    fallback_resource_class: ResourceClass | None = None
     needs_acceleration: bool = False
-    command: List[str] = Field(default_factory=list)
-    args: List[str] = Field(default_factory=list)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    preferred_node_selector: Dict[str, str] = Field(default_factory=dict)
+    command: list[str] = Field(default_factory=list)
+    args: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    preferred_node_selector: dict[str, str] = Field(default_factory=dict)
 
 
 class AIService(BaseModel):
@@ -55,21 +55,21 @@ class AIService(BaseModel):
         le=100,
         description="0-100 scale; ORCHIDE uses 1-4 (see rendering layer for conversion)",
     )
-    landscape_type: Optional[str] = None
+    landscape_type: str | None = None
     execution_mode: ExecutionMode = ExecutionMode.SEQUENTIAL
-    steps: List[WorkflowStep] = Field(min_length=1)
+    steps: list[WorkflowStep] = Field(min_length=1)
 
 
 class MissionEvent(BaseModel):
     timestamp: str
     event_type: MissionEventType
-    orbit: Optional[int] = Field(default=None, ge=0)
-    duration_seconds: Optional[float] = Field(default=None, ge=0)
-    instrument: Optional[str] = None
-    sensor: Optional[str] = None
+    orbit: int | None = Field(default=None, ge=0)
+    duration_seconds: float | None = Field(default=None, ge=0)
+    instrument: str | None = None
+    sensor: str | None = None
     ground_visibility: bool = False
-    region_type: Optional[str] = None
-    services: List[AIService] = Field(default_factory=list)
+    region_type: str | None = None
+    services: list[AIService] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def check_event_constraints(self) -> "MissionEvent":
@@ -94,8 +94,8 @@ class MissionEvent(BaseModel):
 
 class MissionPlan(BaseModel):
     mission_id: str
-    client_id: Optional[str] = None
-    events: List[MissionEvent] = Field(min_length=1)
+    client_id: str | None = None
+    events: list[MissionEvent] = Field(min_length=1)
 
     @field_validator("mission_id")
     @classmethod
@@ -110,5 +110,5 @@ class WorkflowIntent(BaseModel):
     service_id: str
     priority: int
     workflow_name: str
-    steps: List[WorkflowStep]
-    resource_hints: Dict[str, Any] = Field(default_factory=dict)
+    steps: list[WorkflowStep]
+    resource_hints: dict[str, Any] = Field(default_factory=dict)
