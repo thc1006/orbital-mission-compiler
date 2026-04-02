@@ -70,6 +70,13 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
     dag_tasks = []
     for idx, step in enumerate(intent.steps):
         template_name = f"step-{idx}-{step.name}"
+        annotations: Dict[str, str] = {
+            "resource-class": step.resource_class.value,
+            "needs-acceleration": str(step.needs_acceleration).lower(),
+        }
+        if step.phase is not None:
+            annotations["phase"] = step.phase.value
+
         template: Dict[str, Any] = {
             "name": template_name,
             "container": {
@@ -85,10 +92,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
                 ],
             },
             "metadata": {
-                "annotations": {
-                    "resource-class": step.resource_class.value,
-                    "needs-acceleration": str(step.needs_acceleration).lower(),
-                }
+                "annotations": annotations,
             },
         }
         if step.fallback_resource_class is not None:
@@ -110,6 +114,13 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
             dag_task["depends"] = depends
         dag_tasks.append(dag_task)
 
+    wf_annotations: Dict[str, str] = {
+        "orbital/priority": str(intent.priority),
+        "orbital/requires-gpu": str(intent.resource_hints.get("requires_gpu", False)).lower(),
+        "orbital/requires-fpga": str(intent.resource_hints.get("requires_fpga", False)).lower(),
+        "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),
+    }
+
     workflow = {
         "apiVersion": "argoproj.io/v1alpha1",
         "kind": "Workflow",
@@ -120,6 +131,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
                 "service-id": intent.service_id,
                 "priority": str(intent.priority),
             },
+            "annotations": wf_annotations,
         },
         "spec": {
             "entrypoint": "main",
@@ -166,6 +178,12 @@ def render_kueue_job(
             {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
         ]
 
+    job_annotations: Dict[str, str] = {
+        "orbital/priority": str(intent.priority),
+        "orbital/requires-gpu": str(requires_gpu).lower(),
+        "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),
+    }
+
     job: Dict[str, Any] = {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -178,6 +196,7 @@ def render_kueue_job(
                 "service-id": intent.service_id,
                 "priority": str(intent.priority),
             },
+            "annotations": job_annotations,
         },
         "spec": {
             "template": {
