@@ -5,6 +5,7 @@ Issue #13. Skips if docker CLI or daemon is not available.
 
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ def _docker_daemon_available() -> bool:
         return False
     try:
         result = subprocess.run(
-            ["docker", "info"], capture_output=True, check=False, timeout=10,
+            ["docker", "info"], capture_output=True, check=False, timeout=3,
         )
         return result.returncode == 0
     except (subprocess.TimeoutExpired, OSError):
@@ -29,7 +30,7 @@ DOCKER_AVAILABLE = _docker_daemon_available()
 
 pytestmark = pytest.mark.skipif(not DOCKER_AVAILABLE, reason="docker daemon not available")
 
-IMAGE_TAG = "omc:test"
+IMAGE_TAG = f"omc:test-{uuid.uuid4().hex[:8]}"
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -56,7 +57,7 @@ def _docker_run(*args: str) -> subprocess.CompletedProcess:
 def test_docker_cli_help():
     """Container should print CLI help."""
     result = _docker_run()
-    assert result.returncode == 0
+    assert result.returncode == 0, f"CLI help failed:\n{result.stderr}"
 
 
 def test_docker_import_works():
@@ -65,11 +66,11 @@ def test_docker_import_works():
         "python", "-c",
         "from orbital_mission_compiler.compiler import load_mission_plan; print('ok')",
     )
-    assert result.returncode == 0
+    assert result.returncode == 0, f"Import failed:\n{result.stderr}"
     assert "ok" in result.stdout
 
 
 def test_docker_verify():
     """scripts/verify.py should pass inside container."""
     result = _docker_run("python", "scripts/verify.py")
-    assert result.returncode == 0
+    assert result.returncode == 0, f"verify.py failed:\n{result.stdout}\n{result.stderr}"
