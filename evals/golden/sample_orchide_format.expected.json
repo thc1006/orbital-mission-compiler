@@ -1,0 +1,87 @@
+[
+  {
+    "service_id": "maritime-surveillance",
+    "priority": 1,
+    "workflow_name": "mission-orchide-demo-maritime-surveillance-2029-10-06-00-23-00",
+    "steps": [
+      {
+        "name": "preprocess",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "detect-ships",
+        "resource_class": "gpu"
+      },
+      {
+        "name": "postprocess",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-10-06T00:23:00Z",
+      "ground_visibility": false,
+      "region_type": "ocean",
+      "orbit": 1,
+      "duration_seconds": 4.0,
+      "landscape_type": "ocean",
+      "execution_mode": "sequential",
+      "requires_gpu": true,
+      "requires_fpga": false,
+      "fallback_enabled": true
+    }
+  },
+  {
+    "service_id": "cloud-detection",
+    "priority": 2,
+    "workflow_name": "mission-orchide-demo-cloud-detection-2029-10-06-00-23-00",
+    "steps": [
+      {
+        "name": "classify-clouds",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-10-06T00:23:00Z",
+      "ground_visibility": false,
+      "region_type": "ocean",
+      "orbit": 1,
+      "duration_seconds": 4.0,
+      "landscape_type": "ocean",
+      "execution_mode": "sequential",
+      "requires_gpu": false,
+      "requires_fpga": false,
+      "fallback_enabled": false
+    }
+  },
+  {
+    "service_id": "fire-detection",
+    "priority": 1,
+    "workflow_name": "mission-orchide-demo-fire-detection-2029-10-06-00-30-00",
+    "steps": [
+      {
+        "name": "preprocess",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "detect-fire",
+        "resource_class": "gpu"
+      },
+      {
+        "name": "postprocess",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-10-06T00:30:00Z",
+      "ground_visibility": false,
+      "region_type": "land",
+      "orbit": 1,
+      "duration_seconds": 102.0,
+      "landscape_type": "land",
+      "execution_mode": "sequential",
+      "requires_gpu": true,
+      "requires_fpga": false,
+      "fallback_enabled": true
+    }
+  }
+]
