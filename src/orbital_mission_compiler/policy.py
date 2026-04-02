@@ -15,20 +15,24 @@ def eval_policy(bundle_dir: str | Path, input_payload: Dict[str, Any], decision:
     if not opa_available():
         return 2, "opa CLI not found; skipping policy evaluation"
 
-    proc = subprocess.run(
-        [
-            "opa",
-            "eval",
-            "--format=json",
-            "--stdin-input",
-            "--data",
-            str(bundle_dir),
-            decision,
-        ],
-        input=json.dumps(input_payload).encode("utf-8"),
-        capture_output=True,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            [
+                "opa",
+                "eval",
+                "--format=json",
+                "--stdin-input",
+                "--data",
+                str(bundle_dir),
+                decision,
+            ],
+            input=json.dumps(input_payload).encode("utf-8"),
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return 1, "OPA evaluation timed out after 30 seconds"
     stdout = proc.stdout.decode("utf-8") if proc.stdout else ""
     stderr = proc.stderr.decode("utf-8") if proc.stderr else ""
     out = stdout if stdout else stderr
