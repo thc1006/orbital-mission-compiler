@@ -50,7 +50,11 @@ class AIService(BaseModel):
     """
 
     service_id: str
-    priority: int = Field(ge=0, le=100, description="0-100 scale; ORCHIDE uses 1-4 (see rendering layer for conversion)")
+    priority: int = Field(
+        ge=0,
+        le=100,
+        description="0-100 scale; ORCHIDE uses 1-4 (see rendering layer for conversion)",
+    )
     landscape_type: Optional[str] = None
     execution_mode: ExecutionMode = ExecutionMode.SEQUENTIAL
     steps: List[WorkflowStep] = Field(min_length=1)
