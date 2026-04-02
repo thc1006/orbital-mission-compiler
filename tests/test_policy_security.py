@@ -12,18 +12,15 @@ from orbital_mission_compiler.policy import eval_policy
 
 def test_opa_timeout_is_set():
     """eval_policy must pass timeout to subprocess.run (CWE-400)."""
-    calls = []
-    original_run = subprocess.run
-
-    def spy_run(*args, **kwargs):
-        calls.append(kwargs)
-        return original_run(*args, **kwargs)
-
-    with patch("orbital_mission_compiler.policy.subprocess.run", side_effect=spy_run), \
+    fake = subprocess.CompletedProcess(args=[], returncode=0, stdout=b'{}', stderr=b'')
+    with patch("orbital_mission_compiler.policy.subprocess.run", return_value=fake) as mock_run, \
          patch("orbital_mission_compiler.policy.opa_available", return_value=True):
         eval_policy("configs/policies", {"mission_id": "t", "events": []}, "data.orbitalmission")
 
-    assert any("timeout" in c for c in calls), "subprocess.run must be called with timeout"
+    mock_run.assert_called_once()
+    call_kwargs = mock_run.call_args.kwargs
+    assert "timeout" in call_kwargs, "subprocess.run must be called with timeout"
+    assert call_kwargs["timeout"] > 0
 
 
 def test_stderr_not_leaked_when_stdout_present():
