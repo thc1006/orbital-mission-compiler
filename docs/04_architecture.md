@@ -80,12 +80,12 @@ These components exist in ORCHIDE's orchestrator node (slide 20) and are candida
 
 | ORCHIDE component | Slide | D3.1 section | Contract status |
 |---|---|---|---|
-| Storage Manager (Zot + EOS) | 20, 22 | §3.2.1.2 | Not yet defined |
-| Monitor Manager (Vector + API) | 20, 24 | §3.2.1.5 | Not yet defined |
-| Communication Manager | 20 | §3.2.1.1.3 | Not yet defined |
-| Security Manager | 20 | §3.2.1.4 | Not yet defined |
-| Simulation Framework | 7 | §2.4.1.2 | Not yet defined |
-| SDK / Application Builder | 7 | §2.4.1.1, §5.1 | Not yet defined |
+| Storage Manager (Zot + EOS) | 20, 22 | §3.2.1.2 | `contracts/storage.py` — contract only |
+| Monitor Manager (Vector + API) | 20, 24 | §3.2.1.5 | `contracts/monitor.py` — contract only |
+| Communication Manager | 20 | §3.2.1.1.3 | `contracts/communication.py` — contract only |
+| Security Manager | 20 | §3.2.1.4 | `contracts/security.py` — contract only |
+| Simulation Framework | 7 | §2.4.1.2 | `contracts/simulation.py` — contract only |
+| SDK / Application Builder | 7 | §2.4.1.1, §5.1 | `contracts/packaging.py` — contract only (on PR #15) |
 
 ## Non-goals
 - Flight software or onboard runtime
