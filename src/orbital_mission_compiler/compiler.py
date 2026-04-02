@@ -152,7 +152,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
 
     wf_annotations: Dict[str, str] = {
         "orbital/priority": str(intent.priority),
-        "orbital/execution-mode": intent.resource_hints.get("execution_mode", "sequential"),
+        "orbital/execution-mode": execution_mode,
         "orbital/requires-gpu": str(intent.resource_hints.get("requires_gpu", False)).lower(),
         "orbital/requires-fpga": str(intent.resource_hints.get("requires_fpga", False)).lower(),
         "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),
