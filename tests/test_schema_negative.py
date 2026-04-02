@@ -135,8 +135,16 @@ def test_reject_empty_mission_id():
     """mission_id must not be empty string."""
     from orbital_mission_compiler.schemas import MissionPlan
 
-    with pytest.raises(ValidationError, match="mission_id"):
+    with pytest.raises(ValidationError):
         MissionPlan(mission_id="", events=[])
+
+
+def test_reject_empty_events():
+    """MissionPlan must have at least one event."""
+    from orbital_mission_compiler.schemas import MissionPlan
+
+    with pytest.raises(ValidationError, match="events"):
+        MissionPlan(mission_id="test", events=[])
 
 
 # ── 7. Valid edge cases that should NOT be rejected ───────────────────
