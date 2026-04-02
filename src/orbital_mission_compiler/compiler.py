@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import yaml
 
@@ -26,8 +26,8 @@ def load_mission_plan(path: str | Path) -> MissionPlan:
     return MissionPlan.model_validate(raw)
 
 
-def compile_plan_to_intents(plan: MissionPlan) -> List[WorkflowIntent]:
-    intents: List[WorkflowIntent] = []
+def compile_plan_to_intents(plan: MissionPlan) -> list[WorkflowIntent]:
+    intents: list[WorkflowIntent] = []
     skipped = 0
     for event in plan.events:
         if event.event_type.value != "acquisition":
@@ -73,7 +73,7 @@ def compile_plan_to_intents(plan: MissionPlan) -> List[WorkflowIntent]:
     return intents
 
 
-def _preferred_affinity(step: WorkflowStep) -> Dict[str, Any] | None:
+def _preferred_affinity(step: WorkflowStep) -> dict[str, Any] | None:
     if not step.preferred_node_selector:
         return None
     expressions = [
@@ -92,19 +92,19 @@ def _preferred_affinity(step: WorkflowStep) -> Dict[str, Any] | None:
     }
 
 
-def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
+def render_argo_workflow(intent: WorkflowIntent) -> dict[str, Any]:
     templates = []
     dag_tasks = []
     for idx, step in enumerate(intent.steps):
         template_name = f"step-{idx}-{sanitize_k8s_name(step.name)}"
-        annotations: Dict[str, str] = {
+        annotations: dict[str, str] = {
             "resource-class": step.resource_class.value,
             "needs-acceleration": str(step.needs_acceleration).lower(),
         }
         if step.phase is not None:
             annotations["phase"] = step.phase.value
 
-        template: Dict[str, Any] = {
+        template: dict[str, Any] = {
             "name": template_name,
             "container": {
                 "image": step.image,
@@ -136,7 +136,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
         templates.append(template)
 
         safe_name = sanitize_k8s_name(step.name)
-        dag_task: Dict[str, Any] = {"name": safe_name, "template": template_name}
+        dag_task: dict[str, Any] = {"name": safe_name, "template": template_name}
         dag_tasks.append(dag_task)
 
     # Apply DAG dependencies based on execution_mode.
@@ -150,7 +150,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
         for i in range(1, len(dag_tasks)):
             dag_tasks[i]["depends"] = dag_tasks[i - 1]["name"]
 
-    wf_annotations: Dict[str, str] = {
+    wf_annotations: dict[str, str] = {
         "orbital/priority": str(intent.priority),
         "orbital/execution-mode": execution_mode,
         "orbital/requires-gpu": str(intent.resource_hints.get("requires_gpu", False)).lower(),
@@ -182,14 +182,14 @@ def render_kueue_job(
     intent: WorkflowIntent,
     queue_name: str = "orbital-demo-local",
     namespace: str = "orbital-demo",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     requires_gpu = intent.resource_hints.get("requires_gpu", False)
 
     # Pick the primary compute step (GPU step if present, else first step).
     gpu_steps = [s for s in intent.steps if s.resource_class == ResourceClass.GPU]
     primary = gpu_steps[0] if gpu_steps else intent.steps[0]
 
-    container: Dict[str, Any] = {
+    container: dict[str, Any] = {
         "name": sanitize_k8s_name(primary.name),
         "image": primary.image,
         "command": primary.command or ["sh", "-c"],
@@ -205,7 +205,7 @@ def render_kueue_job(
         container["resources"]["requests"]["nvidia.com/gpu"] = "1"
         container["resources"]["limits"] = {"nvidia.com/gpu": "1"}
 
-    pod_spec: Dict[str, Any] = {
+    pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
         "containers": [container],
     }
@@ -215,13 +215,13 @@ def render_kueue_job(
             {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
         ]
 
-    job_annotations: Dict[str, str] = {
+    job_annotations: dict[str, str] = {
         "orbital/priority": str(intent.priority),
         "orbital/requires-gpu": str(requires_gpu).lower(),
         "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),
     }
 
-    job: Dict[str, Any] = {
+    job: dict[str, Any] = {
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
@@ -244,7 +244,7 @@ def render_kueue_job(
     return job
 
 
-def render_workflows_for_file(input_path: str | Path) -> List[Dict[str, Any]]:
+def render_workflows_for_file(input_path: str | Path) -> list[dict[str, Any]]:
     plan = load_mission_plan(input_path)
     intents = compile_plan_to_intents(plan)
     return [render_argo_workflow(intent) for intent in intents]
@@ -262,7 +262,7 @@ def write_individual_workflows(input_path: str | Path, output_dir: str | Path) -
     return written
 
 
-def compile_file(input_path: str | Path, output_path: str | Path) -> Dict[str, Any]:
+def compile_file(input_path: str | Path, output_path: str | Path) -> dict[str, Any]:
     plan = load_mission_plan(input_path)
     intents = compile_plan_to_intents(plan)
     payload = {
