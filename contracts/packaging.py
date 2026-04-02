@@ -32,8 +32,9 @@ STEP_PHASES = Literal["preprocessing", "ai", "postprocessing"]
 class ApplicationIdentity(BaseModel):
     """Identity of a packaged application.
 
-    Maps to ORCHIDE D3.1 §5.1: each application has a name, version,
-    and a container/unikernel image reference.
+    Maps to ORCHIDE D3.1 §5.1. service_id is required; version and image
+    are optional at contract definition time (they become required at
+    deployment time, which is outside this contract's scope).
     """
 
     service_id: str
