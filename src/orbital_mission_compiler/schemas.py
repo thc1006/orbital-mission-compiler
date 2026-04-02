@@ -41,8 +41,20 @@ class WorkflowStep(BaseModel):
 
 
 class AIService(BaseModel):
+    """AI Service within a mission event (ORCHIDE slide 9: WORKFLOW + PRIORITY).
+
+    Priority uses 0-100 (higher = higher priority). ORCHIDE's onboard system uses
+    1-4 (1 = highest). Translation from 0-100 to ORCHIDE's scale belongs in the
+    rendering layer, not in the domain model. The compiler preserves priority intent
+    as-is; any target-specific mapping is a renderer concern.
+    """
+
     service_id: str
-    priority: int = Field(ge=0, le=100)
+    priority: int = Field(
+        ge=0,
+        le=100,
+        description="0-100 scale; ORCHIDE uses 1-4 (see rendering layer for conversion)",
+    )
     landscape_type: Optional[str] = None
     execution_mode: ExecutionMode = ExecutionMode.SEQUENTIAL
     steps: List[WorkflowStep] = Field(min_length=1)
