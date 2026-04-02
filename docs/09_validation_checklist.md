@@ -72,9 +72,16 @@ make eval                       # golden translation checks
 - [x] 6 rendering tests + 3 Kueue tests, all pass (60 total)
 
 ### Phase 5 — Extended contracts
-- [ ] `contracts/` directory exists with >= 4 contract definitions
-- [ ] Each contract references its ORCHIDE D3.1 source section
-- [ ] Contracts are importable and type-checkable
+#### 5.1 Simulation contracts
+- [x] `contracts/simulation.py` — 5 models (AcquisitionReplayEvent, DownloadWindowEvent, WorkflowTrigger, SimulationTimeline, SimulationResult)
+- [x] 7 tests, all pass. No runtime logic.
+
+#### 5.2–5.6 Remaining contracts
+- [ ] `contracts/packaging.py` — OCI image spec (D3.1 §5.1)
+- [ ] `contracts/storage.py` — Storage Manager (D3.1 §3.2.1.2)
+- [ ] `contracts/monitor.py` — Monitor Manager (D3.1 §3.2.1.5)
+- [ ] `contracts/communication.py` — Communication Manager (D3.1 §3.2.1.1.3)
+- [ ] `contracts/security.py` — Security Manager (D3.1 §3.2.1.4)
 
 ### Optional Phase X — Agent workflow hardening (continued)
 - [ ] MCP tools tested (tests/test_mcp.py)

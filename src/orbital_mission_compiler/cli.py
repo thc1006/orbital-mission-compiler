@@ -12,6 +12,7 @@ from .compiler import (
     compile_plan_to_intents,
     render_kueue_job,
     write_individual_workflows,
+    _sanitize_k8s_name,
 )
 from .policy import eval_policy
 
@@ -70,7 +71,8 @@ def cmd_render_kueue(args):
     written = []
     for intent in intents:
         job = render_kueue_job(intent, queue_name=args.queue, namespace=args.namespace)
-        out = out_dir / f"{intent.workflow_name[:50]}-kueue.yaml"
+        safe_name = _sanitize_k8s_name(intent.workflow_name[:50])
+        out = out_dir / f"{safe_name}-kueue.yaml"
         out.write_text(yaml.safe_dump(job, sort_keys=False), encoding="utf-8")
         written.append(str(out))
     print(json.dumps({"status": "ok", "files": written}))

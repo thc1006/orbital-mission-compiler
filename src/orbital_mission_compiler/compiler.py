@@ -80,7 +80,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
     templates = []
     dag_tasks = []
     for idx, step in enumerate(intent.steps):
-        template_name = f"step-{idx}-{step.name}"
+        template_name = f"step-{idx}-{_sanitize_k8s_name(step.name)}"
         annotations: Dict[str, str] = {
             "resource-class": step.resource_class.value,
             "needs-acceleration": str(step.needs_acceleration).lower(),
@@ -119,10 +119,11 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
             template["affinity"] = affinity
         templates.append(template)
 
-        depends = intent.steps[idx - 1].name if idx > 0 else None
-        dag_task = {"name": step.name, "template": template_name}
-        if depends:
-            dag_task["depends"] = depends
+        depends_raw = intent.steps[idx - 1].name if idx > 0 else None
+        safe_name = _sanitize_k8s_name(step.name)
+        dag_task = {"name": safe_name, "template": template_name}
+        if depends_raw:
+            dag_task["depends"] = _sanitize_k8s_name(depends_raw)
         dag_tasks.append(dag_task)
 
     wf_annotations: Dict[str, str] = {
@@ -136,10 +137,10 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
         "apiVersion": "argoproj.io/v1alpha1",
         "kind": "Workflow",
         "metadata": {
-            "name": intent.workflow_name[:63],
+            "name": _sanitize_k8s_name(intent.workflow_name),
             "labels": {
-                "mission-id": intent.mission_id,
-                "service-id": intent.service_id,
+                "mission-id": _sanitize_k8s_name(intent.mission_id),
+                "service-id": _sanitize_k8s_name(intent.service_id),
                 "priority": str(intent.priority),
             },
             "annotations": wf_annotations,
@@ -203,8 +204,8 @@ def render_kueue_job(
             "namespace": namespace,
             "labels": {
                 "kueue.x-k8s.io/queue-name": queue_name,
-                "mission-id": intent.mission_id,
-                "service-id": intent.service_id,
+                "mission-id": _sanitize_k8s_name(intent.mission_id),
+                "service-id": _sanitize_k8s_name(intent.service_id),
                 "priority": str(intent.priority),
             },
             "annotations": job_annotations,
