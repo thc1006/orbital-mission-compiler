@@ -80,11 +80,12 @@ make eval                       # golden translation checks
 - [x] `contracts/packaging.py` — 6 models (ApplicationIdentity, ApplicationInput, ApplicationOutput, RuntimePreference, PolicyHints, PackageManifest)
 - [x] 15 tests, all pass. No OCI build logic.
 
-#### 5.3–5.6 Remaining contracts
-- [ ] `contracts/storage.py` — Storage Manager (D3.1 §3.2.1.2)
-- [ ] `contracts/monitor.py` — Monitor Manager (D3.1 §3.2.1.5)
-- [ ] `contracts/communication.py` — Communication Manager (D3.1 §3.2.1.1.3)
-- [ ] `contracts/security.py` — Security Manager (D3.1 §3.2.1.4)
+#### 5.3–5.6 Platform service contracts
+- [x] `contracts/storage.py` — 3 models: FileRegistration, FileQuery, FileRecord (D3.1 §3.2.1.2)
+- [x] `contracts/monitor.py` — 3 models: MetricPoint, LogEntry, HealthStatus (D3.1 §3.2.1.5)
+- [x] `contracts/communication.py` — 2 models: DownlinkRequest, UplinkAck (D3.1 §3.2.1.1.3)
+- [x] `contracts/security.py` — 2 models: AuthToken, IntegrityCheck (D3.1 §3.2.1.4)
+- [x] 15 platform contract tests, all pass. No real adapters.
 
 ### Optional Phase X — Agent workflow hardening (continued)
 - [ ] MCP tools tested (tests/test_mcp.py)
