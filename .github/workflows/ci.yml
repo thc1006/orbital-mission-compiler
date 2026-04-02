@@ -9,6 +9,7 @@ name: CI
 env:
   PYTHONPATH: src:.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  OPA_VERSION: v1.15.1
 
 jobs:
   verify:
@@ -31,25 +32,40 @@ jobs:
       - name: Lint
         run: python3 -m ruff check .
 
-      - name: Unit tests
-        run: python3 -m pytest -q
+      - name: Unit tests with coverage
+        run: |
+          python3 -m pytest -q --cov=orbital_mission_compiler --cov-report=term-missing
 
       - name: Golden evals
         run: python3 -m orbital_mission_compiler.eval_runner
 
+      - name: Cache OPA binary
+        uses: actions/cache@v4
+        id: opa-cache
+        with:
+          path: ~/.local/bin/opa
+          key: opa-${{ env.OPA_VERSION }}-linux-amd64
+
       - name: Install OPA
+        if: steps.opa-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          OPA_VERSION="v1.15.1"
           mkdir -p "$HOME/.local/bin"
           curl -fSL -o "$HOME/.local/bin/opa" \
             "https://github.com/open-policy-agent/opa/releases/download/${OPA_VERSION}/opa_linux_amd64_static"
           chmod +x "$HOME/.local/bin/opa"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/opa" version
 
-      - name: OPA smoke
-        run: bash scripts/opa_smoke.sh configs/mission_plans/sample_gpu_cpu_fallback.yaml
+      - name: Add OPA to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: OPA smoke (all plans)
+        run: |
+          for plan in configs/mission_plans/*.yaml; do
+            bash scripts/opa_smoke.sh "$plan"
+          done
 
       - name: Argo smoke (Python sanity only)
-        run: bash scripts/argo_smoke.sh configs/mission_plans/sample_gpu_cpu_fallback.yaml
+        run: |
+          for plan in configs/mission_plans/*.yaml; do
+            bash scripts/argo_smoke.sh "$plan"
+          done

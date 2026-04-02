@@ -62,6 +62,13 @@ def compile_plan_to_intents(plan: MissionPlan) -> List[WorkflowIntent]:
                     resource_hints=hints,
                 )
             )
+    skipped = len(plan.events) - len({i.resource_hints["event_timestamp"] for i in intents})
+    logger.info(
+        "Compiled %d intents from %d events (%d skipped)",
+        len(intents),
+        len(plan.events),
+        skipped,
+    )
     return intents
 
 

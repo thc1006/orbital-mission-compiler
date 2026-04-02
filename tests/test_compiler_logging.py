@@ -22,7 +22,7 @@ def test_all_acquisition_events_not_logged_as_skipped(caplog):
     plan = load_mission_plan("configs/mission_plans/sample_gpu_cpu_fallback.yaml")
     with caplog.at_level(logging.INFO, logger="orbital_mission_compiler.compiler"):
         compile_plan_to_intents(plan)
-    skip_msgs = [r for r in caplog.records if "skip" in r.message.lower()]
+    skip_msgs = [r for r in caplog.records if "skipping" in r.message.lower()]
     assert skip_msgs == [], "No skip messages expected for ACQ-only plan"
 
 
@@ -31,5 +31,5 @@ def test_orchide_plan_logs_one_skip(caplog):
     plan = load_mission_plan("configs/mission_plans/sample_orchide_format.yaml")
     with caplog.at_level(logging.INFO, logger="orbital_mission_compiler.compiler"):
         compile_plan_to_intents(plan)
-    skip_msgs = [r for r in caplog.records if "skip" in r.message.lower()]
+    skip_msgs = [r for r in caplog.records if "skipping" in r.message.lower()]
     assert len(skip_msgs) == 1
