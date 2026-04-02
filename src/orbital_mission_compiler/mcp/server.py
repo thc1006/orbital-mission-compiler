@@ -130,31 +130,40 @@ def build_server():
 
         plan = load_mission_plan(_validate_plan_path(path))
         acq_events = []
+        skipped = []
         for ev in plan.events:
             if ev.event_type.value != "acquisition":
                 continue
             try:
                 ts = datetime.fromisoformat(ev.timestamp.replace("Z", "+00:00"))
             except ValueError:
+                skipped.append(ev.timestamp)
                 continue
             duration = ev.duration_seconds or 0
-            acq_events.append({"timestamp": ev.timestamp, "start": ts, "duration": duration})
+            acq_events.append({
+                "timestamp": ev.timestamp,
+                "start": ts.timestamp(),
+                "end": ts.timestamp() + duration,
+            })
 
         conflicts = []
         for i in range(len(acq_events)):
             for j in range(i + 1, len(acq_events)):
                 a, b = acq_events[i], acq_events[j]
-                a_end = a["start"].timestamp() + a["duration"]
-                b_start = b["start"].timestamp()
-                if a_end > b_start:
-                    overlap = a_end - b_start
+                max_start = max(a["start"], b["start"])
+                min_end = min(a["end"], b["end"])
+                if max_start < min_end:
                     conflicts.append({
                         "event_a": a["timestamp"],
                         "event_b": b["timestamp"],
-                        "overlap_seconds": round(overlap, 2),
+                        "overlap_seconds": round(min_end - max_start, 2),
                     })
 
-        return {"conflicts": conflicts, "conflict_count": len(conflicts)}
+        return {
+            "conflicts": conflicts,
+            "conflict_count": len(conflicts),
+            "skipped_timestamps": skipped,
+        }
 
     return server
 

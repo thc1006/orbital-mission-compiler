@@ -57,12 +57,49 @@ def test_check_timeline_no_conflicts(server):
 
 
 def test_check_timeline_returns_structure(server):
-    """Result should contain conflicts list and count."""
+    """Result should contain conflicts list, count, and skipped."""
     result = _call(server, "check_timeline_conflicts", {
         "path": "sample_orchide_format.yaml",
     })
     assert "conflicts" in result
     assert "conflict_count" in result
+    assert "skipped_timestamps" in result
+
+
+def test_check_timeline_detects_overlap(server, tmp_path):
+    """Two acquisition events with overlapping windows should be detected."""
+    import yaml
+
+    plan = {
+        "mission_id": "overlap-test",
+        "events": [
+            {
+                "timestamp": "2029-01-01T00:00:00Z",
+                "event_type": "acquisition",
+                "instrument": "INST_1",
+                "duration_seconds": 120.0,
+            },
+            {
+                "timestamp": "2029-01-01T00:01:00Z",
+                "event_type": "acquisition",
+                "instrument": "INST_1",
+                "duration_seconds": 120.0,
+            },
+        ],
+    }
+    # Write to configs/mission_plans/ temporarily
+    from orbital_mission_compiler.mcp.server import _ALLOWED_PLANS
+
+    overlap_file = _ALLOWED_PLANS / "test_overlap_temp.yaml"
+    overlap_file.write_text(yaml.safe_dump(plan), encoding="utf-8")
+    try:
+        result = _call(server, "check_timeline_conflicts", {
+            "path": "test_overlap_temp.yaml",
+        })
+        assert result["conflict_count"] == 1
+        assert result["conflicts"][0]["overlap_seconds"] == 60.0
+    finally:
+        overlap_file.unlink(missing_ok=True)
 
 
 # ── tool registration ─────────────────────────────────────────────────
