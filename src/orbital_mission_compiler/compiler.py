@@ -135,15 +135,17 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
             template["affinity"] = affinity
         templates.append(template)
 
-        depends_raw = intent.steps[idx - 1].name if idx > 0 else None
         safe_name = _sanitize_k8s_name(step.name)
-        dag_task = {"name": safe_name, "template": template_name}
-        if depends_raw:
-            dag_task["depends"] = _sanitize_k8s_name(depends_raw)
+        dag_task: Dict[str, Any] = {"name": safe_name, "template": template_name}
+        # Sequential: linear chain (A→B→C). Parallel: no dependencies (all start at once).
+        execution_mode = intent.resource_hints.get("execution_mode", "sequential")
+        if execution_mode == "sequential" and idx > 0:
+            dag_task["depends"] = _sanitize_k8s_name(intent.steps[idx - 1].name)
         dag_tasks.append(dag_task)
 
     wf_annotations: Dict[str, str] = {
         "orbital/priority": str(intent.priority),
+        "orbital/execution-mode": intent.resource_hints.get("execution_mode", "sequential"),
         "orbital/requires-gpu": str(intent.resource_hints.get("requires_gpu", False)).lower(),
         "orbital/requires-fpga": str(intent.resource_hints.get("requires_fpga", False)).lower(),
         "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),
