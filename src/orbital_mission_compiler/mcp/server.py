@@ -101,6 +101,61 @@ def build_server():
         rc, out = eval_policy(str(safe_bundle), plan.model_dump(mode="json"), decision)
         return {"exit_code": rc, "raw": out}
 
+    @server.tool
+    def diff_plans(path_a: str, path_b: str) -> dict:
+        """Structural diff of two mission plans."""
+        plan_a = load_mission_plan(_validate_plan_path(path_a))
+        plan_b = load_mission_plan(_validate_plan_path(path_b))
+
+        services_a = {
+            svc.service_id for ev in plan_a.events for svc in ev.services
+        }
+        services_b = {
+            svc.service_id for ev in plan_b.events for svc in ev.services
+        }
+        return {
+            "mission_a": plan_a.mission_id,
+            "mission_b": plan_b.mission_id,
+            "events_a": len(plan_a.events),
+            "events_b": len(plan_b.events),
+            "added_services": sorted(services_b - services_a),
+            "removed_services": sorted(services_a - services_b),
+            "common_services": sorted(services_a & services_b),
+        }
+
+    @server.tool
+    def check_timeline_conflicts(path: str) -> dict:
+        """Detect overlapping acquisition windows in a mission plan."""
+        from datetime import datetime
+
+        plan = load_mission_plan(_validate_plan_path(path))
+        acq_events = []
+        for ev in plan.events:
+            if ev.event_type.value != "acquisition":
+                continue
+            try:
+                ts = datetime.fromisoformat(ev.timestamp.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            duration = ev.duration_seconds or 0
+            acq_events.append({"timestamp": ev.timestamp, "start": ts, "duration": duration})
+
+        conflicts = []
+        for i in range(len(acq_events)):
+            for j in range(i + 1, len(acq_events)):
+                a, b = acq_events[i], acq_events[j]
+                a_end = a["start"].timestamp() + a["duration"]
+                b_start = b["start"].timestamp()
+                if a_end > b_start:
+                    overlap = a_end - b_start
+                    conflicts.append({
+                        "event_a": a["timestamp"],
+                        "event_b": b["timestamp"],
+                        "overlap_seconds": round(overlap, 2),
+                    })
+
+        return {"conflicts": conflicts, "conflict_count": len(conflicts)}
+
     return server
 
 
