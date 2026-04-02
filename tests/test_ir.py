@@ -76,6 +76,16 @@ def test_ir_carries_duration():
     assert hints["duration_seconds"] == 4.0
 
 
+# ── IR carries execution_mode (slide 10) ─────────────────────────────
+
+
+def test_ir_carries_execution_mode():
+    """IR resource_hints should include execution_mode from the service (slide 10)."""
+    intents = _load_intents("configs/mission_plans/sample_orchide_format.yaml")
+    hints = intents[0].resource_hints
+    assert hints["execution_mode"] == "sequential"
+
+
 # ── IR is independent of renderers ────────────────────────────────────
 
 
