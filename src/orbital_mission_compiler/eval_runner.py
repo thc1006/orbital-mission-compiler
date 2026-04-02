@@ -55,7 +55,7 @@ def main() -> int:
             print(f"EVAL ERROR: golden file {o.name} has no matching plan in {PLANS_DIR}")
         return 1
     if not cases:
-        print("EVAL WARNING: no eval cases discovered")
+        print("EVAL ERROR: no eval cases discovered")
         return 1
     failed = []
     for mission, golden in cases:
