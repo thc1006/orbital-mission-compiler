@@ -55,8 +55,10 @@ jobs:
             "https://github.com/open-policy-agent/opa/releases/download/${OPA_VERSION}/opa_linux_amd64_static"
           chmod +x "$HOME/.local/bin/opa"
 
-      - name: Add OPA to PATH
-        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Add OPA to PATH and verify
+        run: |
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/opa" version
 
       - name: OPA smoke (all plans)
         run: |

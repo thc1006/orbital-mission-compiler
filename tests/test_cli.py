@@ -5,18 +5,20 @@ Goal: push cli.py from 0% to >80% coverage.
 """
 
 import json
+import os
 import subprocess
 import sys
-from pathlib import Path
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess:
-    """Run CLI as subprocess with PYTHONPATH set."""
+    """Run CLI as subprocess with PYTHONPATH set, inheriting real environment."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(["src", "."])
     return subprocess.run(
         [sys.executable, "-m", "orbital_mission_compiler.cli", *args],
         capture_output=True,
         text=True,
-        env={"PYTHONPATH": "src:.", "PATH": "/usr/bin:/bin:/usr/local/bin:" + str(Path.home() / ".local/bin")},
+        env=env,
         check=False,
     )
 
@@ -79,8 +81,9 @@ def test_cli_policy():
 # ── error cases ───────────────────────────────────────────────────────
 
 
-def test_cli_missing_input():
-    result = _run_cli("compile", "--input", "nonexistent.yaml", "--output", "/tmp/out.yaml")
+def test_cli_missing_input(tmp_path):
+    out = tmp_path / "out.yaml"
+    result = _run_cli("compile", "--input", "nonexistent.yaml", "--output", str(out))
     assert result.returncode != 0
 
 

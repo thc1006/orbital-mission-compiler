@@ -28,8 +28,10 @@ def load_mission_plan(path: str | Path) -> MissionPlan:
 
 def compile_plan_to_intents(plan: MissionPlan) -> List[WorkflowIntent]:
     intents: List[WorkflowIntent] = []
+    skipped = 0
     for event in plan.events:
         if event.event_type.value != "acquisition":
+            skipped += 1
             logger.info(
                 "Skipping %s event at %s (only acquisition events produce workflow intents)",
                 event.event_type.value,
@@ -62,7 +64,6 @@ def compile_plan_to_intents(plan: MissionPlan) -> List[WorkflowIntent]:
                     resource_hints=hints,
                 )
             )
-    skipped = len(plan.events) - len({i.resource_hints["event_timestamp"] for i in intents})
     logger.info(
         "Compiled %d intents from %d events (%d skipped)",
         len(intents),
