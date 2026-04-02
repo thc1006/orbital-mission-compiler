@@ -19,7 +19,7 @@ except ImportError:
 
 pytestmark = pytest.mark.skipif(not FASTMCP_AVAILABLE, reason="fastmcp not installed")
 
-SAMPLE_PLAN = "configs/mission_plans/sample_maritime_surveillance.yaml"
+SAMPLE_PLAN = "sample_maritime_surveillance.yaml"
 
 
 @pytest.fixture(scope="module")

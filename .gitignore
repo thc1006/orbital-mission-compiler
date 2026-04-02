@@ -17,6 +17,10 @@ out/
 .DS_Store
 *.log
 
+# Secrets
+.env
+.env.*
+
 # Agent workflow output directories
 .full-review/
 .tdd-cycle/

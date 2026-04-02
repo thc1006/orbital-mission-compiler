@@ -1,3 +1,5 @@
+# Pin base image tag. For full supply-chain security, pin by digest:
+# FROM python:3.12-slim@sha256:<digest>
 FROM python:3.12-slim
 
 WORKDIR /workspace
