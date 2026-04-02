@@ -26,7 +26,7 @@ def test_validate_path_accepts_valid():
     """Valid plan paths should pass."""
     from orbital_mission_compiler.mcp.server import _validate_plan_path
 
-    result = _validate_plan_path("configs/mission_plans/sample_maritime_surveillance.yaml")
+    result = _validate_plan_path("sample_maritime_surveillance.yaml")
     assert result.exists()
 
 
