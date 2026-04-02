@@ -135,15 +135,24 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
             template["affinity"] = affinity
         templates.append(template)
 
-        depends_raw = intent.steps[idx - 1].name if idx > 0 else None
         safe_name = _sanitize_k8s_name(step.name)
-        dag_task = {"name": safe_name, "template": template_name}
-        if depends_raw:
-            dag_task["depends"] = _sanitize_k8s_name(depends_raw)
+        dag_task: Dict[str, Any] = {"name": safe_name, "template": template_name}
         dag_tasks.append(dag_task)
+
+    # Apply DAG dependencies based on execution_mode.
+    # Sequential: linear chain (A→B→C). Parallel: no dependencies.
+    # Unknown values default to sequential (safe: prevents accidental parallelism).
+    execution_mode = intent.resource_hints.get("execution_mode", "sequential")
+    if execution_mode not in ("sequential", "parallel"):
+        logger.warning("Unknown execution_mode %r, defaulting to sequential", execution_mode)
+        execution_mode = "sequential"
+    if execution_mode == "sequential":
+        for i in range(1, len(dag_tasks)):
+            dag_tasks[i]["depends"] = dag_tasks[i - 1]["name"]
 
     wf_annotations: Dict[str, str] = {
         "orbital/priority": str(intent.priority),
+        "orbital/execution-mode": execution_mode,
         "orbital/requires-gpu": str(intent.resource_hints.get("requires_gpu", False)).lower(),
         "orbital/requires-fpga": str(intent.resource_hints.get("requires_fpga", False)).lower(),
         "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),
