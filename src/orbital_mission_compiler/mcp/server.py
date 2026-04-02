@@ -126,7 +126,7 @@ def build_server():
     @server.tool
     def check_timeline_conflicts(path: str) -> dict:
         """Detect overlapping acquisition windows in a mission plan."""
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         plan = load_mission_plan(_validate_plan_path(path))
         acq_events = []
@@ -136,6 +136,8 @@ def build_server():
                 continue
             try:
                 ts = datetime.fromisoformat(ev.timestamp.replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
             except ValueError:
                 skipped.append(ev.timestamp)
                 continue
