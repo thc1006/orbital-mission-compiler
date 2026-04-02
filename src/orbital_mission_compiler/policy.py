@@ -29,5 +29,7 @@ def eval_policy(bundle_dir: str | Path, input_payload: Dict[str, Any], decision:
         capture_output=True,
         check=False,
     )
-    out = (proc.stdout or proc.stderr).decode("utf-8")
+    stdout = proc.stdout.decode("utf-8") if proc.stdout else ""
+    stderr = proc.stderr.decode("utf-8") if proc.stderr else ""
+    out = stdout if stdout else stderr
     return proc.returncode, out
