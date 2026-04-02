@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 
 import yaml
 
-import re
-
 from .schemas import MissionPlan, WorkflowIntent, ResourceClass, WorkflowStep
+
+logger = logging.getLogger(__name__)
 
 
 def _sanitize_k8s_name(name: str) -> str:
@@ -28,6 +30,11 @@ def compile_plan_to_intents(plan: MissionPlan) -> List[WorkflowIntent]:
     intents: List[WorkflowIntent] = []
     for event in plan.events:
         if event.event_type.value != "acquisition":
+            logger.info(
+                "Skipping %s event at %s (only acquisition events produce workflow intents)",
+                event.event_type.value,
+                event.timestamp,
+            )
             continue
         for svc in event.services:
             gpu_steps = [s for s in svc.steps if s.resource_class == ResourceClass.GPU]
