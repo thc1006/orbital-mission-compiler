@@ -1,0 +1,55 @@
+name: CI
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHONPATH: src:.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Verify file structure
+        run: python3 scripts/verify.py
+
+      - name: Lint
+        run: python3 -m ruff check .
+
+      - name: Unit tests
+        run: python3 -m pytest -q
+
+      - name: Golden evals
+        run: python3 -m orbital_mission_compiler.eval_runner
+
+      - name: Install OPA
+        run: |
+          set -euo pipefail
+          OPA_VERSION="v1.15.1"
+          mkdir -p "$HOME/.local/bin"
+          curl -fSL -o "$HOME/.local/bin/opa" \
+            "https://github.com/open-policy-agent/opa/releases/download/${OPA_VERSION}/opa_linux_amd64_static"
+          chmod +x "$HOME/.local/bin/opa"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/opa" version
+
+      - name: OPA smoke
+        run: bash scripts/opa_smoke.sh configs/mission_plans/sample_gpu_cpu_fallback.yaml
+
+      - name: Argo smoke (Python sanity only)
+        run: bash scripts/argo_smoke.sh configs/mission_plans/sample_gpu_cpu_fallback.yaml
