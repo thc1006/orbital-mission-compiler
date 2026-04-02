@@ -60,7 +60,10 @@ def test_policy_falls_back_to_stderr_when_stdout_empty():
 @pytest.mark.skipif(not opa_available(), reason="OPA CLI not installed")
 def test_policy_returns_valid_json_with_real_opa():
     """Integration test: real OPA returns parseable JSON on stdout."""
+    import json
+
     payload = {"mission_id": "test", "events": []}
     rc, out = eval_policy("configs/policies", payload, "data.orbitalmission")
     assert rc == 0
-    assert "result" in out
+    parsed = json.loads(out)
+    assert "result" in parsed
