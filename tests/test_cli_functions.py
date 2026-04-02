@@ -1,6 +1,7 @@
 """Direct function-level tests for cli.py (contributes to coverage)."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -62,7 +63,10 @@ def test_cmd_render_argo(tmp_path, capsys):
     captured = capsys.readouterr()
     data = json.loads(captured.out)
     assert data["status"] == "ok"
+    assert isinstance(data["files"], list)
     assert len(data["files"]) >= 1
+    for f in data["files"]:
+        assert Path(f).exists()
 
 
 def test_cmd_render_kueue(tmp_path, capsys):
@@ -75,7 +79,10 @@ def test_cmd_render_kueue(tmp_path, capsys):
     captured = capsys.readouterr()
     data = json.loads(captured.out)
     assert data["status"] == "ok"
+    assert isinstance(data["files"], list)
     assert len(data["files"]) >= 1
+    for f in data["files"]:
+        assert Path(f).exists()
 
 
 def test_cmd_policy(capsys):
@@ -98,4 +105,6 @@ def test_main_compile(tmp_path, capsys, monkeypatch):
     )
     main()
     captured = capsys.readouterr()
-    assert "ok" in captured.out
+    data = json.loads(captured.out)
+    assert data["status"] == "ok"
+    assert out.exists()
