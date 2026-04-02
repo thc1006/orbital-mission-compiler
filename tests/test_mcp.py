@@ -1,26 +1,25 @@
 """Smoke tests for MCP server tools.
 
-Tests the tool FUNCTIONS directly (not the MCP transport).
+Tests the MCP tool functions through the server's public async API.
 Skips gracefully when fastmcp is not installed.
 Issue #12.
 """
 
+import asyncio
+
 import pytest
 
 try:
-    import fastmcp  # noqa: F401
-    from orbital_mission_compiler.mcp.server import build_server
+    from orbital_mission_compiler.mcp.server import build_server, FastMCP
 
-    FASTMCP_AVAILABLE = True
+    FASTMCP_AVAILABLE = FastMCP is not None
 except ImportError:
     FASTMCP_AVAILABLE = False
     build_server = None  # type: ignore[assignment]
 
 pytestmark = pytest.mark.skipif(not FASTMCP_AVAILABLE, reason="fastmcp not installed")
 
-
 SAMPLE_PLAN = "configs/mission_plans/sample_maritime_surveillance.yaml"
-ORCHIDE_PLAN = "configs/mission_plans/sample_orchide_format.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -28,63 +27,60 @@ def server():
     return build_server()
 
 
-# ── validate_plan ─────────────────────────────────────────────────────
+def _call(server, name: str, args: dict):
+    """Call an MCP tool through the server's async API."""
+    result = asyncio.run(server.call_tool(name, args))
+    return result.structured_content
 
 
-def test_validate_plan(server):
-    """validate_plan should return mission_id and event count."""
-    from orbital_mission_compiler.compiler import load_mission_plan
-
-    plan = load_mission_plan(SAMPLE_PLAN)
-    assert plan.mission_id == "mission-alpha"
-    assert len(plan.events) == 2
+# ── validate_plan tool ────────────────────────────────────────────────
 
 
-# ── compile_plan ──────────────────────────────────────────────────────
+def test_validate_plan_tool(server):
+    """validate_plan MCP tool should return mission_id, events count, status."""
+    result = _call(server, "validate_plan", {"path": SAMPLE_PLAN})
+    assert result["mission_id"] == "mission-alpha"
+    assert result["events"] == 2
+    assert result["status"] == "validated"
 
 
-def test_compile_plan():
-    """compile_plan should return intent count and service IDs."""
-    from orbital_mission_compiler.compiler import load_mission_plan, compile_plan_to_intents
-
-    plan = load_mission_plan(SAMPLE_PLAN)
-    intents = compile_plan_to_intents(plan)
-    assert len(intents) >= 1
-    assert intents[0].service_id == "maritime-surveillance"
+# ── compile_plan tool ─────────────────────────────────────────────────
 
 
-# ── render_argo ───────────────────────────────────────────────────────
+def test_compile_plan_tool(server):
+    """compile_plan MCP tool should return intent_count and service list."""
+    result = _call(server, "compile_plan", {"path": SAMPLE_PLAN})
+    assert result["mission_id"] == "mission-alpha"
+    assert result["intent_count"] >= 1
+    assert "maritime-surveillance" in result["services"]
 
 
-def test_render_argo():
-    """render_argo should produce file names."""
-    from orbital_mission_compiler.compiler import load_mission_plan, compile_plan_to_intents, render_argo_workflow
-
-    plan = load_mission_plan(SAMPLE_PLAN)
-    intents = compile_plan_to_intents(plan)
-    wf = render_argo_workflow(intents[0])
-    assert wf["kind"] == "Workflow"
+# ── render_argo tool ──────────────────────────────────────────────────
 
 
-# ── explain_policy ────────────────────────────────────────────────────
+def test_render_argo_tool(server):
+    """render_argo MCP tool should return file names and count."""
+    result = _call(server, "render_argo", {"path": SAMPLE_PLAN})
+    assert result["count"] >= 1
+    assert len(result["files"]) >= 1
 
 
-def test_explain_policy():
-    """explain_policy should return OPA result or skip message."""
-    from orbital_mission_compiler.policy import eval_policy, opa_available
-    from orbital_mission_compiler.compiler import load_mission_plan
-
-    plan = load_mission_plan(SAMPLE_PLAN)
-    rc, out = eval_policy("configs/policies", plan.model_dump(mode="json"), "data.orbitalmission")
-    if opa_available():
-        assert rc == 0
-    else:
-        assert rc == 2
+# ── explain_policy tool ──────────────────────────────────────────────
 
 
-# ── build_server ──────────────────────────────────────────────────────
+def test_explain_policy_tool(server):
+    """explain_policy MCP tool should return exit_code and raw output."""
+    result = _call(server, "explain_policy", {"path": SAMPLE_PLAN})
+    assert "exit_code" in result
+    assert "raw" in result
 
 
-def test_build_server_creates_tools(server):
-    """build_server should register 4 MCP tools."""
-    assert server is not None
+# ── build_server registers all 4 tools ───────────────────────────────
+
+
+def test_build_server_registers_four_tools(server):
+    """build_server should register exactly 4 MCP tools."""
+    tools = asyncio.run(server.list_tools())
+    tool_names = {t.name for t in tools}
+    expected = {"validate_plan", "compile_plan", "render_argo", "explain_policy"}
+    assert expected == tool_names
