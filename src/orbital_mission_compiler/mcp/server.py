@@ -139,7 +139,10 @@ def build_server():
             except ValueError:
                 skipped.append(ev.timestamp)
                 continue
-            duration = ev.duration_seconds or 0
+            if ev.duration_seconds is None:
+                skipped.append(ev.timestamp)
+                continue
+            duration = ev.duration_seconds
             acq_events.append({
                 "timestamp": ev.timestamp,
                 "start": ts.timestamp(),

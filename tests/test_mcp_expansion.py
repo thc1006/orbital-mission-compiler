@@ -66,8 +66,10 @@ def test_check_timeline_returns_structure(server):
     assert "skipped_timestamps" in result
 
 
-def test_check_timeline_detects_overlap(server, tmp_path):
+def test_check_timeline_detects_overlap(server):
     """Two acquisition events with overlapping windows should be detected."""
+    import uuid
+
     import yaml
 
     plan = {
@@ -87,14 +89,14 @@ def test_check_timeline_detects_overlap(server, tmp_path):
             },
         ],
     }
-    # Write to configs/mission_plans/ temporarily
     from orbital_mission_compiler.mcp.server import _ALLOWED_PLANS
 
-    overlap_file = _ALLOWED_PLANS / "test_overlap_temp.yaml"
+    filename = f"test_overlap_{uuid.uuid4().hex[:8]}.yaml"
+    overlap_file = _ALLOWED_PLANS / filename
     overlap_file.write_text(yaml.safe_dump(plan), encoding="utf-8")
     try:
         result = _call(server, "check_timeline_conflicts", {
-            "path": "test_overlap_temp.yaml",
+            "path": filename,
         })
         assert result["conflict_count"] == 1
         assert result["conflicts"][0]["overlap_seconds"] == 60.0
