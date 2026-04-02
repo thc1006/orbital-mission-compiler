@@ -28,12 +28,12 @@ Note: this repo produces **rendered YAML artifacts**. It does not deploy to or c
 | `schemas.py`: `ExecutionMode` | Sequential or parallel execution | Slide 10 ("sequential or in parallel") | Enum: sequential, parallel |
 | `schemas.py`: `WorkflowStep` | Processing step with phase | Slide 10 (pipeline) | resource_class, fallback, needs_acceleration, phase |
 | `schemas.py`: `ResourceClass` | Hardware resource classes | Slide 14 (CPU/GPU/FPGA) | Enum: cpu, gpu, fpga |
-| `schemas.py`: `WorkflowIntent` | Translation output (IR) | Slide 23 (Custom Translation Layer output) | Currently serves as both IR and renderer input (Phase 3 will separate) |
+| `schemas.py`: `WorkflowIntent` | Translation output (IR) | Slide 23 (Custom Translation Layer output) | Serves as the IR consumed by both Argo and Kueue renderers |
 | `compiler.py`: `load_mission_plan` | Mission plan ingestion | D3.1 §3.2.1.1 (Mission Manager receives plan) | Ground-side equivalent |
 | `compiler.py`: `compile_plan_to_intents` | Custom Translation Layer | Slide 23 (Priority Queue → Translation → API-wrapper) | Filters ACQ events, builds WorkflowIntent |
 | `compiler.py`: `render_argo_workflow` | API-wrapper → Argo Workflows API | Slide 23 (right side of translation layer) | Produces Argo Workflow YAML |
 | `compiler.py`: `render_kueue_job` | — (not in ORCHIDE) | — | Ground-side addition: Kueue admission semantics |
-| `policy.py` + `configs/policies/*.rego` | — (not in ORCHIDE) | — | Ground-side addition: 9 deny rules, OPA/Rego |
+| `policy.py` + `configs/policies/*.rego` | — (not in ORCHIDE) | — | Ground-side addition: 10 deny rules, OPA/Rego |
 | `cli.py` | — (not in ORCHIDE) | — | Ground-side CLI: compile, render-argo, render-kueue, inspect, policy |
 | `mcp/server.py` | — (not in ORCHIDE) | — | Optional: 4 MCP tools for AI agents |
 | `eval_runner.py` + `evals/golden/` | — (not in ORCHIDE) | — | Ground-side: golden translation tests |
@@ -50,7 +50,8 @@ Schema validation (Pydantic) and policy validation (OPA/Rego) intentionally over
 | Priority must not be 0 | `Field(ge=0)` allows it | Rule 5 denies it |
 | GPU+acceleration needs fallback | — | Rule 4 denies |
 | CPU+acceleration is contradictory | — | Rule 6 denies |
-| Service needs ≥1 step | — | Rule 9 denies |
+| Service needs ≥1 step | `Field(min_length=1)` | Rule 9 denies |
+| Invalid landscape_type | — | Rule 10 denies |
 
 Design intent: schema catches structural errors at parse time. Policy catches semantic errors that require cross-field reasoning. Where both layers enforce the same rule, the earlier layer (schema) prevents bad data from entering the pipeline, and the later layer (policy) catches data that bypasses schema validation (e.g., raw JSON sent directly to OPA).
 

@@ -5,7 +5,18 @@ from typing import Any, Dict, List
 
 import yaml
 
+import re
+
 from .schemas import MissionPlan, WorkflowIntent, ResourceClass, WorkflowStep
+
+
+def _sanitize_k8s_name(name: str) -> str:
+    """Sanitize a string to be a valid RFC 1123 DNS label (K8s container/resource name)."""
+    s = name.lower()
+    s = re.sub(r"[^a-z0-9-]", "-", s)
+    s = re.sub(r"-+", "-", s)
+    s = s.strip("-")
+    return s[:63] or "step"
 
 
 def load_mission_plan(path: str | Path) -> MissionPlan:
@@ -153,7 +164,7 @@ def render_kueue_job(
     primary = gpu_steps[0] if gpu_steps else intent.steps[0]
 
     container: Dict[str, Any] = {
-        "name": primary.name,
+        "name": _sanitize_k8s_name(primary.name),
         "image": primary.image,
         "command": primary.command or ["sh", "-c"],
         "args": primary.args or [f'echo "run {primary.name}"'],
@@ -188,7 +199,7 @@ def render_kueue_job(
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
-            "generateName": f"{intent.workflow_name[:50]}-",
+            "generateName": f"{_sanitize_k8s_name(intent.workflow_name[:50])}-",
             "namespace": namespace,
             "labels": {
                 "kueue.x-k8s.io/queue-name": queue_name,
