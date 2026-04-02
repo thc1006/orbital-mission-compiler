@@ -10,7 +10,6 @@ from pydantic import ValidationError
 from orbital_mission_compiler.schemas import (
     MissionEvent,
     MissionEventType,
-    MissionPlan,
     AIService,
     WorkflowStep,
     ResourceClass,

@@ -32,7 +32,7 @@ class AIService(BaseModel):
     service_id: str
     priority: int = Field(ge=0, le=100)
     landscape_type: Optional[str] = None
-    steps: List[WorkflowStep]
+    steps: List[WorkflowStep] = Field(min_length=1)
 
 
 class MissionEvent(BaseModel):

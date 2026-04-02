@@ -12,6 +12,9 @@
       "event_timestamp": "2026-04-15T10:30:00Z",
       "ground_visibility": false,
       "region_type": "ocean",
+      "orbit": null,
+      "duration_seconds": null,
+      "landscape_type": null,
       "requires_gpu": true,
       "requires_fpga": false,
       "fallback_enabled": true

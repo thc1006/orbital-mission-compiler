@@ -30,6 +30,7 @@
 
 4. **Policy overreach**
    It is easy to encode policy that blocks experimentation; keep policy packs modular and testable.
+   Current policy pack: 9 deny rules covering mission_id, events, services, GPU fallback, priority, acceleration/resource coherence, download constraints, and step completeness.
 
 5. **False confidence**
    A local lab passing tests is not evidence of flight readiness.

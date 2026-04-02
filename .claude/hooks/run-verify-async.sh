@@ -28,7 +28,13 @@ fi
 
 # ---------------------------------------------------------------------------
 # 4. Path traversal guard — only verify files inside the project tree
+#    Resolve relative paths against PROJECT_DIR (Copilot review fix)
 # ---------------------------------------------------------------------------
+case "$FILE_PATH" in
+  /*) ;; # already absolute
+  *)  FILE_PATH="$PROJECT_DIR/$FILE_PATH" ;;
+esac
+
 REAL_PROJECT="$(realpath "$PROJECT_DIR")"
 REAL_FILE="$(realpath "$FILE_PATH" 2>/dev/null || echo "")"
 
