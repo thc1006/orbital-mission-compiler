@@ -152,16 +152,14 @@ def test_package_manifest():
 
 
 def test_package_manifest_minimal():
-    """PackageManifest works with only required fields."""
+    """PackageManifest works with only the required field (identity with service_id)."""
     from contracts.packaging import PackageManifest, ApplicationIdentity
 
     manifest = PackageManifest(
-        identity=ApplicationIdentity(
-            service_id="preprocess",
-            version="0.1.0",
-            image="ghcr.io/example/preprocess:0.1.0",
-        ),
+        identity=ApplicationIdentity(service_id="preprocess"),
     )
+    assert manifest.identity.version == ""
+    assert manifest.identity.image == ""
     assert manifest.inputs == []
     assert manifest.outputs == []
     assert manifest.phase is None

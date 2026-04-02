@@ -78,7 +78,7 @@ make eval                       # golden translation checks
 
 #### 5.2 Packaging contracts
 - [x] `contracts/packaging.py` — 6 models (ApplicationIdentity, ApplicationInput, ApplicationOutput, RuntimePreference, PolicyHints, PackageManifest)
-- [x] 10 tests, all pass. No OCI build logic.
+- [x] 15 tests, all pass. No OCI build logic.
 
 #### 5.3–5.6 Remaining contracts
 - [ ] `contracts/storage.py` — Storage Manager (D3.1 §3.2.1.2)
