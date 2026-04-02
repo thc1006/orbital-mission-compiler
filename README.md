@@ -5,7 +5,7 @@ A ground-side, cloud-native mission plan compiler for satellite operations. Vali
 [![CI](https://github.com/thc1006/satellite-mission-compiler/actions/workflows/ci.yml/badge.svg)](https://github.com/thc1006/satellite-mission-compiler/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19391965.svg)](https://doi.org/10.5281/zenodo.19391965)
 ![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue)
-![License](https://img.shields.io/badge/license-TBD-lightgrey)
+[![License: EUPL-1.2](https://img.shields.io/badge/license-EUPL--1.2-blue)](LICENSE)
 
 ---
 
@@ -107,4 +107,4 @@ If you use this project in academic work, please cite:
 
 ## License
 
-TBD
+Licensed under the [European Union Public Licence v1.2 (EUPL-1.2)](LICENSE).
