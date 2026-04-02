@@ -13,17 +13,18 @@ def test_ci_workflow_exists():
     assert path.exists(), ".github/workflows/ci.yml must exist"
 
 
-def test_ci_workflow_has_required_jobs():
-    """CI workflow must have verify, test, and eval jobs."""
+def test_ci_workflow_has_verify_job():
+    """CI workflow must have a verify job."""
     path = Path(".github/workflows/ci.yml")
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     jobs = data.get("jobs", {})
-    assert "verify" in jobs or "build" in jobs, "CI must have a verify or build job"
+    assert "verify" in jobs, "CI must have a 'verify' job"
 
 
 def test_ci_workflow_triggers_on_pr():
     """CI must trigger on pull_request events."""
     path = Path(".github/workflows/ci.yml")
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    on = data.get(True, data.get("on", {}))  # YAML parses 'on' as True
-    assert "pull_request" in on or True in data, "CI must trigger on pull_request"
+    # PyYAML parses quoted "on" as string key
+    on_config = data.get("on", {})
+    assert "pull_request" in on_config, "CI must trigger on pull_request"

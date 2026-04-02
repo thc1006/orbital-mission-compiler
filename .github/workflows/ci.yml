@@ -1,6 +1,6 @@
 name: CI
 
-on:
+"on":
   push:
     branches: [main]
   pull_request:
@@ -37,9 +37,16 @@ jobs:
 
       - name: Install OPA
         run: |
-          curl -L -o /usr/local/bin/opa https://github.com/open-policy-agent/opa/releases/download/v1.15.1/opa_linux_amd64_static
-          chmod +x /usr/local/bin/opa
-          opa version
+          set -euo pipefail
+          OPA_VERSION="v1.15.1"
+          OPA_URL="https://github.com/open-policy-agent/opa/releases/download/${OPA_VERSION}/opa_linux_amd64_static"
+          OPA_SHA256="2f0762a4bd4274e73ca1ab5e8a64aef4fb4895be8e059e82b109e3cde2a48e42"
+          mkdir -p "$HOME/.local/bin"
+          curl -fSL -o "$HOME/.local/bin/opa" "$OPA_URL"
+          echo "${OPA_SHA256}  $HOME/.local/bin/opa" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/opa"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/opa" version
 
       - name: OPA smoke
         run: |
