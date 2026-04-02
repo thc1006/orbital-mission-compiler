@@ -12,7 +12,7 @@ from .schemas import MissionPlan, WorkflowIntent, ResourceClass, WorkflowStep
 logger = logging.getLogger(__name__)
 
 
-def _sanitize_k8s_name(name: str, max_len: int = 63) -> str:
+def sanitize_k8s_name(name: str, max_len: int = 63) -> str:
     """Sanitize a string to be a valid RFC 1123 DNS label (K8s container/resource name)."""
     s = name.lower()
     s = re.sub(r"[^a-z0-9-]", "-", s)
@@ -59,7 +59,7 @@ def compile_plan_to_intents(plan: MissionPlan) -> List[WorkflowIntent]:
                     mission_id=plan.mission_id,
                     service_id=svc.service_id,
                     priority=svc.priority,
-                    workflow_name=_sanitize_k8s_name(f"{plan.mission_id}-{svc.service_id}-{event.timestamp}"),
+                    workflow_name=sanitize_k8s_name(f"{plan.mission_id}-{svc.service_id}-{event.timestamp}"),
                     steps=svc.steps,
                     resource_hints=hints,
                 )
@@ -96,7 +96,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
     templates = []
     dag_tasks = []
     for idx, step in enumerate(intent.steps):
-        template_name = f"step-{idx}-{_sanitize_k8s_name(step.name)}"
+        template_name = f"step-{idx}-{sanitize_k8s_name(step.name)}"
         annotations: Dict[str, str] = {
             "resource-class": step.resource_class.value,
             "needs-acceleration": str(step.needs_acceleration).lower(),
@@ -135,7 +135,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
             template["affinity"] = affinity
         templates.append(template)
 
-        safe_name = _sanitize_k8s_name(step.name)
+        safe_name = sanitize_k8s_name(step.name)
         dag_task: Dict[str, Any] = {"name": safe_name, "template": template_name}
         dag_tasks.append(dag_task)
 
@@ -162,10 +162,10 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
         "apiVersion": "argoproj.io/v1alpha1",
         "kind": "Workflow",
         "metadata": {
-            "name": _sanitize_k8s_name(intent.workflow_name),
+            "name": sanitize_k8s_name(intent.workflow_name),
             "labels": {
-                "mission-id": _sanitize_k8s_name(intent.mission_id),
-                "service-id": _sanitize_k8s_name(intent.service_id),
+                "mission-id": sanitize_k8s_name(intent.mission_id),
+                "service-id": sanitize_k8s_name(intent.service_id),
                 "priority": str(intent.priority),
             },
             "annotations": wf_annotations,
@@ -190,7 +190,7 @@ def render_kueue_job(
     primary = gpu_steps[0] if gpu_steps else intent.steps[0]
 
     container: Dict[str, Any] = {
-        "name": _sanitize_k8s_name(primary.name),
+        "name": sanitize_k8s_name(primary.name),
         "image": primary.image,
         "command": primary.command or ["sh", "-c"],
         "args": primary.args or [f'echo "run {primary.name}"'],
@@ -225,12 +225,12 @@ def render_kueue_job(
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
-            "generateName": f"{_sanitize_k8s_name(intent.workflow_name, max_len=62)}-",
+            "generateName": f"{sanitize_k8s_name(intent.workflow_name, max_len=62)}-",
             "namespace": namespace,
             "labels": {
                 "kueue.x-k8s.io/queue-name": queue_name,
-                "mission-id": _sanitize_k8s_name(intent.mission_id),
-                "service-id": _sanitize_k8s_name(intent.service_id),
+                "mission-id": sanitize_k8s_name(intent.mission_id),
+                "service-id": sanitize_k8s_name(intent.service_id),
                 "priority": str(intent.priority),
             },
             "annotations": job_annotations,
