@@ -42,9 +42,9 @@ make eval                       # golden translation checks
 ## Per-phase checks (new roadmap)
 
 ### Phase 0 — Architecture grounding
-- [ ] docs/04_architecture.md contains module-to-ORCHIDE mapping
-- [ ] Each source file's role documented relative to ORCHIDE slides
-- [ ] No code modified
+- [x] docs/04_architecture.md contains module-to-ORCHIDE mapping
+- [x] Each source file's role documented relative to ORCHIDE slides
+- [x] No code modified
 
 ### Phase 1 — Mission plan schema alignment
 - [x] Schema supports ORCHIDE slide 9 fields: orbit, duration_seconds, landscape_type
