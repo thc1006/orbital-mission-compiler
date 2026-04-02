@@ -1,0 +1,34 @@
+mission_id: mission-alpha
+client_id: customer-01
+events:
+  - timestamp: "2026-04-15T10:30:00Z"
+    event_type: acquisition
+    instrument: optical-camera
+    sensor: sensor-a
+    ground_visibility: false
+    region_type: ocean
+    services:
+      - service_id: maritime-surveillance
+        priority: 90
+        steps:
+          - name: preprocess
+            image: ghcr.io/example/preprocess:0.1.0
+            resource_class: cpu
+            command: ["python", "-m", "app.preprocess"]
+            args: ["--input", "/data/raw", "--output", "/data/prepared"]
+          - name: detect-ships
+            image: ghcr.io/example/ship-detector:0.1.0
+            resource_class: gpu
+            needs_acceleration: true
+            command: ["python", "-m", "app.detect"]
+            args: ["--input", "/data/prepared", "--output", "/data/results"]
+          - name: postprocess
+            image: ghcr.io/example/postprocess:0.1.0
+            resource_class: cpu
+            command: ["python", "-m", "app.postprocess"]
+            args: ["--input", "/data/results", "--output", "/data/downlink"]
+  - timestamp: "2026-04-15T10:42:00Z"
+    event_type: download
+    instrument: x-band
+    sensor: downlink
+    ground_visibility: true

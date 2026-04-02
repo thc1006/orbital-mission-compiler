@@ -1,0 +1,24 @@
+services:
+  opa:
+    image: openpolicyagent/opa:1.15.1-static
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "/policies"
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./configs/policies:/policies:ro
+
+  mission-compiler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      python -m orbital_mission_compiler.cli compile
+      --input configs/mission_plans/sample_maritime_surveillance.yaml
+      --output /workspace/out/sample_workflow.yaml
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace

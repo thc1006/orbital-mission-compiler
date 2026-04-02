@@ -1,0 +1,7 @@
+[
+  {
+    "service_id": "maritime-surveillance",
+    "priority": 90,
+    "requires_gpu": true
+  }
+]
