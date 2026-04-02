@@ -9,7 +9,10 @@ if ! command -v opa >/dev/null 2>&1; then
   exit 2
 fi
 
-python3 - "${MISSION_FILE}" > /tmp/orbital-plan.json <<'PYSMOKE'
+TMPFILE="$(mktemp /tmp/orbital-plan.XXXXXX.json)"
+trap 'rm -f "$TMPFILE"' EXIT
+
+python3 - "${MISSION_FILE}" > "$TMPFILE" <<'PYSMOKE'
 from pathlib import Path
 import json, yaml, sys
 plan = yaml.safe_load(Path(sys.argv[1]).read_text(encoding='utf-8'))
@@ -17,4 +20,4 @@ print(json.dumps(plan))
 PYSMOKE
 
 echo "Running OPA policy evaluation against ${MISSION_FILE}"
-opa eval   --format=pretty   --stdin-input   --data "${BUNDLE_DIR}"   'data.orbitalmission' < /tmp/orbital-plan.json
+opa eval   --format=pretty   --stdin-input   --data "${BUNDLE_DIR}"   'data.orbitalmission' < "$TMPFILE"
