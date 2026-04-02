@@ -167,6 +167,40 @@ def test_package_manifest_minimal():
     assert manifest.phase is None
 
 
+# ── Negative validation (Copilot review fixes) ──────────────────────
+
+
+def test_reject_negative_memory():
+    from contracts.packaging import RuntimePreference
+
+    with pytest.raises(ValidationError):
+        RuntimePreference(min_memory_mb=-1)
+
+
+def test_reject_negative_execution_seconds():
+    from contracts.packaging import PolicyHints
+
+    with pytest.raises(ValidationError):
+        PolicyHints(max_execution_seconds=-10)
+
+
+def test_reject_invalid_resource_class():
+    from contracts.packaging import RuntimePreference
+
+    with pytest.raises(ValidationError):
+        RuntimePreference(resource_class="quantum")
+
+
+def test_reject_invalid_phase():
+    from contracts.packaging import PackageManifest, ApplicationIdentity
+
+    with pytest.raises(ValidationError):
+        PackageManifest(
+            identity=ApplicationIdentity(service_id="test", version="1.0", image="img"),
+            phase="launch",
+        )
+
+
 # ── Sample manifest file ─────────────────────────────────────────────
 
 

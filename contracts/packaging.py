@@ -20,8 +20,13 @@ ORCHIDE references:
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
+
+# Contracts use Literal instead of importing enums from schemas.py
+# to keep the contracts module self-contained (no compiler dependency).
+RESOURCE_CLASSES = Literal["cpu", "gpu", "fpga"]
+STEP_PHASES = Literal["preprocessing", "ai", "postprocessing"]
 
 
 class ApplicationIdentity(BaseModel):
@@ -75,11 +80,11 @@ class RuntimePreference(BaseModel):
     and slide 18 (ukAccel accelerator mediation).
     """
 
-    resource_class: str = "cpu"
-    fallback_resource_class: Optional[str] = None
+    resource_class: RESOURCE_CLASSES = "cpu"
+    fallback_resource_class: Optional[RESOURCE_CLASSES] = None
     needs_acceleration: bool = False
-    min_memory_mb: int = 256
-    min_cpu_millicores: int = 100
+    min_memory_mb: int = Field(default=256, ge=0)
+    min_cpu_millicores: int = Field(default=100, ge=0)
 
 
 class PolicyHints(BaseModel):
@@ -89,7 +94,7 @@ class PolicyHints(BaseModel):
     application-specific constraints beyond the mission plan schema.
     """
 
-    max_execution_seconds: Optional[int] = None
+    max_execution_seconds: Optional[int] = Field(default=None, ge=0)
     requires_ground_visibility: bool = False
     allowed_landscape_types: List[str] = Field(default_factory=list)
 
@@ -108,7 +113,7 @@ class PackageManifest(BaseModel):
     """
 
     identity: ApplicationIdentity
-    phase: Optional[str] = None
+    phase: Optional[STEP_PHASES] = None
     inputs: List[ApplicationInput] = Field(default_factory=list)
     outputs: List[ApplicationOutput] = Field(default_factory=list)
     runtime: RuntimePreference = Field(default_factory=RuntimePreference)
