@@ -5,18 +5,24 @@ Issue #13. Skips if docker CLI or daemon is not available.
 
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _docker_daemon_available() -> bool:
     """Check both docker CLI exists and daemon is accessible."""
     if not shutil.which("docker"):
         return False
-    result = subprocess.run(
-        ["docker", "info"], capture_output=True, check=False, timeout=10,
-    )
-    return result.returncode == 0
+    try:
+        result = subprocess.run(
+            ["docker", "info"], capture_output=True, check=False, timeout=10,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
 
 
 DOCKER_AVAILABLE = _docker_daemon_available()
@@ -32,6 +38,7 @@ def build_image():
     result = subprocess.run(
         ["docker", "build", "-t", IMAGE_TAG, "."],
         capture_output=True, text=True, check=False, timeout=120,
+        cwd=str(REPO_ROOT),
     )
     if result.returncode != 0:
         pytest.fail(f"Docker build failed:\n{result.stderr}")
