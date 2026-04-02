@@ -95,7 +95,7 @@ class MissionEvent(BaseModel):
 class MissionPlan(BaseModel):
     mission_id: str
     client_id: Optional[str] = None
-    events: List[MissionEvent]
+    events: List[MissionEvent] = Field(min_length=1)
 
     @field_validator("mission_id")
     @classmethod
