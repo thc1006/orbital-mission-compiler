@@ -33,18 +33,17 @@
 | Candidate | Official source | Latest stable version (verified) | Install style | Project fit | Why not selected / where used |
 |---|---|---|---|---|---|
 | Pydantic | https://docs.pydantic.dev/ ; https://github.com/pydantic/pydantic/releases | 2.12.5 | pip | schema-first mission plan validation | **Selected** |
-| Hera Workflows | https://hera.readthedocs.io/ ; https://pypi.org/project/hera-workflows/ | 6.0.0 | pip | Argo-endorsed Python-side workflow generation path | **Selected** |
+| Hera Workflows | https://hera.readthedocs.io/ ; https://pypi.org/project/hera-workflows/ | 6.0.0 | pip | Argo-endorsed Python-side workflow generation path | **Removed from default deps** — re-add when Hera-based rendering is implemented |
 | FastMCP | https://gofastmcp.com/ ; https://github.com/jlowin/fastmcp | 3.2.0 | pip | agent / MCP bridge for long-running dev workflows | **Selected (optional)** |
 | FastAPI | https://fastapi.tiangolo.com/ ; https://github.com/fastapi/fastapi/releases | 0.135.3 | pip | good for service API, but MCP + CLI are higher priority for MVP | not selected |
 | Ray | https://docs.ray.io/ ; https://github.com/ray-project/ray/releases | 2.54.1 | pip / cluster | useful for distributed AI compute, but outside MVP scope | not selected |
 
 ## Selection summary
-Final scaffold selection:
-- K3s
-- Argo Workflows
-- Kueue
-- OPA
+Final scaffold selection (ORCHIDE-aligned where applicable):
+- K3s (ORCHIDE-aligned: slide 15, 19)
+- Argo Workflows (ORCHIDE-aligned: slide 15, 23)
+- Kueue (ground-side addition — not in ORCHIDE)
+- OPA (ground-side addition — not in ORCHIDE)
 - Pydantic
-- Hera
 - FastMCP (optional)
-- OpenTelemetry Collector (design target; not fully automated in scripts)
+- OpenTelemetry Collector (design target; ORCHIDE uses Vector instead)

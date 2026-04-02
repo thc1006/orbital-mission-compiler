@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
+
+import yaml
 
 from .compiler import (
     compile_file,
     load_mission_plan,
     compile_plan_to_intents,
+    render_kueue_job,
     write_individual_workflows,
+    _sanitize_k8s_name,
 )
 from .policy import eval_policy
 
@@ -26,6 +31,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     inspect_p = sub.add_parser("inspect", help="Inspect compiled workflow intents")
     inspect_p.add_argument("--input", required=True)
+
+    kueue_p = sub.add_parser("render-kueue", help="Render Kueue-compatible Job manifests")
+    kueue_p.add_argument("--input", required=True)
+    kueue_p.add_argument("--output-dir", required=True)
+    kueue_p.add_argument("--queue", default="orbital-demo-local")
+    kueue_p.add_argument("--namespace", default="orbital-demo")
 
     policy_p = sub.add_parser("policy", help="Evaluate policy pack with OPA if available")
     policy_p.add_argument("--input", required=True)
@@ -52,6 +63,21 @@ def cmd_inspect(args):
     print(json.dumps(data, indent=2))
 
 
+def cmd_render_kueue(args):
+    plan = load_mission_plan(args.input)
+    intents = compile_plan_to_intents(plan)
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    for intent in intents:
+        job = render_kueue_job(intent, queue_name=args.queue, namespace=args.namespace)
+        safe_name = _sanitize_k8s_name(intent.workflow_name[:50])
+        out = out_dir / f"{safe_name}-kueue.yaml"
+        out.write_text(yaml.safe_dump(job, sort_keys=False), encoding="utf-8")
+        written.append(str(out))
+    print(json.dumps({"status": "ok", "files": written}))
+
+
 def cmd_policy(args):
     plan = load_mission_plan(args.input)
     payload = plan.model_dump(mode="json")
@@ -69,6 +95,8 @@ def main():
         cmd_render_argo(args)
     elif args.command == "inspect":
         cmd_inspect(args)
+    elif args.command == "render-kueue":
+        cmd_render_kueue(args)
     elif args.command == "policy":
         cmd_policy(args)
     else:

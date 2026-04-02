@@ -4,7 +4,7 @@
 **Build a Mission Plan Compiler with policy, priority, and admission semantics as first-class artifacts.**
 
 ### Why this is the best “breakthrough but buildable” direction
-It is breakthrough enough because it turns the transcript's implicit glue layer into an explicit product:
+ORCHIDE's KubeCon 2026 slides confirm they implemented “a translation from Mission Plan to Argo workflow” as embedded glue code. But their D3.1 explicitly excludes mission plan generation, validation, and compilation from scope. This project turns that excluded ground-side layer into an explicit product:
 - a machine-checkable mission plan schema,
 - a policy-driven compiler,
 - deterministic workflow emission,

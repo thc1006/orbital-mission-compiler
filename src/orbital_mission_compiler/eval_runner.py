@@ -13,8 +13,12 @@ def _run_case(mission_file: Path, golden_file: Path) -> tuple[bool, str]:
         {
             "service_id": i.service_id,
             "priority": i.priority,
-            "requires_gpu": i.resource_hints["requires_gpu"],
-            "fallback_enabled": i.resource_hints["fallback_enabled"],
+            "workflow_name": i.workflow_name,
+            "steps": [
+                {"name": s.name, "resource_class": s.resource_class.value}
+                for s in i.steps
+            ],
+            "resource_hints": i.resource_hints,
         }
         for i in intents
     ]

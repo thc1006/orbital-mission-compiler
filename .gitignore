@@ -16,3 +16,7 @@ out/
 .vscode/
 .DS_Store
 *.log
+
+# Agent workflow output directories
+.full-review/
+.tdd-cycle/

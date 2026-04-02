@@ -1,0 +1,89 @@
+# Sample mission plan aligned with ORCHIDE KubeCon EU 2026 slide 9 format.
+# Demonstrates: orbit, duration_seconds, landscape_type, multi-service per event.
+mission_id: mission-orchide-demo
+client_id: orchide-demo-user
+events:
+  - timestamp: "2029-10-06T00:23:00Z"
+    event_type: acquisition
+    orbit: 1
+    duration_seconds: 4.0
+    instrument: INST_1
+    ground_visibility: false
+    region_type: ocean
+    services:
+      - service_id: maritime-surveillance
+        priority: 1
+        landscape_type: ocean
+        steps:
+          - name: preprocess
+            image: ghcr.io/example/preprocess:0.1.0
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo preprocess"]
+          - name: detect-ships
+            image: ghcr.io/example/ship-detector:0.1.0
+            phase: ai
+            resource_class: gpu
+            fallback_resource_class: cpu
+            needs_acceleration: true
+            preferred_node_selector:
+              accelerator: nvidia
+            command: ["sh", "-c"]
+            args: ["echo detect"]
+          - name: postprocess
+            image: ghcr.io/example/postprocess:0.1.0
+            phase: postprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo postprocess"]
+      - service_id: cloud-detection
+        priority: 2
+        landscape_type: ocean
+        steps:
+          - name: classify-clouds
+            image: ghcr.io/example/cloud-classifier:0.1.0
+            phase: ai
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo classify"]
+  - timestamp: "2029-10-06T00:30:00Z"
+    event_type: acquisition
+    orbit: 1
+    duration_seconds: 102.0
+    instrument: INST_1
+    ground_visibility: false
+    region_type: land
+    services:
+      - service_id: fire-detection
+        priority: 1
+        landscape_type: land
+        steps:
+          - name: preprocess
+            image: ghcr.io/example/preprocess:0.1.0
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo preprocess"]
+          - name: detect-fire
+            image: ghcr.io/example/fire-detector:0.1.0
+            phase: ai
+            resource_class: gpu
+            fallback_resource_class: cpu
+            needs_acceleration: true
+            preferred_node_selector:
+              accelerator: nvidia
+            command: ["sh", "-c"]
+            args: ["echo detect-fire"]
+          - name: postprocess
+            image: ghcr.io/example/postprocess:0.1.0
+            phase: postprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo postprocess"]
+  - timestamp: "2029-10-06T01:58:00Z"
+    event_type: download
+    orbit: 2
+    duration_seconds: 268.0
+    instrument: INST_1
+    ground_visibility: true

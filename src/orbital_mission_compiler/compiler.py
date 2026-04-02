@@ -5,7 +5,18 @@ from typing import Any, Dict, List
 
 import yaml
 
+import re
+
 from .schemas import MissionPlan, WorkflowIntent, ResourceClass, WorkflowStep
+
+
+def _sanitize_k8s_name(name: str) -> str:
+    """Sanitize a string to be a valid RFC 1123 DNS label (K8s container/resource name)."""
+    s = name.lower()
+    s = re.sub(r"[^a-z0-9-]", "-", s)
+    s = re.sub(r"-+", "-", s)
+    s = s.strip("-")
+    return s[:63] or "step"
 
 
 def load_mission_plan(path: str | Path) -> MissionPlan:
@@ -26,6 +37,9 @@ def compile_plan_to_intents(plan: MissionPlan) -> List[WorkflowIntent]:
                 "event_timestamp": event.timestamp,
                 "ground_visibility": event.ground_visibility,
                 "region_type": event.region_type,
+                "orbit": event.orbit,
+                "duration_seconds": event.duration_seconds,
+                "landscape_type": svc.landscape_type,
                 "requires_gpu": bool(gpu_steps),
                 "requires_fpga": bool(fpga_steps),
                 "fallback_enabled": bool(fallback_steps),
@@ -66,7 +80,14 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
     templates = []
     dag_tasks = []
     for idx, step in enumerate(intent.steps):
-        template_name = f"step-{idx}-{step.name}"
+        template_name = f"step-{idx}-{_sanitize_k8s_name(step.name)}"
+        annotations: Dict[str, str] = {
+            "resource-class": step.resource_class.value,
+            "needs-acceleration": str(step.needs_acceleration).lower(),
+        }
+        if step.phase is not None:
+            annotations["phase"] = step.phase.value
+
         template: Dict[str, Any] = {
             "name": template_name,
             "container": {
@@ -82,10 +103,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
                 ],
             },
             "metadata": {
-                "annotations": {
-                    "resource-class": step.resource_class.value,
-                    "needs-acceleration": str(step.needs_acceleration).lower(),
-                }
+                "annotations": annotations,
             },
         }
         if step.fallback_resource_class is not None:
@@ -101,22 +119,31 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
             template["affinity"] = affinity
         templates.append(template)
 
-        depends = intent.steps[idx - 1].name if idx > 0 else None
-        dag_task = {"name": step.name, "template": template_name}
-        if depends:
-            dag_task["depends"] = depends
+        depends_raw = intent.steps[idx - 1].name if idx > 0 else None
+        safe_name = _sanitize_k8s_name(step.name)
+        dag_task = {"name": safe_name, "template": template_name}
+        if depends_raw:
+            dag_task["depends"] = _sanitize_k8s_name(depends_raw)
         dag_tasks.append(dag_task)
+
+    wf_annotations: Dict[str, str] = {
+        "orbital/priority": str(intent.priority),
+        "orbital/requires-gpu": str(intent.resource_hints.get("requires_gpu", False)).lower(),
+        "orbital/requires-fpga": str(intent.resource_hints.get("requires_fpga", False)).lower(),
+        "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),
+    }
 
     workflow = {
         "apiVersion": "argoproj.io/v1alpha1",
         "kind": "Workflow",
         "metadata": {
-            "name": intent.workflow_name[:63],
+            "name": _sanitize_k8s_name(intent.workflow_name),
             "labels": {
-                "mission-id": intent.mission_id,
-                "service-id": intent.service_id,
+                "mission-id": _sanitize_k8s_name(intent.mission_id),
+                "service-id": _sanitize_k8s_name(intent.service_id),
                 "priority": str(intent.priority),
             },
+            "annotations": wf_annotations,
         },
         "spec": {
             "entrypoint": "main",
@@ -124,6 +151,72 @@ def render_argo_workflow(intent: WorkflowIntent) -> Dict[str, Any]:
         },
     }
     return workflow
+
+
+def render_kueue_job(
+    intent: WorkflowIntent,
+    queue_name: str = "orbital-demo-local",
+    namespace: str = "orbital-demo",
+) -> Dict[str, Any]:
+    requires_gpu = intent.resource_hints.get("requires_gpu", False)
+
+    # Pick the primary compute step (GPU step if present, else first step).
+    gpu_steps = [s for s in intent.steps if s.resource_class == ResourceClass.GPU]
+    primary = gpu_steps[0] if gpu_steps else intent.steps[0]
+
+    container: Dict[str, Any] = {
+        "name": _sanitize_k8s_name(primary.name),
+        "image": primary.image,
+        "command": primary.command or ["sh", "-c"],
+        "args": primary.args or [f'echo "run {primary.name}"'],
+        "resources": {
+            "requests": {
+                "cpu": "1",
+                "memory": "256Mi",
+            },
+        },
+    }
+    if requires_gpu:
+        container["resources"]["requests"]["nvidia.com/gpu"] = "1"
+        container["resources"]["limits"] = {"nvidia.com/gpu": "1"}
+
+    pod_spec: Dict[str, Any] = {
+        "restartPolicy": "Never",
+        "containers": [container],
+    }
+    if requires_gpu:
+        pod_spec["nodeSelector"] = {"accelerator": "nvidia"}
+        pod_spec["tolerations"] = [
+            {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
+        ]
+
+    job_annotations: Dict[str, str] = {
+        "orbital/priority": str(intent.priority),
+        "orbital/requires-gpu": str(requires_gpu).lower(),
+        "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),
+    }
+
+    job: Dict[str, Any] = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "generateName": f"{_sanitize_k8s_name(intent.workflow_name[:50])}-",
+            "namespace": namespace,
+            "labels": {
+                "kueue.x-k8s.io/queue-name": queue_name,
+                "mission-id": _sanitize_k8s_name(intent.mission_id),
+                "service-id": _sanitize_k8s_name(intent.service_id),
+                "priority": str(intent.priority),
+            },
+            "annotations": job_annotations,
+        },
+        "spec": {
+            "template": {
+                "spec": pod_spec,
+            },
+        },
+    }
+    return job
 
 
 def render_workflows_for_file(input_path: str | Path) -> List[Dict[str, Any]]:

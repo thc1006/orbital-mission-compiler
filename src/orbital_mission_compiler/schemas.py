@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ResourceClass(str, Enum):
@@ -16,9 +16,21 @@ class MissionEventType(str, Enum):
     DOWNLOAD = "download"
 
 
+class StepPhase(str, Enum):
+    PREPROCESSING = "preprocessing"
+    AI = "ai"
+    POSTPROCESSING = "postprocessing"
+
+
+class ExecutionMode(str, Enum):
+    SEQUENTIAL = "sequential"
+    PARALLEL = "parallel"
+
+
 class WorkflowStep(BaseModel):
     name: str
     image: str
+    phase: Optional[StepPhase] = None
     resource_class: ResourceClass = ResourceClass.CPU
     fallback_resource_class: Optional[ResourceClass] = None
     needs_acceleration: bool = False
@@ -31,17 +43,41 @@ class WorkflowStep(BaseModel):
 class AIService(BaseModel):
     service_id: str
     priority: int = Field(ge=0, le=100)
-    steps: List[WorkflowStep]
+    landscape_type: Optional[str] = None
+    execution_mode: ExecutionMode = ExecutionMode.SEQUENTIAL
+    steps: List[WorkflowStep] = Field(min_length=1)
 
 
 class MissionEvent(BaseModel):
     timestamp: str
     event_type: MissionEventType
+    orbit: Optional[int] = None
+    duration_seconds: Optional[float] = None
     instrument: Optional[str] = None
     sensor: Optional[str] = None
     ground_visibility: bool = False
     region_type: Optional[str] = None
     services: List[AIService] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def check_event_constraints(self) -> "MissionEvent":
+        if self.event_type == MissionEventType.ACQUISITION:
+            if not self.instrument:
+                raise ValueError("acquisition events must specify an instrument (slide 9: INST)")
+        if self.event_type == MissionEventType.DOWNLOAD:
+            if self.duration_seconds is None:
+                raise ValueError(
+                    "download events must specify duration_seconds (slide 9: DT_EV transmission window)"
+                )
+            if self.services:
+                raise ValueError(
+                    "download events must not declare AI services (slide 9: DOWNLOAD has no WORKFLOW)"
+                )
+            if not self.ground_visibility:
+                raise ValueError(
+                    "download events require ground_visibility=true (slide 9: DOWNLOAD VISI=1)"
+                )
+        return self
 
 
 class MissionPlan(BaseModel):

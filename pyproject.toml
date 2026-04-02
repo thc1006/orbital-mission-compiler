@@ -7,11 +7,10 @@ name = "orbital-mission-compiler"
 version = "0.1.0"
 description = "Mission-plan-aware workflow compilation scaffold inspired by ORCHIDE"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
   "PyYAML==6.0.2",
   "pydantic==2.12.5",
-  "hera-workflows==6.0.0",
 ]
 
 [project.optional-dependencies]
