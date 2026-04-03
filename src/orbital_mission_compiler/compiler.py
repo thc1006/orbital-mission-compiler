@@ -141,11 +141,10 @@ def render_argo_workflow(intent: WorkflowIntent) -> dict[str, Any]:
 
     # Apply DAG dependencies based on execution_mode.
     # Sequential: linear chain (A→B→C). Parallel: no dependencies.
-    # Unknown values default to sequential (safe: prevents accidental parallelism).
+    # Unknown values raise ValueError (fail-closed for safety-critical contexts).
     execution_mode = intent.resource_hints.get("execution_mode", "sequential")
     if execution_mode not in ("sequential", "parallel"):
-        logger.warning("Unknown execution_mode %r, defaulting to sequential", execution_mode)
-        execution_mode = "sequential"
+        raise ValueError(f"Unknown execution_mode {execution_mode!r}; expected 'sequential' or 'parallel'")
     if execution_mode == "sequential":
         for i in range(1, len(dag_tasks)):
             dag_tasks[i]["depends"] = dag_tasks[i - 1]["name"]

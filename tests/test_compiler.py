@@ -1,4 +1,21 @@
+import pytest
+
 from orbital_mission_compiler.compiler import load_mission_plan, compile_plan_to_intents, render_argo_workflow
+from orbital_mission_compiler.schemas import WorkflowIntent, WorkflowStep
+
+
+def test_unknown_execution_mode_raises():
+    """Unknown execution_mode should raise ValueError, not silently default."""
+    intent = WorkflowIntent(
+        mission_id="test",
+        service_id="svc",
+        priority=50,
+        workflow_name="test-wf",
+        steps=[WorkflowStep(name="s1", image="busybox:1.36")],
+        resource_hints={"execution_mode": "invalid_mode"},
+    )
+    with pytest.raises(ValueError, match="Unknown execution_mode"):
+        render_argo_workflow(intent)
 
 
 def test_compile_plan_to_intents():
