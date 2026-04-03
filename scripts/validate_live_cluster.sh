@@ -94,6 +94,7 @@ fi
 echo ""
 echo "=== Argo Workflow ==="
 
+rm -rf "${ARGO_OUT}"
 mkdir -p "${ARGO_OUT}"
 
 if PYTHONPATH="${PYTHONPATH:-src}" ${PYTHON_BIN} -m orbital_mission_compiler.cli render-argo \
@@ -149,6 +150,7 @@ fi
 echo ""
 echo "=== Kueue Job ==="
 
+rm -rf "${KUEUE_OUT}"
 mkdir -p "${KUEUE_OUT}"
 
 if PYTHONPATH="${PYTHONPATH:-src}" ${PYTHON_BIN} -m orbital_mission_compiler.cli render-kueue \

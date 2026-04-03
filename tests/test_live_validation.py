@@ -128,6 +128,7 @@ class TestValidationArgoRendering:
                     ["argo", "lint", str(path)],
                     capture_output=True,
                     text=True,
+                    timeout=30,
                 )
                 assert result.returncode == 0, (
                     f"argo lint failed for {path.name}:\n{result.stderr}"
