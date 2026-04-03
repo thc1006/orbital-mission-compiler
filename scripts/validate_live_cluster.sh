@@ -101,7 +101,7 @@ else
 fi
 
 if command -v argo >/dev/null 2>&1; then
-  if argo lint "${ARGO_OUT}"/*.yaml >/dev/null 2>&1; then
+  if shopt -s nullglob; files=("${ARGO_OUT}"/*.yaml); shopt -u nullglob; if [ ${#files[@]} -eq 0 ]; then echo "[FAIL] No YAML files to lint"; FAIL=1; else argo lint "${files[@]}" >/dev/null 2>&1; then
     report PASS "Argo lint passed"
   else
     report FAIL "Argo lint failed"
@@ -111,7 +111,7 @@ fi
 ARGO_FILE=$(find "${ARGO_OUT}" -name '*.yaml' -print -quit 2>/dev/null)
 if [ -n "${ARGO_FILE}" ] && command -v argo >/dev/null 2>&1; then
   echo "Submitting Argo Workflow to cluster ..."
-  WF_NAME=$(argo submit "${ARGO_FILE}" -n "${NAMESPACE}" -o name 2>&1) || true
+  WF_NAME=$(argo submit "${ARGO_FILE}" -n "${NAMESPACE}" -o name ) || { echo "[FAIL] Submit failed"; FAIL=1; }
   if [ -n "${WF_NAME}" ]; then
     report PASS "Argo Workflow submitted: ${WF_NAME}"
 
@@ -156,14 +156,14 @@ fi
 JOB_FILE=$(find "${KUEUE_OUT}" -name '*-kueue.yaml' -print -quit 2>/dev/null)
 if [ -n "${JOB_FILE}" ] && command -v kubectl >/dev/null 2>&1; then
   echo "Submitting Kueue Job to cluster ..."
-  JOB_NAME=$(kubectl create -f "${JOB_FILE}" -o jsonpath='{.metadata.name}' 2>&1) || true
+  JOB_NAME=$(kubectl create -f "${JOB_FILE}" -o jsonpath='{.metadata.name}' ) || { echo "[FAIL] Submit failed"; FAIL=1; }
   if [ -n "${JOB_NAME}" ] && [[ ! "${JOB_NAME}" =~ ^error ]]; then
     report PASS "Kueue Job submitted: ${JOB_NAME}"
 
     echo "Checking Kueue admission (up to 60s) ..."
     ADMITTED="false"
     for _ in $(seq 1 12); do
-      ADMITTED_STATUS=$(kubectl get workloads -n "${NAMESPACE}" -o jsonpath='{.items[*].status.conditions[?(@.type=="Admitted")].status}' 2>/dev/null || true)
+      ADMITTED_STATUS=$(kubectl get workloads -l job-name -n "${NAMESPACE}" -o jsonpath='{.items[*].status.conditions[?(@.type=="Admitted")].status}' 2>/dev/null || true)
       if echo "${ADMITTED_STATUS}" | grep -q "True"; then
         ADMITTED="true"
         break
