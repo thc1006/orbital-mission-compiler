@@ -131,7 +131,9 @@ class TestValidationArgoRendering:
                     timeout=30,
                 )
                 assert result.returncode == 0, (
-                    f"argo lint failed for {path.name}:\n{result.stderr}"
+                    f"argo lint failed for {path.name}:\n"
+                    f"stdout:\n{result.stdout}\n"
+                    f"stderr:\n{result.stderr}"
                 )
 
 
