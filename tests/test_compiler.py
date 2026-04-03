@@ -1,7 +1,16 @@
+import logging
+
 import pytest
 
 from orbital_mission_compiler.compiler import load_mission_plan, compile_plan_to_intents, render_argo_workflow
-from orbital_mission_compiler.schemas import WorkflowIntent, WorkflowStep
+from orbital_mission_compiler.schemas import (
+    MissionPlan,
+    MissionEvent,
+    MissionEventType,
+    AIService,
+    WorkflowStep,
+    WorkflowIntent,
+)
 
 
 def test_unknown_execution_mode_raises():
@@ -37,3 +46,124 @@ def test_render_argo_workflow():
     annotations = detect["metadata"]["annotations"]
     assert annotations["fallback-resource-class"] == "cpu"
     assert detect["affinity"]["nodeAffinity"]["preferredDuringSchedulingIgnoredDuringExecution"][0]["weight"] == 100
+
+
+def test_detect_timeline_conflicts_no_overlap():
+    """Non-overlapping events should return empty conflicts."""
+    from orbital_mission_compiler.compiler import detect_timeline_conflicts
+
+    plan = MissionPlan(
+        mission_id="test-no-overlap",
+        events=[
+            MissionEvent(
+                timestamp="2026-04-15T10:00:00Z",
+                event_type=MissionEventType.ACQUISITION,
+                instrument="cam",
+                duration_seconds=60,
+                services=[AIService(
+                    service_id="svc1", priority=50,
+                    steps=[WorkflowStep(name="s1", image="img:1")],
+                )],
+            ),
+            MissionEvent(
+                timestamp="2026-04-15T10:05:00Z",
+                event_type=MissionEventType.ACQUISITION,
+                instrument="cam",
+                duration_seconds=60,
+                services=[AIService(
+                    service_id="svc2", priority=50,
+                    steps=[WorkflowStep(name="s2", image="img:1")],
+                )],
+            ),
+        ],
+    )
+    conflicts = detect_timeline_conflicts(plan)
+    assert conflicts == []
+
+
+def test_detect_timeline_conflicts_with_overlap():
+    """Overlapping acquisition windows should be detected."""
+    from orbital_mission_compiler.compiler import detect_timeline_conflicts
+
+    plan = MissionPlan(
+        mission_id="test-overlap",
+        events=[
+            MissionEvent(
+                timestamp="2026-04-15T10:00:00Z",
+                event_type=MissionEventType.ACQUISITION,
+                instrument="cam",
+                duration_seconds=120,
+                services=[AIService(
+                    service_id="svc1", priority=50,
+                    steps=[WorkflowStep(name="s1", image="img:1")],
+                )],
+            ),
+            MissionEvent(
+                timestamp="2026-04-15T10:01:00Z",
+                event_type=MissionEventType.ACQUISITION,
+                instrument="cam",
+                duration_seconds=120,
+                services=[AIService(
+                    service_id="svc2", priority=50,
+                    steps=[WorkflowStep(name="s2", image="img:1")],
+                )],
+            ),
+        ],
+    )
+    conflicts = detect_timeline_conflicts(plan)
+    assert len(conflicts) == 1
+    assert conflicts[0]["overlap_seconds"] == 60.0
+
+
+def test_compile_with_conflict_check_logs_warning(caplog):
+    """compile_plan_to_intents with check_conflicts should log warnings."""
+    plan = MissionPlan(
+        mission_id="test-warn",
+        events=[
+            MissionEvent(
+                timestamp="2026-04-15T10:00:00Z",
+                event_type=MissionEventType.ACQUISITION,
+                instrument="cam",
+                duration_seconds=120,
+                services=[AIService(
+                    service_id="svc1", priority=50,
+                    steps=[WorkflowStep(name="s1", image="img:1")],
+                )],
+            ),
+            MissionEvent(
+                timestamp="2026-04-15T10:01:00Z",
+                event_type=MissionEventType.ACQUISITION,
+                instrument="cam",
+                duration_seconds=120,
+                services=[AIService(
+                    service_id="svc2", priority=50,
+                    steps=[WorkflowStep(name="s2", image="img:1")],
+                )],
+            ),
+        ],
+    )
+    with caplog.at_level(logging.WARNING, logger="orbital_mission_compiler.compiler"):
+        intents = compile_plan_to_intents(plan, check_conflicts=True)
+    assert len(intents) == 2  # still compiles
+    assert "Timeline conflict" in caplog.text
+
+def test_detect_timeline_conflicts_missing_duration():
+    """Events without duration_seconds should be skipped without error."""
+    from orbital_mission_compiler.compiler import detect_timeline_conflicts
+
+    plan = MissionPlan(
+        mission_id="test-no-duration",
+        events=[
+            MissionEvent(
+                timestamp="2026-04-15T10:00:00Z",
+                event_type=MissionEventType.ACQUISITION,
+                instrument="cam",
+                services=[AIService(
+                    service_id="svc1", priority=50,
+                    steps=[WorkflowStep(name="s1", image="img:1")],
+                )],
+            ),
+        ],
+    )
+    conflicts = detect_timeline_conflicts(plan)
+    assert conflicts == []
