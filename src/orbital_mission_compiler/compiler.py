@@ -182,6 +182,8 @@ def render_kueue_job(
     intent: WorkflowIntent,
     queue_name: str = "orbital-demo-local",
     namespace: str = "orbital-demo",
+    cpu_request: str = "1",
+    memory_request: str = "256Mi",
 ) -> dict[str, Any]:
     requires_gpu = intent.resource_hints.get("requires_gpu", False)
 
@@ -196,8 +198,8 @@ def render_kueue_job(
         "args": primary.args or [f'echo "run {primary.name}"'],
         "resources": {
             "requests": {
-                "cpu": "1",
-                "memory": "256Mi",
+                "cpu": cpu_request,
+                "memory": memory_request,
             },
         },
     }

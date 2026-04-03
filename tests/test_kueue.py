@@ -79,6 +79,32 @@ def test_render_kueue_job_gpu_hints():
     assert resources["requests"]["nvidia.com/gpu"] == "1"
 
 
+def test_kueue_custom_cpu_request():
+    """render_kueue_job should accept custom cpu_request."""
+    intent = WorkflowIntent(
+        mission_id="test", service_id="svc", priority=50,
+        workflow_name="test-wf",
+        steps=[WorkflowStep(name="s1", image="busybox:1.36")],
+    )
+    job = render_kueue_job(intent, cpu_request="500m", memory_request="128Mi")
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    assert container["resources"]["requests"]["cpu"] == "500m"
+    assert container["resources"]["requests"]["memory"] == "128Mi"
+
+
+def test_kueue_default_resources_unchanged():
+    """Default cpu/memory should remain 1/256Mi for backward compat."""
+    intent = WorkflowIntent(
+        mission_id="test", service_id="svc", priority=50,
+        workflow_name="test-wf",
+        steps=[WorkflowStep(name="s1", image="busybox:1.36")],
+    )
+    job = render_kueue_job(intent)
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    assert container["resources"]["requests"]["cpu"] == "1"
+    assert container["resources"]["requests"]["memory"] == "256Mi"
+
+
 def test_render_kueue_job_labels():
     """Job labels include mission-id, service-id, and priority for traceability."""
     plan = load_mission_plan("configs/mission_plans/sample_gpu_cpu_fallback.yaml")
