@@ -27,3 +27,4 @@ out/
 
 # Paper drafts (local only)
 paper/
+.claude/worktrees/
