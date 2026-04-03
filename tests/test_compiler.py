@@ -3,7 +3,14 @@ import logging
 import pytest
 
 from orbital_mission_compiler.compiler import load_mission_plan, compile_plan_to_intents, render_argo_workflow
-from orbital_mission_compiler.schemas import MissionPlan, MissionEvent, MissionEventType, AIService, WorkflowStep, WorkflowIntent
+from orbital_mission_compiler.schemas import (
+    MissionPlan,
+    MissionEvent,
+    MissionEventType,
+    AIService,
+    WorkflowStep,
+    WorkflowIntent,
+)
 
 
 def test_unknown_execution_mode_raises():
