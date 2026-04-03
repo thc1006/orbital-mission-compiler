@@ -105,6 +105,20 @@ def test_kueue_default_resources_unchanged():
     assert container["resources"]["requests"]["memory"] == "256Mi"
 
 
+def test_kueue_empty_resource_request_raises():
+    """Empty cpu_request or memory_request should raise ValueError."""
+    import pytest
+    intent = WorkflowIntent(
+        mission_id="test", service_id="svc", priority=50,
+        workflow_name="test-wf",
+        steps=[WorkflowStep(name="s1", image="busybox:1.36")],
+    )
+    with pytest.raises(ValueError, match="cpu_request must not be empty"):
+        render_kueue_job(intent, cpu_request="")
+    with pytest.raises(ValueError, match="memory_request must not be empty"):
+        render_kueue_job(intent, memory_request="  ")
+
+
 def test_render_kueue_job_labels():
     """Job labels include mission-id, service-id, and priority for traceability."""
     plan = load_mission_plan("configs/mission_plans/sample_gpu_cpu_fallback.yaml")

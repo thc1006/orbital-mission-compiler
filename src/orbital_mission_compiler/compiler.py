@@ -185,6 +185,10 @@ def render_kueue_job(
     cpu_request: str = "1",
     memory_request: str = "256Mi",
 ) -> dict[str, Any]:
+    if not cpu_request or not cpu_request.strip():
+        raise ValueError("cpu_request must not be empty")
+    if not memory_request or not memory_request.strip():
+        raise ValueError("memory_request must not be empty")
     requires_gpu = intent.resource_hints.get("requires_gpu", False)
 
     # Pick the primary compute step (GPU step if present, else first step).
