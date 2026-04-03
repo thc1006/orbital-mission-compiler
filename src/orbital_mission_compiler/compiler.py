@@ -27,10 +27,15 @@ def load_mission_plan(path: str | Path) -> MissionPlan:
 
 
 def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
-    """Detect overlapping acquisition windows in a mission plan."""
+    """Detect overlapping acquisition windows in a mission plan.
+
+    Pairwise comparison is O(n^2) in acquisition events. For plans with
+    hundreds of events, consider sorting by start time first (future optimization).
+    """
     from datetime import datetime, timezone
 
     acq_events = []
+    skipped = []
     for ev in plan.events:
         if ev.event_type.value != "acquisition":
             continue
@@ -39,8 +44,12 @@ def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
         except ValueError:
+            skipped.append(ev.timestamp)
+            logger.warning("Skipping event with unparseable timestamp: %s", ev.timestamp)
             continue
         if ev.duration_seconds is None:
+            skipped.append(ev.timestamp)
+            logger.warning("Skipping event without duration_seconds: %s", ev.timestamp)
             continue
         acq_events.append({
             "timestamp": ev.timestamp,

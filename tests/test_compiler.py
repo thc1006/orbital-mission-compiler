@@ -45,7 +45,31 @@ def test_detect_timeline_conflicts_no_overlap():
     """Non-overlapping events should return empty conflicts."""
     from orbital_mission_compiler.compiler import detect_timeline_conflicts
 
-    plan = load_mission_plan("configs/mission_plans/sample_orchide_format.yaml")
+    plan = MissionPlan(
+        mission_id="test-no-overlap",
+        events=[
+            MissionEvent(
+                timestamp="2026-04-15T10:00:00Z",
+                event_type="acquisition",
+                instrument="cam",
+                duration_seconds=60,
+                services=[AIService(
+                    service_id="svc1", priority=50,
+                    steps=[WorkflowStep(name="s1", image="img:1")],
+                )],
+            ),
+            MissionEvent(
+                timestamp="2026-04-15T10:05:00Z",
+                event_type="acquisition",
+                instrument="cam",
+                duration_seconds=60,
+                services=[AIService(
+                    service_id="svc2", priority=50,
+                    steps=[WorkflowStep(name="s2", image="img:1")],
+                )],
+            ),
+        ],
+    )
     conflicts = detect_timeline_conflicts(plan)
     assert conflicts == []
 
