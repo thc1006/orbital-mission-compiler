@@ -79,8 +79,8 @@ def test_render_kueue_job_gpu_hints():
     assert resources["requests"]["nvidia.com/gpu"] == "1"
 
 
-def test_kueue_custom_cpu_request():
-    """render_kueue_job should accept custom cpu_request."""
+def test_kueue_custom_resource_requests():
+    """render_kueue_job should accept custom cpu_request and memory_request."""
     intent = WorkflowIntent(
         mission_id="test", service_id="svc", priority=50,
         workflow_name="test-wf",
