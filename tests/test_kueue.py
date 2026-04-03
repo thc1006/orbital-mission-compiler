@@ -1,5 +1,6 @@
 """Tests for Kueue Job rendering from WorkflowIntent."""
 
+import pytest
 from orbital_mission_compiler.compiler import (
     load_mission_plan,
     compile_plan_to_intents,
@@ -107,7 +108,6 @@ def test_kueue_default_resources_unchanged():
 
 def test_kueue_empty_resource_request_raises():
     """Empty cpu_request or memory_request should raise ValueError."""
-    import pytest
     intent = WorkflowIntent(
         mission_id="test", service_id="svc", priority=50,
         workflow_name="test-wf",
