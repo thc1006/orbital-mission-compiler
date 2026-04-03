@@ -60,7 +60,8 @@ class TestSyntheticPlanGeneration:
     def test_generated_plan_passes_opa_policy(self):
         """The generated plan must pass all 10 OPA policy rules."""
         plan_dict = generate_synthetic_plan(10)
-        rc, raw = eval_policy(BUNDLE, plan_dict, DECISION)
+        plan = MissionPlan.model_validate(plan_dict)
+        rc, raw = eval_policy(BUNDLE, plan.model_dump(mode="json"), DECISION)
         assert rc == 0, f"OPA eval failed (rc={rc}): {raw}"
         parsed = json.loads(raw)
         result = parsed["result"][0]["expressions"][0]["value"]
