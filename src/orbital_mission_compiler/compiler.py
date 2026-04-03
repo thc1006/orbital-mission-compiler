@@ -26,7 +26,51 @@ def load_mission_plan(path: str | Path) -> MissionPlan:
     return MissionPlan.model_validate(raw)
 
 
-def compile_plan_to_intents(plan: MissionPlan) -> list[WorkflowIntent]:
+def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
+    """Detect overlapping acquisition windows in a mission plan."""
+    from datetime import datetime, timezone
+
+    acq_events = []
+    for ev in plan.events:
+        if ev.event_type.value != "acquisition":
+            continue
+        try:
+            ts = datetime.fromisoformat(ev.timestamp.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if ev.duration_seconds is None:
+            continue
+        acq_events.append({
+            "timestamp": ev.timestamp,
+            "start": ts.timestamp(),
+            "end": ts.timestamp() + ev.duration_seconds,
+        })
+
+    conflicts: list[dict[str, Any]] = []
+    for i in range(len(acq_events)):
+        for j in range(i + 1, len(acq_events)):
+            a, b = acq_events[i], acq_events[j]
+            max_start = max(a["start"], b["start"])
+            min_end = min(a["end"], b["end"])
+            if max_start < min_end:
+                conflicts.append({
+                    "event_a": a["timestamp"],
+                    "event_b": b["timestamp"],
+                    "overlap_seconds": round(min_end - max_start, 2),
+                })
+    return conflicts
+
+
+def compile_plan_to_intents(plan: MissionPlan, check_conflicts: bool = False) -> list[WorkflowIntent]:
+    if check_conflicts:
+        conflicts = detect_timeline_conflicts(plan)
+        for c in conflicts:
+            logger.warning(
+                "Timeline conflict: %s overlaps with %s by %.1fs",
+                c["event_a"], c["event_b"], c["overlap_seconds"],
+            )
     intents: list[WorkflowIntent] = []
     skipped = 0
     for event in plan.events:
