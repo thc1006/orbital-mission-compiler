@@ -49,10 +49,11 @@ def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
         if ev.duration_seconds is None:
             logger.debug("Skipping event without duration_seconds: %s", ev.timestamp)
             continue
+        start = ts.timestamp()
         acq_events.append({
             "timestamp": ev.timestamp,
-            "start": ts.timestamp(),
-            "end": ts.timestamp() + ev.duration_seconds,
+            "start": start,
+            "end": start + ev.duration_seconds,
         })
 
     conflicts: list[dict[str, Any]] = []
@@ -73,11 +74,14 @@ def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
 def compile_plan_to_intents(plan: MissionPlan, check_conflicts: bool = False) -> list[WorkflowIntent]:
     if check_conflicts:
         conflicts = detect_timeline_conflicts(plan)
-        for c in conflicts:
-            logger.warning(
-                "Timeline conflict: %s overlaps with %s by %.1fs",
-                c["event_a"], c["event_b"], c["overlap_seconds"],
-            )
+        for i, c in enumerate(conflicts):
+            if i < 10:
+                logger.warning(
+                    "Timeline conflict: %s overlaps with %s by %.1fs",
+                    c["event_a"], c["event_b"], c["overlap_seconds"],
+                )
+        if len(conflicts) > 10:
+            logger.warning("... and %d more conflicts (total: %d)", len(conflicts) - 10, len(conflicts))
     intents: list[WorkflowIntent] = []
     skipped = 0
     for event in plan.events:

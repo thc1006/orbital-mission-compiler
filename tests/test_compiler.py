@@ -50,7 +50,7 @@ def test_detect_timeline_conflicts_no_overlap():
         events=[
             MissionEvent(
                 timestamp="2026-04-15T10:00:00Z",
-                event_type="acquisition",
+                event_type=MissionEventType.ACQUISITION,
                 instrument="cam",
                 duration_seconds=60,
                 services=[AIService(
@@ -60,7 +60,7 @@ def test_detect_timeline_conflicts_no_overlap():
             ),
             MissionEvent(
                 timestamp="2026-04-15T10:05:00Z",
-                event_type="acquisition",
+                event_type=MissionEventType.ACQUISITION,
                 instrument="cam",
                 duration_seconds=60,
                 services=[AIService(
@@ -83,7 +83,7 @@ def test_detect_timeline_conflicts_with_overlap():
         events=[
             MissionEvent(
                 timestamp="2026-04-15T10:00:00Z",
-                event_type="acquisition",
+                event_type=MissionEventType.ACQUISITION,
                 instrument="cam",
                 duration_seconds=120,
                 services=[AIService(
@@ -93,7 +93,7 @@ def test_detect_timeline_conflicts_with_overlap():
             ),
             MissionEvent(
                 timestamp="2026-04-15T10:01:00Z",
-                event_type="acquisition",
+                event_type=MissionEventType.ACQUISITION,
                 instrument="cam",
                 duration_seconds=120,
                 services=[AIService(
@@ -115,7 +115,7 @@ def test_compile_with_conflict_check_logs_warning(caplog):
         events=[
             MissionEvent(
                 timestamp="2026-04-15T10:00:00Z",
-                event_type="acquisition",
+                event_type=MissionEventType.ACQUISITION,
                 instrument="cam",
                 duration_seconds=120,
                 services=[AIService(
@@ -125,7 +125,7 @@ def test_compile_with_conflict_check_logs_warning(caplog):
             ),
             MissionEvent(
                 timestamp="2026-04-15T10:01:00Z",
-                event_type="acquisition",
+                event_type=MissionEventType.ACQUISITION,
                 instrument="cam",
                 duration_seconds=120,
                 services=[AIService(
