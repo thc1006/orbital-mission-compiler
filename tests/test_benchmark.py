@@ -11,7 +11,7 @@ from orbital_mission_compiler.schemas import MissionPlan
 from orbital_mission_compiler.policy import opa_available, eval_policy
 
 # Import generation logic from the benchmark script
-from scripts.benchmark_scaling import generate_synthetic_plan
+import sys; sys.path.insert(0, "scripts"); from benchmark_scaling import generate_synthetic_plan
 
 BUNDLE = "configs/policies"
 DECISION = "data.orbitalmission"
