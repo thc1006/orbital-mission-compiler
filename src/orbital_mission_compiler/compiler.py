@@ -202,8 +202,8 @@ def render_kueue_job(
         "args": primary.args or [f'echo "run {primary.name}"'],
         "resources": {
             "requests": {
-                "cpu": cpu_request,
-                "memory": memory_request,
+                "cpu": cpu_request.strip(),
+                "memory": memory_request.strip(),
             },
         },
     }
