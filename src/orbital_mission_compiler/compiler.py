@@ -71,15 +71,17 @@ def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
     return conflicts
 
 
-def compile_plan_to_intents(plan: MissionPlan, check_conflicts: bool = False) -> list[WorkflowIntent]:
+def compile_plan_to_intents(
+    plan: MissionPlan,
+    check_conflicts: bool = False,
+) -> list[WorkflowIntent]:
     if check_conflicts:
         conflicts = detect_timeline_conflicts(plan)
-        for i, c in enumerate(conflicts):
-            if i < 10:
-                logger.warning(
-                    "Timeline conflict: %s overlaps with %s by %.1fs",
-                    c["event_a"], c["event_b"], c["overlap_seconds"],
-                )
+        for c in conflicts[:10]:
+            logger.warning(
+                "Timeline conflict: %s overlaps with %s by %.1fs",
+                c["event_a"], c["event_b"], c["overlap_seconds"],
+            )
         if len(conflicts) > 10:
             logger.warning("... and %d more conflicts (total: %d)", len(conflicts) - 10, len(conflicts))
     intents: list[WorkflowIntent] = []
