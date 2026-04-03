@@ -44,10 +44,10 @@ def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
         except ValueError:
-            logger.warning("Skipping event with unparseable timestamp: %s", ev.timestamp)
+            logger.warning("Skipping event with unparseable timestamp: %s (plan: %s)", ev.timestamp, plan.mission_id)
             continue
         if ev.duration_seconds is None:
-            logger.debug("Skipping event without duration_seconds: %s", ev.timestamp)
+            logger.debug("Skipping event without duration_seconds: %s (plan: %s)", ev.timestamp, plan.mission_id)
             continue
         start = ts.timestamp()
         acq_events.append({
