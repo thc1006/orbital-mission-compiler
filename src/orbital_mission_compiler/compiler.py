@@ -181,7 +181,13 @@ def render_kueue_job(
     intent: WorkflowIntent,
     queue_name: str = "orbital-demo-local",
     namespace: str = "orbital-demo",
+    cpu_request: str = "1",
+    memory_request: str = "256Mi",
 ) -> dict[str, Any]:
+    if not isinstance(cpu_request, str) or not cpu_request.strip():
+        raise ValueError("cpu_request must not be empty")
+    if not isinstance(memory_request, str) or not memory_request.strip():
+        raise ValueError("memory_request must not be empty")
     requires_gpu = intent.resource_hints.get("requires_gpu", False)
 
     # Pick the primary compute step (GPU step if present, else first step).
@@ -195,8 +201,8 @@ def render_kueue_job(
         "args": primary.args or [f'echo "run {primary.name}"'],
         "resources": {
             "requests": {
-                "cpu": "1",
-                "memory": "256Mi",
+                "cpu": cpu_request.strip(),
+                "memory": memory_request.strip(),
             },
         },
     }

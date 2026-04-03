@@ -1,5 +1,6 @@
 """Tests for Kueue Job rendering from WorkflowIntent."""
 
+import pytest
 from orbital_mission_compiler.compiler import (
     load_mission_plan,
     compile_plan_to_intents,
@@ -77,6 +78,45 @@ def test_render_kueue_job_gpu_hints():
     # GPU resource request
     resources = pod_spec["containers"][0]["resources"]
     assert resources["requests"]["nvidia.com/gpu"] == "1"
+
+
+def test_kueue_custom_resource_requests():
+    """render_kueue_job should accept custom cpu_request and memory_request."""
+    intent = WorkflowIntent(
+        mission_id="test", service_id="svc", priority=50,
+        workflow_name="test-wf",
+        steps=[WorkflowStep(name="s1", image="busybox:1.36")],
+    )
+    job = render_kueue_job(intent, cpu_request="500m", memory_request="128Mi")
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    assert container["resources"]["requests"]["cpu"] == "500m"
+    assert container["resources"]["requests"]["memory"] == "128Mi"
+
+
+def test_kueue_default_resources_unchanged():
+    """Default cpu/memory should remain 1/256Mi for backward compat."""
+    intent = WorkflowIntent(
+        mission_id="test", service_id="svc", priority=50,
+        workflow_name="test-wf",
+        steps=[WorkflowStep(name="s1", image="busybox:1.36")],
+    )
+    job = render_kueue_job(intent)
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    assert container["resources"]["requests"]["cpu"] == "1"
+    assert container["resources"]["requests"]["memory"] == "256Mi"
+
+
+def test_kueue_empty_resource_request_raises():
+    """Empty cpu_request or memory_request should raise ValueError."""
+    intent = WorkflowIntent(
+        mission_id="test", service_id="svc", priority=50,
+        workflow_name="test-wf",
+        steps=[WorkflowStep(name="s1", image="busybox:1.36")],
+    )
+    with pytest.raises(ValueError, match="cpu_request must not be empty"):
+        render_kueue_job(intent, cpu_request="")
+    with pytest.raises(ValueError, match="memory_request must not be empty"):
+        render_kueue_job(intent, memory_request="  ")
 
 
 def test_render_kueue_job_labels():
