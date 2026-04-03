@@ -6,7 +6,10 @@ benchmark script and its tests.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+_BASE_TIME = datetime(2026, 4, 15, tzinfo=timezone.utc)
 
 
 def generate_synthetic_plan(n_events: int) -> dict[str, Any]:
@@ -24,10 +27,7 @@ def generate_synthetic_plan(n_events: int) -> dict[str, Any]:
     """
     events = []
     for i in range(n_events):
-        hour = i // 3600
-        minute = (i % 3600) // 60
-        second = i % 60
-        timestamp = f"2026-04-15T{hour:02d}:{minute:02d}:{second:02d}Z"
+        timestamp = (_BASE_TIME + timedelta(seconds=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
         events.append(
             {
                 "timestamp": timestamp,
