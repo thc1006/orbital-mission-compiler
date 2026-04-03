@@ -16,6 +16,7 @@ import statistics
 import time
 from typing import Any
 
+from orbital_mission_compiler.benchmark import generate_synthetic_plan
 from orbital_mission_compiler.compiler import (
     compile_plan_to_intents,
     render_argo_workflow,
@@ -30,64 +31,6 @@ PLAN_SIZES = [10, 50, 100, 500, 1000]
 ITERATIONS = 10
 
 
-def generate_synthetic_plan(n_events: int) -> dict[str, Any]:
-    """Generate a synthetic mission plan with n_events acquisition events.
-
-    Each event has 1 service with 3 steps (preprocess/detect/postprocess),
-    CPU-only resource class, busybox:1.36 image. All events use
-    landscape_type=ocean and priority=50 to pass OPA policy.
-
-    Args:
-        n_events: Number of acquisition events to generate.
-
-    Returns:
-        A dict suitable for MissionPlan.model_validate().
-    """
-    events = []
-    for i in range(n_events):
-        hour = i // 3600
-        minute = (i % 3600) // 60
-        second = i % 60
-        timestamp = f"2026-04-15T{hour:02d}:{minute:02d}:{second:02d}Z"
-        events.append(
-            {
-                "timestamp": timestamp,
-                "event_type": "acquisition",
-                "orbit": i + 1,
-                "instrument": f"sensor-{i}",
-                "services": [
-                    {
-                        "service_id": f"svc-{i}",
-                        "priority": 50,
-                        "landscape_type": "ocean",
-                        "steps": [
-                            {
-                                "name": "preprocess",
-                                "image": "busybox:1.36",
-                                "resource_class": "cpu",
-                            },
-                            {
-                                "name": "detect",
-                                "image": "busybox:1.36",
-                                "resource_class": "cpu",
-                            },
-                            {
-                                "name": "postprocess",
-                                "image": "busybox:1.36",
-                                "resource_class": "cpu",
-                            },
-                        ],
-                    }
-                ],
-            }
-        )
-    return {
-        "mission_id": f"bench-{n_events}",
-        "client_id": "benchmark",
-        "events": events,
-    }
-
-
 def _time_parse(plan_dict: dict[str, Any]) -> tuple[MissionPlan, float]:
     """Time Pydantic schema parsing. Returns (plan, elapsed_seconds)."""
     start = time.perf_counter()
@@ -96,10 +39,14 @@ def _time_parse(plan_dict: dict[str, Any]) -> tuple[MissionPlan, float]:
     return plan, elapsed
 
 
-def _time_policy(plan_dict: dict[str, Any]) -> float:
-    """Time OPA policy evaluation. Returns elapsed_seconds."""
+def _time_policy(policy_input: dict[str, Any]) -> float:
+    """Time OPA policy evaluation. Returns elapsed_seconds.
+
+    Args:
+        policy_input: A JSON-normalised dict (from MissionPlan.model_dump(mode="json")).
+    """
     start = time.perf_counter()
-    rc, raw = eval_policy(BUNDLE, plan_dict, DECISION)
+    rc, raw = eval_policy(BUNDLE, policy_input, DECISION)
     elapsed = time.perf_counter() - start
     if rc != 0:
         raise RuntimeError(f"OPA eval failed (rc={rc}): {raw}")
@@ -170,7 +117,8 @@ def run_benchmark(
             parse_times.append(t_parse)
 
             if not skip_policy:
-                t_policy = _time_policy(plan_dict)
+                policy_input = plan.model_dump(mode="json")
+                t_policy = _time_policy(policy_input)
                 policy_times.append(t_policy)
 
             intents, t_compile = _time_compile(plan)
