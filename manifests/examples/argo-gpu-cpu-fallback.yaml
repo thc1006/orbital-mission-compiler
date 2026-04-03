@@ -1,54 +1,92 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  name: orbital-gpu-cpu-fallback-demo
+  name: mission-beta-wildfire-detection-2026-04-16t09-15-00z
+  labels:
+    mission-id: mission-beta
+    service-id: wildfire-detection
+    priority: '75'
+  annotations:
+    orbital/priority: '75'
+    orbital/execution-mode: sequential
+    orbital/requires-gpu: 'true'
+    orbital/requires-fpga: 'false'
+    orbital/fallback-enabled: 'true'
 spec:
   entrypoint: main
   templates:
-    - name: main
-      steps:
-        - - name: preprocess
-            template: preprocess
-        - - name: gpu-preferred-detect
-            template: gpu-preferred-detect
-        - - name: postprocess
-            template: postprocess
-    - name: preprocess
-      container:
-        image: registry.k8s.io/e2e-test-images/agnhost:2.53
-        command: ["/bin/sh", "-c"]
-        args: ["echo preprocess"]
-    - name: gpu-preferred-detect
-      metadata:
-        annotations:
-          orbital/resource-class: gpu
-          orbital/fallback-resource-class: cpu
-      affinity:
-        nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              preference:
-                matchExpressions:
-                  - key: accelerator
-                    operator: In
-                    values: ["nvidia"]
-      container:
-        image: registry.k8s.io/e2e-test-images/agnhost:2.53
-        command: ["/bin/sh", "-c"]
-        args:
-          - |
-            if [ -e /dev/nvidia0 ]; then
-              echo gpu-path
-            else
-              echo cpu-fallback
-            fi
-        env:
-          - name: ORBITAL_RESOURCE_CLASS
-            value: gpu
-          - name: ORBITAL_FALLBACK_RESOURCE_CLASS
-            value: cpu
-    - name: postprocess
-      container:
-        image: registry.k8s.io/e2e-test-images/agnhost:2.53
-        command: ["/bin/sh", "-c"]
-        args: ["echo postprocess"]
+  - name: main
+    dag:
+      tasks:
+      - name: preprocess
+        template: step-0-preprocess
+      - name: detect-wildfire
+        template: step-1-detect-wildfire
+        depends: preprocess
+      - name: postprocess
+        template: step-2-postprocess
+        depends: detect-wildfire
+  - name: step-0-preprocess
+    container:
+      image: ghcr.io/example/preprocess:0.1.0
+      command:
+      - sh
+      - -c
+      args:
+      - echo preprocess
+      env:
+      - name: ORBITAL_RESOURCE_CLASS
+        value: cpu
+      - name: ORBITAL_NEEDS_ACCELERATION
+        value: 'false'
+    metadata:
+      annotations:
+        resource-class: cpu
+        needs-acceleration: 'false'
+  - name: step-1-detect-wildfire
+    container:
+      image: ghcr.io/example/fire-detector:0.1.0
+      command:
+      - sh
+      - -c
+      args:
+      - if [ -e /dev/nvidia0 ]; then echo gpu-path; else echo cpu-fallback; fi
+      env:
+      - name: ORBITAL_RESOURCE_CLASS
+        value: gpu
+      - name: ORBITAL_NEEDS_ACCELERATION
+        value: 'true'
+      - name: ORBITAL_FALLBACK_RESOURCE_CLASS
+        value: cpu
+    metadata:
+      annotations:
+        resource-class: gpu
+        needs-acceleration: 'true'
+        fallback-resource-class: cpu
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+            - key: accelerator
+              operator: In
+              values:
+              - nvidia
+  - name: step-2-postprocess
+    container:
+      image: ghcr.io/example/postprocess:0.1.0
+      command:
+      - sh
+      - -c
+      args:
+      - echo postprocess
+      env:
+      - name: ORBITAL_RESOURCE_CLASS
+        value: cpu
+      - name: ORBITAL_NEEDS_ACCELERATION
+        value: 'false'
+    metadata:
+      annotations:
+        resource-class: cpu
+        needs-acceleration: 'false'
