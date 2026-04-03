@@ -22,7 +22,7 @@ This project fills that gap. It provides the ground-side toolchain that produces
 - Compiles mission plans through a typed IR (WorkflowIntent) with resource hints
 - Renders Argo Workflow DAGs (sequential and parallel execution modes)
 - Renders Kueue-compatible Jobs with GPU/FPGA admission metadata
-- Exposes 4 MCP tools for AI agent integration (validate, compile, render, explain)
+- Exposes 6 MCP tools for AI agent integration (validate, compile, render, explain, diff, timeline conflicts)
 - Defines 21 Pydantic interface contracts for simulation, packaging, and platform services
 
 ## What it is not
@@ -35,7 +35,7 @@ This is not a flight-ready onboard satellite runtime. It does not implement radi
 git clone https://github.com/thc1006/satellite-mission-compiler.git
 cd satellite-mission-compiler
 pip install -e ".[dev]"
-make test        # 145 tests
+make test        # 155 tests
 make eval        # 3 golden translation checks
 make opa-smoke   # OPA policy evaluation (requires opa CLI)
 make argo-smoke  # Argo manifest lint (requires argo CLI)

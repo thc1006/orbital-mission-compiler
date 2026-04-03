@@ -24,3 +24,6 @@ out/
 # Agent workflow output directories
 .full-review/
 .tdd-cycle/
+
+# Paper drafts (local only)
+paper/

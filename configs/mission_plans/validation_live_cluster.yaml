@@ -1,0 +1,43 @@
+# Live cluster validation plan.
+# Uses publicly available container images (busybox) for end-to-end testing.
+# CPU-only to avoid GPU device plugin dependency.
+mission_id: validation-live
+client_id: paper-validation
+events:
+  - timestamp: "2026-04-02T23:00:00Z"
+    event_type: acquisition
+    orbit: 1
+    duration_seconds: 10.0
+    instrument: optical-camera
+    ground_visibility: false
+    region_type: ocean
+    services:
+      - service_id: ship-detection
+        priority: 80
+        landscape_type: ocean
+        execution_mode: sequential
+        steps:
+          - name: preprocess
+            image: busybox:1.36
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo '[preprocess] Normalizing input data' && sleep 2 && echo '[preprocess] Done'"]
+          - name: detect
+            image: busybox:1.36
+            phase: ai
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo '[detect] Running ship detection inference' && sleep 3 && echo '[detect] Found 3 vessels'"]
+          - name: postprocess
+            image: busybox:1.36
+            phase: postprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo '[postprocess] Packaging results for downlink' && sleep 1 && echo '[postprocess] Done'"]
+  - timestamp: "2026-04-02T23:15:00Z"
+    event_type: download
+    orbit: 1
+    duration_seconds: 180.0
+    instrument: x-band
+    ground_visibility: true
