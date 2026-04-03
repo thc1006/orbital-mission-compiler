@@ -35,7 +35,7 @@ def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
     from datetime import datetime, timezone
 
     acq_events = []
-    skipped = []
+
     for ev in plan.events:
         if ev.event_type.value != "acquisition":
             continue
@@ -44,12 +44,10 @@ def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
         except ValueError:
-            skipped.append(ev.timestamp)
             logger.warning("Skipping event with unparseable timestamp: %s", ev.timestamp)
             continue
         if ev.duration_seconds is None:
-            skipped.append(ev.timestamp)
-            logger.warning("Skipping event without duration_seconds: %s", ev.timestamp)
+            logger.debug("Skipping event without duration_seconds: %s", ev.timestamp)
             continue
         acq_events.append({
             "timestamp": ev.timestamp,

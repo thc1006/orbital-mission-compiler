@@ -135,7 +135,7 @@ def test_compile_with_conflict_check_logs_warning(caplog):
             ),
         ],
     )
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="orbital_mission_compiler.compiler"):
         intents = compile_plan_to_intents(plan, check_conflicts=True)
     assert len(intents) == 2  # still compiles
     assert "Timeline conflict" in caplog.text
