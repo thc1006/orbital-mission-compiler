@@ -41,6 +41,14 @@ make opa-smoke   # OPA policy evaluation (requires opa CLI)
 make argo-smoke  # Argo manifest lint (requires argo CLI)
 ```
 
+## Local development with Docker Compose
+
+```bash
+docker compose up    # Starts OPA server + runs compiler
+```
+
+See `docker-compose.yml` for the full service definitions (OPA policy server and mission compiler).
+
 ## Architecture
 
 ```
