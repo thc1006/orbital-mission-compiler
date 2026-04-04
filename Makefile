@@ -2,7 +2,7 @@ PYTHON ?= python3
 PACKAGE = orbital_mission_compiler
 export PYTHONPATH := src:.
 
-.PHONY: verify test lint fmt compile-sample render-samples argo-smoke opa-smoke demo-phase2 eval benchmark print-tree k8s-smoke
+.PHONY: verify test lint fmt compile-sample render-samples argo-smoke opa-smoke demo-phase2 eval benchmark print-tree k8s-smoke ablation
 
 verify:
 	$(PYTHON) scripts/verify.py
@@ -36,6 +36,9 @@ eval:
 
 benchmark: ## Run scaling benchmark
 	$(PYTHON) scripts/benchmark_scaling.py
+
+ablation: ## Run ablation study (requires OPA CLI)
+	$(PYTHON) scripts/ablation_study.py
 
 k8s-smoke: ## Live cluster validation (requires K8s + Argo + Kueue)
 	bash scripts/validate_live_cluster.sh
