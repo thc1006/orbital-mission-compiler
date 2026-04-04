@@ -126,6 +126,7 @@ The following features are explicitly added by this project to fill gaps that OR
 | Pydantic schema validation | `src/orbital_mission_compiler/schemas.py` | ORCHIDE does not specify how mission plans are validated before reaching the satellite |
 | OPA/Rego policy framework | `configs/policies/mission_plan.rego`, `src/orbital_mission_compiler/policy.py` | ORCHIDE has no policy-as-code; this adds 10 deny rules for semantic validation |
 | Kueue admission control | `src/orbital_mission_compiler/compiler.py:render_kueue_job` | ORCHIDE uses a custom priority queue; this adds Kubernetes-native admission via Kueue |
+| DRA ResourceClaimTemplate rendering | `src/orbital_mission_compiler/compiler.py:render_resource_claim_templates` | ORCHIDE does not use DRA; this adds `resource.k8s.io/v1` ResourceClaimTemplate for GPU scheduling via Kueue v0.17+ |
 | CLI tool | `src/orbital_mission_compiler/cli.py` | ORCHIDE's translation layer is embedded glue code; this extracts a standalone CLI |
 | MCP server | `src/orbital_mission_compiler/mcp/server.py` | ORCHIDE has no AI agent interface; this adds 6 MCP tools for ground-side agents |
 | Fallback resource class | `src/orbital_mission_compiler/schemas.py:fallback_resource_class` | ORCHIDE has no fallback strategy; ground-side demo reliability |

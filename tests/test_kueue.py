@@ -60,24 +60,23 @@ def test_render_kueue_job_basic_structure():
 
 
 def test_render_kueue_job_gpu_hints():
-    """A plan requiring GPU adds nodeSelector, tolerations, and GPU resource request."""
+    """A plan requiring GPU uses DRA by default (resourceClaims, no static nvidia.com/gpu)."""
     plan = load_mission_plan("configs/mission_plans/sample_gpu_cpu_fallback.yaml")
     intent = compile_plan_to_intents(plan)[0]
     job = render_kueue_job(intent, queue_name="orbital-demo-local", namespace="orbital-demo")
 
     pod_spec = job["spec"]["template"]["spec"]
 
-    # GPU intent should have nodeSelector
-    assert pod_spec["nodeSelector"]["accelerator"] == "nvidia"
+    # DRA path: resourceClaims in pod spec, claims in container resources
+    assert "resourceClaims" in pod_spec
+    assert len(pod_spec["resourceClaims"]) >= 1
+    container = pod_spec["containers"][0]
+    assert "claims" in container["resources"]
 
-    # GPU intent should have toleration
-    tolerations = pod_spec.get("tolerations", [])
-    gpu_tol = [t for t in tolerations if t.get("key") == "nvidia.com/gpu"]
-    assert len(gpu_tol) == 1
-
-    # GPU resource request
-    resources = pod_spec["containers"][0]["resources"]
-    assert resources["requests"]["nvidia.com/gpu"] == "1"
+    # DRA path: no static GPU request, no nodeSelector, no tolerations
+    assert "nvidia.com/gpu" not in container["resources"].get("requests", {})
+    assert "nodeSelector" not in pod_spec
+    assert "tolerations" not in pod_spec
 
 
 def test_kueue_custom_resource_requests():
