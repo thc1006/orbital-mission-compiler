@@ -81,12 +81,18 @@ echo "=== Compiling validation mission plan ==="
 
 mkdir -p "${OUT_DIR}"
 
+COMPILE_LOG="${OUT_DIR}/compile.log"
 if PYTHONPATH="${PYTHONPATH:-src}" ${PYTHON_BIN} -m orbital_mission_compiler.cli compile \
     --input "${MISSION_FILE}" \
-    --output "${OUT_DIR}/compiled.yaml" >/dev/null 2>&1; then
+    --output "${OUT_DIR}/compiled.yaml" >"${COMPILE_LOG}" 2>&1; then
   report PASS "Mission plan compiled"
 else
-  report FAIL "Mission plan compilation failed"
+  report FAIL "Mission plan compilation failed (see ${COMPILE_LOG})"
+  if [ -s "${COMPILE_LOG}" ]; then
+    cat "${COMPILE_LOG}" >&2
+  else
+    echo "Compilation failed, but no compile log was created or it is empty: ${COMPILE_LOG}" >&2
+  fi
 fi
 
 # ── Step 4: Render and submit Argo Workflow ────────────────────────────
@@ -97,12 +103,18 @@ echo "=== Argo Workflow ==="
 rm -rf "${ARGO_OUT}"
 mkdir -p "${ARGO_OUT}"
 
+ARGO_RENDER_LOG="${OUT_DIR}/argo-render.log"
 if PYTHONPATH="${PYTHONPATH:-src}" ${PYTHON_BIN} -m orbital_mission_compiler.cli render-argo \
     --input "${MISSION_FILE}" \
-    --output-dir "${ARGO_OUT}" >/dev/null 2>&1; then
+    --output-dir "${ARGO_OUT}" >"${ARGO_RENDER_LOG}" 2>&1; then
   report PASS "Argo Workflow rendered"
 else
-  report FAIL "Argo Workflow rendering failed"
+  report FAIL "Argo Workflow rendering failed (see ${ARGO_RENDER_LOG})"
+  if [ -s "${ARGO_RENDER_LOG}" ]; then
+    cat "${ARGO_RENDER_LOG}" >&2
+  else
+    echo "Argo render log is missing or empty: ${ARGO_RENDER_LOG}" >&2
+  fi
 fi
 
 if command -v argo >/dev/null 2>&1; then
@@ -153,14 +165,20 @@ echo "=== Kueue Job ==="
 rm -rf "${KUEUE_OUT}"
 mkdir -p "${KUEUE_OUT}"
 
+KUEUE_RENDER_LOG="${OUT_DIR}/kueue-render.log"
 if PYTHONPATH="${PYTHONPATH:-src}" ${PYTHON_BIN} -m orbital_mission_compiler.cli render-kueue \
     --input "${MISSION_FILE}" \
     --output-dir "${KUEUE_OUT}" \
     --queue "${QUEUE}" \
-    --namespace "${NAMESPACE}" >/dev/null 2>&1; then
+    --namespace "${NAMESPACE}" >"${KUEUE_RENDER_LOG}" 2>&1; then
   report PASS "Kueue Job rendered"
 else
-  report FAIL "Kueue Job rendering failed"
+  report FAIL "Kueue Job rendering failed (see ${KUEUE_RENDER_LOG})"
+  if [ -s "${KUEUE_RENDER_LOG}" ]; then
+    cat "${KUEUE_RENDER_LOG}" >&2
+  else
+    echo "Kueue render log is missing or empty: ${KUEUE_RENDER_LOG}" >&2
+  fi
 fi
 
 JOB_FILE=$(find "${KUEUE_OUT}" -name '*-kueue.yaml' -print -quit 2>/dev/null)
