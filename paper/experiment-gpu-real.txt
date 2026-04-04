@@ -12,7 +12,9 @@ Argo Workflow:
     gpu-detect (nvidia/cuda:13.0.0-base-ubuntu22.04, GPU via DRA): 3s
     postprocess (busybox:1.36, CPU): 4s
   GPU step output: nvidia-smi confirmed RTX 5080, CUDA 13.0
-  DRA claim: podSpecPatch with resourceClaimTemplateName=gpu-claim-template
+  Note: Argo renderer produces soft-preference nodeAffinity only.
+  DRA ResourceClaim was added manually via podSpecPatch for this experiment.
+  Future work: integrate DRA claims into render_argo_workflow.
 
 Conclusion: Rendered Argo Workflow DAG correctly executes real CUDA
 containers on actual GPU hardware via DRA resource claims.
