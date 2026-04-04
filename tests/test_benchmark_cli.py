@@ -116,13 +116,13 @@ class TestBenchmarkJsonOutput:
             assert phase in row
             assert isinstance(row[phase], (int, float))
 
-    def test_json_output_unwritable_path(self, tmp_path: Path):
-        """An unwritable output path should exit with error."""
+    def test_json_output_nonexistent_parent(self, tmp_path: Path):
+        """A path with missing parent directory should exit with error."""
         bad_path = tmp_path / "does_not_exist" / "bench.json"
         with pytest.raises(SystemExit):
             main(["--sizes", "10", "--iterations", "1", "--skip-policy", "--output", str(bad_path)])
 
-    def test_no_json_when_output_omitted(self, tmp_path: Path, capsys):
+    def test_no_json_when_output_omitted(self, capsys):
         """Without --output, no JSON file should be created."""
         main(["--sizes", "10", "--iterations", "1", "--skip-policy"])
         captured = capsys.readouterr()
