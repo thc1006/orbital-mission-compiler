@@ -289,19 +289,23 @@ def run_schema_validation(plan_dict: dict[str, Any]) -> tuple[bool, str]:
 
 
 def run_policy_validation(plan_dict: dict[str, Any]) -> tuple[bool, list[str]]:
-    """Run OPA policy validation only (skips schema). Returns (detected, deny_messages)."""
+    """Run OPA policy validation only (skips schema). Returns (detected, deny_messages).
+
+    Raises RuntimeError on OPA failures so the ablation study cannot
+    silently produce incorrect results.
+    """
     if not opa_available():
-        return False, ["opa CLI not available"]
+        raise RuntimeError("OPA CLI not available")
     rc, output = eval_policy(POLICY_BUNDLE, plan_dict, POLICY_DECISION)
     if rc != 0:
-        return False, [f"OPA error (rc={rc}): {output}"]
+        raise RuntimeError(f"OPA error (rc={rc}): {output}")
     try:
         parsed = json.loads(output)
         result = parsed["result"][0]["expressions"][0]["value"]
         deny = result.get("deny", [])
         return len(deny) > 0, deny
-    except (json.JSONDecodeError, KeyError, IndexError):
-        return False, [f"Unparseable OPA output: {output[:200]}"]
+    except (json.JSONDecodeError, KeyError, IndexError) as exc:
+        raise RuntimeError(f"Unparseable OPA output: {output[:200]}") from exc
 
 
 # ── Ablation runner ──────────────────────────────────────────────────────
@@ -331,14 +335,27 @@ def run_ablation_study() -> dict[ValidationArm, dict[ErrorCategory, float]]:
         combined_hits = 0
 
         for case in cases:
-            s_det, _ = run_schema_validation(case["plan"])
-            p_det, _ = run_policy_validation(case["plan"])
+            raw = case["plan"]
+            s_det, _ = run_schema_validation(raw)
+
+            # Policy-only arm: raw dict (no schema normalization).
+            p_det, _ = run_policy_validation(raw)
+
+            # Combined arm: if schema passes, normalize through
+            # MissionPlan.model_dump(mode='json') before policy eval,
+            # matching the real CLI/MCP pipeline.
+            if s_det:
+                c_det = True
+            else:
+                normalized = MissionPlan.model_validate(raw).model_dump(mode="json")
+                c_policy_det, _ = run_policy_validation(normalized)
+                c_det = c_policy_det
 
             if s_det:
                 schema_hits += 1
             if p_det:
                 policy_hits += 1
-            if s_det or p_det:
+            if c_det:
                 combined_hits += 1
 
         results[ValidationArm.SCHEMA][cat] = schema_hits / n

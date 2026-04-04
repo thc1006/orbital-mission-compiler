@@ -27,9 +27,13 @@ deny contains msg if {
   step := input.events[i].services[j].steps[k]
   step.resource_class == "gpu"
   step.needs_acceleration == true
-  not step.fallback_resource_class
+  _missing_fallback(step)
   msg := sprintf("GPU step %q should declare fallback_resource_class for local demo reliability", [step.name])
 }
+
+# Handle both undefined (raw input) and null (schema-normalized input).
+_missing_fallback(step) if not step.fallback_resource_class
+_missing_fallback(step) if step.fallback_resource_class == null
 
 # Rule 5: service priority must not be zero (slide 9: priorities are 1-4)
 deny contains msg if {
