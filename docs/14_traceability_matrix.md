@@ -44,7 +44,7 @@ Each field in the Pydantic schema models is mapped to its ORCHIDE source (or mar
 | Field | ORCHIDE Source | Slide / D3.1 Ref | Implementation | Test Case | Author-Imposed? |
 |---|---|---|---|---|---|
 | `service_id` | Detector/service identifier (MS, FD, CD) | Slide 9, Slide 10 | `src/orbital_mission_compiler/schemas.py:52` | `test_schema.py`, `test_ir.py` | No |
-| `priority` | PRIORITY_D1-D4 columns | Slide 9 | `src/orbital_mission_compiler/schemas.py:53-57` | `test_schema.py`, `test_policy.py` | No (scale divergence: ORCHIDE 1-4 vs schema 0-100; rendering layer converts) |
+| `priority` | PRIORITY_D1-D4 columns | Slide 9 | `src/orbital_mission_compiler/schemas.py:53-57` | `test_schema.py`, `test_policy.py`, `test_priority_mapping.py` | No (scale divergence: ORCHIDE 1-4 vs schema 0-100; `scale_priority_orchide()` converts in rendering layer) |
 | `landscape_type` | TYPE_D1-D4 columns (O=ocean, L=land) | Slide 9 | `src/orbital_mission_compiler/schemas.py:58` | `test_schema.py`, `test_ir.py`, `test_policy.py` | No |
 | `execution_mode` | "sequential or in parallel" | Slide 10 | `src/orbital_mission_compiler/schemas.py:59` | `test_schema.py`, `test_ir.py`, `test_parallel_rendering.py` | No |
 | `steps` | AI service pipeline stages | Slide 10 | `src/orbital_mission_compiler/schemas.py:60` | `test_schema.py`, `test_rendering.py` | No |
