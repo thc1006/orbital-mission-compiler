@@ -12,7 +12,7 @@ events:
     region_type: ocean
     services:
       - service_id: maritime-surveillance
-        priority: 1
+        priority: 90
         landscape_type: ocean
         steps:
           - name: preprocess
@@ -38,7 +38,7 @@ events:
             command: ["sh", "-c"]
             args: ["echo postprocess"]
       - service_id: cloud-detection
-        priority: 2
+        priority: 50
         landscape_type: ocean
         steps:
           - name: classify-clouds
@@ -56,7 +56,7 @@ events:
     region_type: land
     services:
       - service_id: fire-detection
-        priority: 1
+        priority: 90
         landscape_type: land
         steps:
           - name: preprocess

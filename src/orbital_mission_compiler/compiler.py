@@ -21,6 +21,26 @@ def sanitize_k8s_name(name: str, max_len: int = 63) -> str:
     return s[:max_len] or "step"
 
 
+def scale_priority_orchide(priority: int) -> int:
+    """Convert 0-100 priority to ORCHIDE 1-4 scale (1=highest).
+
+    ORCHIDE slide 9 uses 1-4; the schema uses 0-100 (higher=higher).
+    Mapping: 76-100→1, 51-75→2, 26-50→3, 1-25→4.
+    Priority 0 is rejected (OPA rule 5 treats it as misconfiguration).
+    """
+    if priority < 0 or priority > 100:
+        raise ValueError(f"priority {priority} out of range 0-100")
+    if priority == 0:
+        raise ValueError("priority 0 is a misconfiguration (ORCHIDE uses 1-4)")
+    if priority >= 76:
+        return 1
+    if priority >= 51:
+        return 2
+    if priority >= 26:
+        return 3
+    return 4
+
+
 def load_mission_plan(path: str | Path) -> MissionPlan:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     return MissionPlan.model_validate(raw)
@@ -208,6 +228,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> dict[str, Any]:
 
     wf_annotations: dict[str, str] = {
         "orbital/priority": str(intent.priority),
+        "orbital/orchide-priority": str(scale_priority_orchide(intent.priority)),
         "orbital/execution-mode": execution_mode,
         "orbital/requires-gpu": str(intent.resource_hints.get("requires_gpu", False)).lower(),
         "orbital/requires-fpga": str(intent.resource_hints.get("requires_fpga", False)).lower(),
@@ -355,6 +376,7 @@ def render_kueue_job(
 
     job_annotations: dict[str, str] = {
         "orbital/priority": str(intent.priority),
+        "orbital/orchide-priority": str(scale_priority_orchide(intent.priority)),
         "orbital/requires-gpu": str(requires_gpu).lower(),
         "orbital/requires-fpga": str(requires_fpga).lower(),
         "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),
