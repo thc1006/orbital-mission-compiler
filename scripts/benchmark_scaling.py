@@ -7,13 +7,20 @@ compile, argo_render, kueue_render.
 
 Usage:
     PYTHONPATH=src:. python3 scripts/benchmark_scaling.py
+    PYTHONPATH=src:. python3 scripts/benchmark_scaling.py --sizes 10,50 --iterations 5
+    PYTHONPATH=src:. python3 scripts/benchmark_scaling.py --output results.json
+    PYTHONPATH=src:. python3 scripts/benchmark_scaling.py --skip-policy
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import statistics
+import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from orbital_mission_compiler.benchmark import generate_synthetic_plan
@@ -188,20 +195,156 @@ def print_results(results: list[dict[str, Any]], has_policy: bool = True) -> Non
             )
 
 
-def main() -> None:
-    """Entry point for the benchmark script."""
-    has_opa = opa_available()
-    skip_policy = not has_opa
+def parse_sizes(sizes_str: str) -> list[int]:
+    """Parse a comma-separated string of plan sizes into a list of positive ints.
 
-    if skip_policy:
+    Args:
+        sizes_str: Comma-separated sizes, e.g. "10,50,100".
+
+    Returns:
+        List of positive integers.
+
+    Raises:
+        argparse.ArgumentTypeError: If any value is not a positive integer.
+    """
+    parts = [s.strip() for s in sizes_str.split(",") if s.strip()]
+    if not parts:
+        raise argparse.ArgumentTypeError("must contain at least one positive integer")
+    result: list[int] = []
+    for part in parts:
+        try:
+            val = int(part)
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"Invalid size value: {part!r} (must be a positive integer)"
+            )
+        if val <= 0:
+            raise argparse.ArgumentTypeError(
+                f"Invalid size value: {val} (must be a positive integer)"
+            )
+        result.append(val)
+    return result
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser for the benchmark script."""
+    parser = argparse.ArgumentParser(
+        description="Scaling benchmark for the satellite mission compiler pipeline.",
+    )
+    parser.add_argument(
+        "--sizes",
+        type=parse_sizes,
+        default=None,
+        help=(
+            "Comma-separated plan sizes to benchmark "
+            f"(default: {','.join(str(s) for s in PLAN_SIZES)})"
+        ),
+    )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=ITERATIONS,
+        help=f"Number of timing iterations per size (default: {ITERATIONS})",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Path to write JSON results file (omit for stdout-only)",
+    )
+    parser.add_argument(
+        "--skip-policy",
+        action="store_true",
+        default=False,
+        help="Skip OPA policy evaluation phase",
+    )
+    return parser
+
+
+def write_json_output(
+    path: str,
+    results: list[dict[str, Any]],
+    sizes: list[int],
+    iterations: int,
+    policy_skipped: bool,
+) -> None:
+    """Write benchmark results to a JSON file.
+
+    Args:
+        path: File path to write.
+        results: List of per-size result dicts from run_benchmark().
+        sizes: The plan sizes used.
+        iterations: Number of iterations per size.
+        policy_skipped: Whether policy evaluation was skipped.
+
+    Raises:
+        OSError: If the output path is not writable.
+    """
+    output = {
+        "metadata": {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "sizes": sizes,
+            "iterations": iterations,
+            "policy_skipped": policy_skipped,
+            "timing_unit": "seconds",
+        },
+        "results": results,
+    }
+    out_path = Path(path)
+    # Ensure parent directory exists or raise a clear error
+    parent = out_path.parent
+    if not parent.exists():
+        raise OSError(f"Output directory does not exist: {parent}")
+    out_path.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Entry point for the benchmark script.
+
+    Args:
+        argv: Command-line arguments. Defaults to sys.argv[1:].
+    """
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    sizes = args.sizes if args.sizes is not None else list(PLAN_SIZES)
+
+    if args.iterations < 1:
+        parser.error("--iterations must be at least 1")
+
+    has_opa = opa_available()
+    skip_policy = args.skip_policy or not has_opa
+
+    if not has_opa and not args.skip_policy:
         print("WARNING: OPA CLI not found; skipping policy evaluation phase.")
         print()
 
-    print(f"Scaling benchmark: sizes={PLAN_SIZES}, iterations={ITERATIONS}")
+    if args.skip_policy and not has_opa:
+        print("NOTE: --skip-policy set and OPA CLI not found; policy phase skipped.")
+        print()
+
+    print(f"Scaling benchmark: sizes={sizes}, iterations={args.iterations}")
     print()
 
-    results = run_benchmark(skip_policy=skip_policy)
-    print_results(results, has_policy=has_opa)
+    results = run_benchmark(sizes=sizes, iterations=args.iterations, skip_policy=skip_policy)
+    has_policy = not skip_policy
+    print_results(results, has_policy=has_policy)
+
+    if args.output is not None:
+        if not args.output.strip():
+            parser.error("--output path must not be empty")
+        try:
+            write_json_output(
+                path=args.output,
+                results=results,
+                sizes=sizes,
+                iterations=args.iterations,
+                policy_skipped=skip_policy,
+            )
+            print(f"\nResults written to {args.output}")
+        except OSError as exc:
+            print(f"\nERROR: Could not write output file: {exc}", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":
