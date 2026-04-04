@@ -64,12 +64,12 @@ The compiler implements hardening for the following CWEs. Test coverage is summa
 
 | CWE | Name | Mitigation | Location | Tests |
 |---|---|---|---|---|
-| CWE-22 | Path Traversal | Multi-layer validation: no `..`, no absolute, bare filenames, symlink-safe resolve | `mcp/server.py:33-59` | `test_mcp_security.py` (6 tests) |
-| CWE-209 | Error Message Info Disclosure | stdout prioritized over stderr for OPA output | `policy.py:39-42` | `test_policy_security.py` (1 test) |
+| CWE-22 | Path Traversal | Multi-layer validation: no `..`, no absolute, bare filenames, symlink-safe resolve | `src/orbital_mission_compiler/mcp/server.py:33-59` | `test_mcp_security.py` (6 tests) |
+| CWE-209 | Error Message Info Disclosure | stdout prioritized over stderr for OPA output | `src/orbital_mission_compiler/policy.py:39-42` | `test_policy_security.py` (1 test) |
 | CWE-250 | Unnecessary Privileges | Non-root `USER appuser` in Dockerfile | `Dockerfile:19` | CI runs as non-root |
-| CWE-377 | Insecure Temporary File | `mktemp` + `trap` cleanup; Python `tempfile.TemporaryDirectory` | `opa_smoke.sh:12-13`, `server.py` | Scripts + context managers |
-| CWE-400 | Uncontrolled Resource Consumption | 30-second OPA subprocess timeout | `policy.py:14,35` | `test_policy_security.py` (2 tests) |
-| CWE-502 | Deserialization of Untrusted Data | `yaml.safe_load` used consistently; Pydantic typed validation | `compiler.py:45` | Schema + negative tests |
+| CWE-377 | Insecure Temporary File | `mktemp` + `trap` cleanup; Python `tempfile.TemporaryDirectory` | `scripts/opa_smoke.sh:12-13`, `src/orbital_mission_compiler/mcp/server.py` | Scripts + context managers |
+| CWE-400 | Uncontrolled Resource Consumption | 30-second OPA subprocess timeout | `src/orbital_mission_compiler/policy.py:14,35` | `test_policy_security.py` (2 tests) |
+| CWE-502 | Deserialization of Untrusted Data | `yaml.safe_load` used consistently; Pydantic typed validation | `src/orbital_mission_compiler/compiler.py:45` | Schema + negative tests |
 
 ---
 
