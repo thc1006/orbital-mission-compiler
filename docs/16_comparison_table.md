@@ -42,7 +42,7 @@
 |---|---|---|---|---|---|
 | **Hardware Abstraction** | ResourceClass enum (CPU/GPU/FPGA) + DRA ResourceClaimTemplate + legacy extended resources | Hardware-specific: Jetson, Versal, LX2160, Kalray via ukAccel | Cloud VMs (no accelerator abstraction) | Standard K8s nodes | Cloud VMs |
 | **Extensibility Model** | Library + CLI + MCP tools; pip-installable | Embedded glue code in Mission Manager | 160+ microservice repos | Custom kube-apiserver patches | Argo + CWL runner |
-| **AI Agent Interface** | MCP server (6 tools: validate, compile, render, explain, diff, conflicts) | None | None | None | None |
+| **AI Agent Interface** | MCP server (6 tools: validate_plan, compile_plan, render_argo, explain_policy, diff_plans, check_timeline_conflicts) | None | None | None | None |
 
 ### 2.4 Operational Scope
 
@@ -61,7 +61,7 @@ This compiler occupies a unique niche as the only system that combines:
 
 1. **Schema + Policy dual-layer validation** — no other compared system has policy-as-code for mission plans
 2. **Step-level artifact granularity** — phase annotations, resource class, fallback per container (vs workflow-level in others)
-3. **Kueue admission with DRA** — Kubernetes-native queue-based scheduling with `resource.k8s.io/v1` ResourceClaimTemplates
+3. **Kueue admission with DRA** — Kubernetes-native queue-based scheduling with `resource.k8s.io/v1` `ResourceClaimTemplate` objects
 4. **MCP agent interface** — the only space-related system exposing compilation tools to AI agents
 5. **CCSDS 522.0-B alignment** — Plan Elaboration terminology mapped; no other system documents this
 
