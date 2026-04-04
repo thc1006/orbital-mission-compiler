@@ -33,10 +33,17 @@ def test_ci_workflow_triggers_on_pr():
 
 
 def test_ci_workflow_has_mypy_step():
-    """CI must include a mypy type-check step."""
+    """CI verify job must include a step that runs mypy."""
     path = Path(".github/workflows/ci.yml")
-    content = path.read_text(encoding="utf-8")
-    assert "mypy" in content, "CI must include a mypy type-check step"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    steps = data.get("jobs", {}).get("verify", {}).get("steps", [])
+    has_mypy_step = any(
+        isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and "mypy" in step["run"]
+        for step in steps
+    )
+    assert has_mypy_step, "CI verify job must include a step that runs mypy"
 
 
 def test_docs_mcp_tool_count_matches_source():

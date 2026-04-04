@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import os
 import tempfile
 from pathlib import Path
@@ -17,8 +16,6 @@ from orbital_mission_compiler.compiler import (
     write_individual_workflows,
 )
 from orbital_mission_compiler.policy import eval_policy
-
-logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _ALLOWED_PLANS = (_REPO_ROOT / "configs" / "mission_plans").resolve()
