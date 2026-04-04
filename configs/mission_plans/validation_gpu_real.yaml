@@ -1,7 +1,7 @@
 # Real GPU validation plan using CUDA containers.
 # Validates the compilation pipeline with real GPU hardware.
-# Note: Argo GPU access requires manual podSpecPatch for DRA claims;
-# the renderer produces soft-preference nodeAffinity only.
+# Note: Argo renderer uses soft-preference nodeAffinity for GPU steps;
+# DRA ResourceClaims are produced by the Kueue renderer, not Argo.
 mission_id: validation-gpu-real
 client_id: paper-camera-ready
 events:
