@@ -28,7 +28,7 @@ deny contains msg if {
   step.resource_class == "gpu"
   step.needs_acceleration == true
   _missing_fallback(step)
-  msg := sprintf("GPU step %q should declare fallback_resource_class for local demo reliability", [step.name])
+  msg := sprintf("GPU step %q with needs_acceleration should declare fallback_resource_class", [step.name])
 }
 
 # Handle both undefined (raw input) and null (schema-normalized input).

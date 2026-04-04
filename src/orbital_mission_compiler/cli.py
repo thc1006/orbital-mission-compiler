@@ -52,24 +52,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def cmd_compile(args):
+def cmd_compile(args: argparse.Namespace) -> None:
     payload = compile_file(args.input, args.output)
     print(json.dumps({"status": "ok", "workflows": len(payload["workflows"])}, indent=2))
 
 
-def cmd_render_argo(args):
+def cmd_render_argo(args: argparse.Namespace) -> None:
     written = write_individual_workflows(args.input, args.output_dir)
     print(json.dumps({"status": "ok", "files": [str(p) for p in written]}, indent=2))
 
 
-def cmd_inspect(args):
+def cmd_inspect(args: argparse.Namespace) -> None:
     plan = load_mission_plan(args.input)
     intents = compile_plan_to_intents(plan)
     data = [i.model_dump(mode="json") for i in intents]
     print(json.dumps(data, indent=2))
 
 
-def cmd_render_kueue(args):
+def cmd_render_kueue(args: argparse.Namespace) -> None:
     plan = load_mission_plan(args.input)
     intents = compile_plan_to_intents(plan)
     out_dir = Path(args.output_dir)
@@ -86,7 +86,7 @@ def cmd_render_kueue(args):
     print(json.dumps({"status": "ok", "files": written}))
 
 
-def cmd_policy(args):
+def cmd_policy(args: argparse.Namespace) -> None:
     plan = load_mission_plan(args.input)
     payload = plan.model_dump(mode="json")
     rc, out = eval_policy(args.bundle, payload, args.decision)
@@ -94,7 +94,7 @@ def cmd_policy(args):
     raise SystemExit(rc if rc in (0, 1, 2) else 0)
 
 
-def main():
+def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     args.func(args)

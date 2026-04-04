@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 
 try:
     from fastmcp import FastMCP
 except ImportError:
-    FastMCP = None
+    FastMCP = None  # type: ignore[assignment,misc]
 
 from orbital_mission_compiler.compiler import (
     load_mission_plan,
@@ -15,6 +17,8 @@ from orbital_mission_compiler.compiler import (
     write_individual_workflows,
 )
 from orbital_mission_compiler.policy import eval_policy
+
+logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _ALLOWED_PLANS = (_REPO_ROOT / "configs" / "mission_plans").resolve()
@@ -59,7 +63,7 @@ def _validate_bundle_path(bundle: str) -> Path:
     return resolved
 
 
-def build_server():
+def build_server() -> Any:
     if FastMCP is None:
         raise RuntimeError(
             "fastmcp is not installed. Install optional extras with: pip install -e '.[mcp]'"
@@ -68,13 +72,13 @@ def build_server():
     server = FastMCP("orbital-mission-compiler")
 
     @server.tool
-    def validate_plan(path: str) -> dict:
+    def validate_plan(path: str) -> dict[str, Any]:
         safe_path = _validate_plan_path(path)
         plan = load_mission_plan(safe_path)
         return {"mission_id": plan.mission_id, "events": len(plan.events), "status": "validated"}
 
     @server.tool
-    def compile_plan(path: str) -> dict:
+    def compile_plan(path: str) -> dict[str, Any]:
         safe_path = _validate_plan_path(path)
         plan = load_mission_plan(safe_path)
         intents = compile_plan_to_intents(plan)
@@ -85,7 +89,7 @@ def build_server():
         }
 
     @server.tool
-    def render_argo(path: str) -> dict:
+    def render_argo(path: str) -> dict[str, Any]:
         safe_path = _validate_plan_path(path)
         with tempfile.TemporaryDirectory() as tmpdir:
             files = write_individual_workflows(safe_path, tmpdir)
@@ -94,7 +98,7 @@ def build_server():
     @server.tool
     def explain_policy(
         path: str, bundle: str = "configs/policies", decision: str = "data.orbitalmission"
-    ) -> dict:
+    ) -> dict[str, Any]:
         safe_path = _validate_plan_path(path)
         safe_bundle = _validate_bundle_path(bundle)
         plan = load_mission_plan(safe_path)
@@ -102,7 +106,7 @@ def build_server():
         return {"exit_code": rc, "raw": out}
 
     @server.tool
-    def diff_plans(path_a: str, path_b: str) -> dict:
+    def diff_plans(path_a: str, path_b: str) -> dict[str, Any]:
         """Structural diff of two mission plans."""
         plan_a = load_mission_plan(_validate_plan_path(path_a))
         plan_b = load_mission_plan(_validate_plan_path(path_b))
@@ -124,7 +128,7 @@ def build_server():
         }
 
     @server.tool
-    def check_timeline_conflicts(path: str) -> dict:
+    def check_timeline_conflicts(path: str) -> dict[str, Any]:
         """Detect overlapping acquisition windows in a mission plan."""
         from datetime import datetime, timezone
 
@@ -155,8 +159,8 @@ def build_server():
         for i in range(len(acq_events)):
             for j in range(i + 1, len(acq_events)):
                 a, b = acq_events[i], acq_events[j]
-                max_start = max(a["start"], b["start"])
-                min_end = min(a["end"], b["end"])
+                max_start = max(cast(float, a["start"]), cast(float, b["start"]))
+                min_end = min(cast(float, a["end"]), cast(float, b["end"]))
                 if max_start < min_end:
                     conflicts.append({
                         "event_a": a["timestamp"],
@@ -173,7 +177,7 @@ def build_server():
     return server
 
 
-def main():
+def main() -> None:
     server = build_server()
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     server.run(transport=transport)

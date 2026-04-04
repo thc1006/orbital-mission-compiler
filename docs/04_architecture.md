@@ -35,7 +35,7 @@ Note: this repo produces **rendered YAML artifacts**. It does not deploy to or c
 | `compiler.py`: `render_kueue_job` | — (not in ORCHIDE) | — | Ground-side addition: Kueue admission semantics |
 | `policy.py` + `configs/policies/*.rego` | — (not in ORCHIDE) | — | Ground-side addition: 10 deny rules, OPA/Rego |
 | `cli.py` | — (not in ORCHIDE) | — | Ground-side CLI: compile, render-argo, render-kueue, inspect, policy |
-| `mcp/server.py` | — (not in ORCHIDE) | — | Optional: 4 MCP tools for AI agents |
+| `mcp/server.py` | — (not in ORCHIDE) | — | Optional: 6 MCP tools for AI agents |
 | `eval_runner.py` + `evals/golden/` | — (not in ORCHIDE) | — | Ground-side: golden translation tests |
 
 ## Validation layering

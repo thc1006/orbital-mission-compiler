@@ -355,6 +355,7 @@ def run_ablation_study() -> dict[ValidationArm, dict[ErrorCategory, float]]:
             if s_det:
                 c_det = True
             else:
+                assert model is not None  # guaranteed by s_det == False
                 c_policy_det, _ = run_policy_validation(
                     model.model_dump(mode="json")
                 )
