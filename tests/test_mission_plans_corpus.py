@@ -6,19 +6,20 @@ to serve as a representative test suite for the compiler pipeline.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from orbital_mission_compiler.compiler import load_mission_plan, compile_plan_to_intents
+from orbital_mission_compiler.eval_runner import discover_cases, run_case
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 PLANS_DIR = _REPO_ROOT / "configs" / "mission_plans"
 GOLDEN_DIR = _REPO_ROOT / "evals" / "golden"
 
 # ---------------------------------------------------------------------------
-# Discover all plans once (avoid repeated filesystem + YAML parsing per test)
+# Discover all plan file paths once (avoids repeated glob per test;
+# individual tests still load/parse plans as needed).
 # ---------------------------------------------------------------------------
 
 _ALL_PLAN_PATHS = sorted(PLANS_DIR.glob("*.yaml"))
@@ -71,46 +72,9 @@ def test_plan_compiles_to_intents(plan_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _discover_golden_cases() -> tuple[list[tuple[Path, Path]], list[Path]]:
-    """Discover (plan, golden) pairs. Returns (cases, orphans)."""
-    cases = []
-    orphans = []
-    for golden in sorted(GOLDEN_DIR.glob("*.expected.json")):
-        stem = golden.name.removesuffix(".expected.json")
-        plan = PLANS_DIR / f"{stem}.yaml"
-        if plan.exists():
-            cases.append((plan, golden))
-        else:
-            orphans.append(golden)
-    return cases, orphans
-
-
-def _run_golden_case(mission_file: Path, golden_file: Path) -> tuple[bool, str]:
-    """Compare compiler output against golden expected JSON."""
-    plan = load_mission_plan(mission_file)
-    intents = compile_plan_to_intents(plan)
-    actual = [
-        {
-            "service_id": i.service_id,
-            "priority": i.priority,
-            "workflow_name": i.workflow_name,
-            "steps": [
-                {"name": s.name, "resource_class": s.resource_class.value}
-                for s in i.steps
-            ],
-            "resource_hints": i.resource_hints,
-        }
-        for i in intents
-    ]
-    expected = json.loads(golden_file.read_text(encoding="utf-8"))
-    if actual != expected:
-        return False, json.dumps({"expected": expected, "actual": actual}, indent=2)
-    return True, ""
-
-
 def test_all_golden_evals_pass() -> None:
     """All golden eval files must match current compiler output exactly."""
-    cases, orphans = _discover_golden_cases()
+    cases, orphans = discover_cases()
     assert not orphans, (
         f"Orphan golden files with no matching plan: {[o.name for o in orphans]}"
     )
@@ -119,7 +83,7 @@ def test_all_golden_evals_pass() -> None:
     first_diff: str | None = None
     failures = []
     for mission, golden in cases:
-        ok, msg = _run_golden_case(mission, golden)
+        ok, msg = run_case(mission, golden)
         if not ok:
             failures.append(mission.name)
             if first_diff is None:
