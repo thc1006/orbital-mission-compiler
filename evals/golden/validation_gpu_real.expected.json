@@ -1,0 +1,73 @@
+[
+  {
+    "mission_id": "validation-gpu-real",
+    "service_id": "gpu-inference",
+    "priority": 85,
+    "workflow_name": "validation-gpu-real-gpu-inference-2026-04-04t19-00-00z",
+    "steps": [
+      {
+        "name": "preprocess",
+        "image": "busybox:1.36",
+        "phase": "preprocessing",
+        "resource_class": "cpu",
+        "fallback_resource_class": null,
+        "needs_acceleration": false,
+        "command": [
+          "sh",
+          "-c"
+        ],
+        "args": [
+          "echo '[preprocess] Normalizing input' && sleep 1 && echo '[preprocess] Done'"
+        ],
+        "metadata": {},
+        "preferred_node_selector": {}
+      },
+      {
+        "name": "gpu-detect",
+        "image": "nvidia/cuda:13.0.0-base-ubuntu22.04",
+        "phase": "ai",
+        "resource_class": "gpu",
+        "fallback_resource_class": "cpu",
+        "needs_acceleration": true,
+        "command": [
+          "sh",
+          "-c"
+        ],
+        "args": [
+          "echo '[gpu-detect] Running nvidia-smi' && nvidia-smi && echo '[gpu-detect] GPU inference complete'"
+        ],
+        "metadata": {},
+        "preferred_node_selector": {}
+      },
+      {
+        "name": "postprocess",
+        "image": "busybox:1.36",
+        "phase": "postprocessing",
+        "resource_class": "cpu",
+        "fallback_resource_class": null,
+        "needs_acceleration": false,
+        "command": [
+          "sh",
+          "-c"
+        ],
+        "args": [
+          "echo '[postprocess] Packaging results' && sleep 1 && echo '[postprocess] Done'"
+        ],
+        "metadata": {},
+        "preferred_node_selector": {}
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2026-04-04T19:00:00Z",
+      "ground_visibility": false,
+      "region_type": "ocean",
+      "orbit": 1,
+      "duration_seconds": 30.0,
+      "landscape_type": "ocean",
+      "execution_mode": "sequential",
+      "requires_gpu": true,
+      "requires_fpga": false,
+      "fallback_enabled": true
+    }
+  }
+]
