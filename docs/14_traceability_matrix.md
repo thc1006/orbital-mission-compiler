@@ -21,48 +21,48 @@ Each field in the Pydantic schema models is mapped to its ORCHIDE source (or mar
 
 | Field | ORCHIDE Source | Slide / D3.1 Ref | Implementation | Test Case | Author-Imposed? |
 |---|---|---|---|---|---|
-| `mission_id` | Plan identifier deployed by Satellite Owner | D3.1 §3.3.1 (IF SO_MIS_DP) | `schemas.py:95` | `test_schema.py`, `test_policy.py` | No |
-| `client_id` | — | — | `schemas.py:97` | `test_schema.py` | **Yes** — ground-side attribution for multi-tenant scenarios |
-| `events` | Mission plan table rows | Slide 9 (plan table) | `schemas.py:98` | `test_schema.py`, `test_schema_negative.py` | No |
+| `mission_id` | Plan identifier deployed by Satellite Owner | D3.1 §3.3.1 (IF SO_MIS_DP) | `src/orbital_mission_compiler/schemas.py:95` | `test_schema.py`, `test_policy.py` | No |
+| `client_id` | — | — | `src/orbital_mission_compiler/schemas.py:97` | `test_schema.py` | **Yes** — ground-side attribution for multi-tenant scenarios |
+| `events` | Mission plan table rows | Slide 9 (plan table) | `src/orbital_mission_compiler/schemas.py:98` | `test_schema.py`, `test_schema_negative.py` | No |
 
 ### 1.2 MissionEvent
 
 | Field | ORCHIDE Source | Slide / D3.1 Ref | Implementation | Test Case | Author-Imposed? |
 |---|---|---|---|---|---|
-| `timestamp` | DATESZ column | Slide 9 | `schemas.py:64` | `test_schema.py` | No |
-| `event_type` | EV column (ACQ / DOWNLOAD) | Slide 9 | `schemas.py:65` | `test_schema.py`, `test_schema_negative.py` | No |
-| `orbit` | ORBIT column | Slide 9 | `schemas.py:66` | `test_schema.py`, `test_ir.py` | No |
-| `duration_seconds` | DT_EV column (transmission window) | Slide 9 | `schemas.py:67` | `test_schema.py`, `test_ir.py` | No |
-| `instrument` | INST column | Slide 9 | `schemas.py:68` | `test_schema.py`, `test_schema_negative.py` | No |
-| `sensor` | — | — | `schemas.py:69` | `test_schema.py` | **Yes** — alias/supplement to instrument for ground-side flexibility |
-| `ground_visibility` | VISI column (1 = visible) | Slide 9 | `schemas.py:70` | `test_schema.py`, `test_policy.py` | No |
-| `region_type` | — | — | `schemas.py:71` | `test_schema.py` | **Yes** — contextual metadata (ocean, land, etc.) for ground-side filtering |
-| `services` | WORKFLOW_D1-D4 columns | Slide 9 | `schemas.py:72` | `test_schema.py`, `test_policy.py` | No |
+| `timestamp` | DATESZ column | Slide 9 | `src/orbital_mission_compiler/schemas.py:64` | `test_schema.py` | No |
+| `event_type` | EV column (ACQ / DOWNLOAD) | Slide 9 | `src/orbital_mission_compiler/schemas.py:65` | `test_schema.py`, `test_schema_negative.py` | No |
+| `orbit` | ORBIT column | Slide 9 | `src/orbital_mission_compiler/schemas.py:66` | `test_schema.py`, `test_ir.py` | No |
+| `duration_seconds` | DT_EV column (transmission window) | Slide 9 | `src/orbital_mission_compiler/schemas.py:67` | `test_schema.py`, `test_ir.py` | No |
+| `instrument` | INST column | Slide 9 | `src/orbital_mission_compiler/schemas.py:68` | `test_schema.py`, `test_schema_negative.py` | No |
+| `sensor` | — | — | `src/orbital_mission_compiler/schemas.py:69` | `test_schema.py` | **Yes** — alias/supplement to instrument for ground-side flexibility |
+| `ground_visibility` | VISI column (1 = visible) | Slide 9 | `src/orbital_mission_compiler/schemas.py:70` | `test_schema.py`, `test_policy.py` | No |
+| `region_type` | — | — | `src/orbital_mission_compiler/schemas.py:71` | `test_schema.py` | **Yes** — contextual metadata (ocean, land, etc.) for ground-side filtering |
+| `services` | WORKFLOW_D1-D4 columns | Slide 9 | `src/orbital_mission_compiler/schemas.py:72` | `test_schema.py`, `test_policy.py` | No |
 
 ### 1.3 AIService
 
 | Field | ORCHIDE Source | Slide / D3.1 Ref | Implementation | Test Case | Author-Imposed? |
 |---|---|---|---|---|---|
-| `service_id` | Detector/service identifier (MS, FD, CD) | Slide 9, Slide 10 | `schemas.py:52` | `test_schema.py`, `test_ir.py` | No |
-| `priority` | PRIORITY_D1-D4 columns | Slide 9 | `schemas.py:53-57` | `test_schema.py`, `test_policy.py` | No (scale divergence: ORCHIDE 1-4 vs schema 0-100; rendering layer converts) |
-| `landscape_type` | TYPE_D1-D4 columns (O=ocean, L=land) | Slide 9 | `schemas.py:58` | `test_schema.py`, `test_ir.py`, `test_policy.py` | No |
-| `execution_mode` | "sequential or in parallel" | Slide 10 | `schemas.py:59` | `test_schema.py`, `test_ir.py`, `test_parallel_rendering.py` | No |
-| `steps` | AI service pipeline stages | Slide 10 | `schemas.py:60` | `test_schema.py`, `test_rendering.py` | No |
+| `service_id` | Detector/service identifier (MS, FD, CD) | Slide 9, Slide 10 | `src/orbital_mission_compiler/schemas.py:52` | `test_schema.py`, `test_ir.py` | No |
+| `priority` | PRIORITY_D1-D4 columns | Slide 9 | `src/orbital_mission_compiler/schemas.py:53-57` | `test_schema.py`, `test_policy.py` | No (scale divergence: ORCHIDE 1-4 vs schema 0-100; rendering layer converts) |
+| `landscape_type` | TYPE_D1-D4 columns (O=ocean, L=land) | Slide 9 | `src/orbital_mission_compiler/schemas.py:58` | `test_schema.py`, `test_ir.py`, `test_policy.py` | No |
+| `execution_mode` | "sequential or in parallel" | Slide 10 | `src/orbital_mission_compiler/schemas.py:59` | `test_schema.py`, `test_ir.py`, `test_parallel_rendering.py` | No |
+| `steps` | AI service pipeline stages | Slide 10 | `src/orbital_mission_compiler/schemas.py:60` | `test_schema.py`, `test_rendering.py` | No |
 
 ### 1.4 WorkflowStep
 
 | Field | ORCHIDE Source | Slide / D3.1 Ref | Implementation | Test Case | Author-Imposed? |
 |---|---|---|---|---|---|
-| `name` | Pipeline stage name | Slide 10 | `schemas.py:31` | `test_schema.py`, `test_rendering.py` | No |
-| `image` | OCI container image | Slide 10, D3.1 §5.1 | `schemas.py:32` | `test_schema.py`, `test_rendering.py` | No |
-| `phase` | Pre-processing / AI / Post-processing | Slide 10 | `schemas.py:33` | `test_rendering.py` | No |
-| `resource_class` | Hardware target (CPU/GPU/FPGA) | Slide 14 | `schemas.py:34` | `test_schema.py`, `test_kueue.py` | No |
-| `fallback_resource_class` | — | — | `schemas.py:35` | `test_policy.py` | **Yes** — ground-side reliability for local demo when primary hardware unavailable |
-| `needs_acceleration` | ukAccel accelerator mediation | Slide 18 | `schemas.py:36` | `test_policy.py` | No |
-| `command` | Application entry point | D3.1 §5.1 | `schemas.py:37` | `test_schema.py` | No |
-| `args` | Command arguments | D3.1 §5.1 | `schemas.py:38` | `test_schema.py` | No |
-| `metadata` | — | — | `schemas.py:39` | `test_schema.py` | **Yes** — free-form annotations for ground-side tooling |
-| `preferred_node_selector` | — | — | `schemas.py:40` | `test_schema.py` | **Yes** — Kubernetes node affinity labels for ground-side scheduling |
+| `name` | Pipeline stage name | Slide 10 | `src/orbital_mission_compiler/schemas.py:31` | `test_schema.py`, `test_rendering.py` | No |
+| `image` | OCI container image | Slide 10, D3.1 §5.1 | `src/orbital_mission_compiler/schemas.py:32` | `test_schema.py`, `test_rendering.py` | No |
+| `phase` | Pre-processing / AI / Post-processing | Slide 10 | `src/orbital_mission_compiler/schemas.py:33` | `test_rendering.py` | No |
+| `resource_class` | Hardware target (CPU/GPU/FPGA) | Slide 14 | `src/orbital_mission_compiler/schemas.py:34` | `test_schema.py`, `test_kueue.py` | No |
+| `fallback_resource_class` | — | — | `src/orbital_mission_compiler/schemas.py:35` | `test_policy.py` | **Yes** — ground-side reliability for local demo when primary hardware unavailable |
+| `needs_acceleration` | ukAccel accelerator mediation | Slide 18 | `src/orbital_mission_compiler/schemas.py:36` | `test_policy.py` | No |
+| `command` | Application entry point | D3.1 §5.1 | `src/orbital_mission_compiler/schemas.py:37` | `test_schema.py` | No |
+| `args` | Command arguments | D3.1 §5.1 | `src/orbital_mission_compiler/schemas.py:38` | `test_schema.py` | No |
+| `metadata` | — | — | `src/orbital_mission_compiler/schemas.py:39` | `test_schema.py` | **Yes** — free-form annotations for ground-side tooling |
+| `preferred_node_selector` | — | — | `src/orbital_mission_compiler/schemas.py:40` | `test_schema.py` | **Yes** — Kubernetes node affinity labels for ground-side scheduling |
 
 ### 1.5 Enums
 
@@ -100,7 +100,7 @@ Rules 3, 7, 8, and 9 intentionally overlap with Pydantic schema validators for d
 
 ## 3. Resource Hints Traceability
 
-Each key in the `resource_hints` dictionary (built in `compiler.py:compile_plan_to_intents`) is mapped to its derivation source.
+Each key in the `resource_hints` dictionary (built in `src/orbital_mission_compiler/compiler.py:compile_plan_to_intents`) is mapped to its derivation source.
 
 | Hint Key | Derivation | Source Field | Slide / D3.1 Ref | Author-Imposed? |
 |---|---|---|---|---|
@@ -123,15 +123,15 @@ The following features are explicitly added by this project to fill gaps that OR
 
 | Addition | Location | Rationale |
 |---|---|---|
-| Pydantic schema validation | `schemas.py` | ORCHIDE does not specify how mission plans are validated before reaching the satellite |
-| OPA/Rego policy framework | `configs/policies/mission_plan.rego`, `policy.py` | ORCHIDE has no policy-as-code; this adds 10 deny rules for semantic validation |
-| Kueue admission control | `compiler.py:render_kueue_job` | ORCHIDE uses a custom priority queue; this adds Kubernetes-native admission via Kueue |
-| CLI tool | `cli.py` | ORCHIDE's translation layer is embedded glue code; this extracts a standalone CLI |
-| MCP server | `mcp/server.py` | ORCHIDE has no AI agent interface; this adds 6 MCP tools for ground-side agents |
-| Fallback resource class | `schemas.py:fallback_resource_class` | ORCHIDE has no fallback strategy; ground-side demo reliability |
-| Timeline conflict detection | `compiler.py:detect_timeline_conflicts` | ORCHIDE has no timeline feasibility check; ground-side planning tool |
-| Resource hints enrichment | `compiler.py` (resource_hints dict) | ORCHIDE does not carry extended event metadata through IR; enriched for downstream schedulers |
-| Golden eval runner | `eval_runner.py`, `evals/golden/` | ORCHIDE has no ground-side evaluation framework; deterministic translation tests |
+| Pydantic schema validation | `src/orbital_mission_compiler/schemas.py` | ORCHIDE does not specify how mission plans are validated before reaching the satellite |
+| OPA/Rego policy framework | `configs/policies/mission_plan.rego`, `src/orbital_mission_compiler/policy.py` | ORCHIDE has no policy-as-code; this adds 10 deny rules for semantic validation |
+| Kueue admission control | `src/orbital_mission_compiler/compiler.py:render_kueue_job` | ORCHIDE uses a custom priority queue; this adds Kubernetes-native admission via Kueue |
+| CLI tool | `src/orbital_mission_compiler/cli.py` | ORCHIDE's translation layer is embedded glue code; this extracts a standalone CLI |
+| MCP server | `src/orbital_mission_compiler/mcp/server.py` | ORCHIDE has no AI agent interface; this adds 6 MCP tools for ground-side agents |
+| Fallback resource class | `src/orbital_mission_compiler/schemas.py:fallback_resource_class` | ORCHIDE has no fallback strategy; ground-side demo reliability |
+| Timeline conflict detection | `src/orbital_mission_compiler/compiler.py:detect_timeline_conflicts` | ORCHIDE has no timeline feasibility check; ground-side planning tool |
+| Resource hints enrichment | `src/orbital_mission_compiler/compiler.py` (resource_hints dict) | ORCHIDE does not carry extended event metadata through IR; enriched for downstream schedulers |
+| Golden eval runner | `src/orbital_mission_compiler/eval_runner.py`, `evals/golden/` | ORCHIDE has no ground-side evaluation framework; deterministic translation tests |
 
 ---
 

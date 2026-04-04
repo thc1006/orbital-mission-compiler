@@ -56,7 +56,12 @@ def _extract_rego_rules(rego_path: str = "configs/policies/mission_plan.rego") -
 
 
 # Pre-compute at module level to avoid redundant file reads.
-_REGO_RULES = _extract_rego_rules()
+# Wrapped in try/except so a missing policy file surfaces as a test
+# failure rather than crashing the entire collection phase.
+try:
+    _REGO_RULES = _extract_rego_rules()
+except OSError:
+    _REGO_RULES = []
 
 
 def _resource_hints_keys() -> set[str]:
@@ -185,6 +190,11 @@ class TestEnumCompleteness:
 
 class TestOpaPolicyCompleteness:
     """Every OPA deny rule must appear in the traceability doc."""
+
+    def test_rego_rules_loaded(self):
+        assert len(_REGO_RULES) > 0, (
+            "No Rego deny rules extracted — check configs/policies/mission_plan.rego exists"
+        )
 
     @pytest.mark.parametrize(
         "rule_msg",
