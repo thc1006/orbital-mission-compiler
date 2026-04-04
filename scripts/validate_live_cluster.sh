@@ -88,7 +88,11 @@ if PYTHONPATH="${PYTHONPATH:-src}" ${PYTHON_BIN} -m orbital_mission_compiler.cli
   report PASS "Mission plan compiled"
 else
   report FAIL "Mission plan compilation failed (see ${COMPILE_LOG})"
-  cat "${COMPILE_LOG}" >&2
+  if [ -s "${COMPILE_LOG}" ]; then
+    cat "${COMPILE_LOG}" >&2
+  else
+    echo "Compilation failed, but no compile log was created or it is empty: ${COMPILE_LOG}" >&2
+  fi
 fi
 
 # ── Step 4: Render and submit Argo Workflow ────────────────────────────
@@ -106,7 +110,11 @@ if PYTHONPATH="${PYTHONPATH:-src}" ${PYTHON_BIN} -m orbital_mission_compiler.cli
   report PASS "Argo Workflow rendered"
 else
   report FAIL "Argo Workflow rendering failed (see ${ARGO_RENDER_LOG})"
-  cat "${ARGO_RENDER_LOG}" >&2
+  if [ -s "${ARGO_RENDER_LOG}" ]; then
+    cat "${ARGO_RENDER_LOG}" >&2
+  else
+    echo "Argo render log is missing or empty: ${ARGO_RENDER_LOG}" >&2
+  fi
 fi
 
 if command -v argo >/dev/null 2>&1; then
@@ -166,7 +174,11 @@ if PYTHONPATH="${PYTHONPATH:-src}" ${PYTHON_BIN} -m orbital_mission_compiler.cli
   report PASS "Kueue Job rendered"
 else
   report FAIL "Kueue Job rendering failed (see ${KUEUE_RENDER_LOG})"
-  cat "${KUEUE_RENDER_LOG}" >&2
+  if [ -s "${KUEUE_RENDER_LOG}" ]; then
+    cat "${KUEUE_RENDER_LOG}" >&2
+  else
+    echo "Kueue render log is missing or empty: ${KUEUE_RENDER_LOG}" >&2
+  fi
 fi
 
 JOB_FILE=$(find "${KUEUE_OUT}" -name '*-kueue.yaml' -print -quit 2>/dev/null)
