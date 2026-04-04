@@ -6,12 +6,12 @@ to serve as a representative test suite for the compiler pipeline.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from orbital_mission_compiler.compiler import load_mission_plan, compile_plan_to_intents
-from orbital_mission_compiler.eval_runner import _discover_cases, _run_case
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 PLANS_DIR = _REPO_ROOT / "configs" / "mission_plans"
@@ -48,15 +48,22 @@ def test_plan_loads_successfully(plan_path: Path) -> None:
 
 @pytest.mark.parametrize("plan_path", _ALL_PLAN_PATHS, ids=_plan_ids())
 def test_plan_compiles_to_intents(plan_path: Path) -> None:
-    """Each plan with acquisition events must produce at least 1 WorkflowIntent."""
+    """Each plan with acquisition+service events must produce WorkflowIntents."""
     plan = load_mission_plan(plan_path)
     intents = compile_plan_to_intents(plan)
-    acq_count = sum(
+    acq_with_services = sum(
         1 for ev in plan.events if ev.event_type.value == "acquisition" and ev.services
     )
-    assert len(intents) >= 1, (
-        f"{plan_path.name}: expected at least 1 intent from {acq_count} acquisition event(s)"
-    )
+    if acq_with_services == 0:
+        assert len(intents) == 0, (
+            f"{plan_path.name}: no acquisition events with services, "
+            f"expected 0 intents but got {len(intents)}"
+        )
+    else:
+        assert len(intents) >= 1, (
+            f"{plan_path.name}: {acq_with_services} acquisition event(s) with services "
+            f"but got 0 intents"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -64,23 +71,63 @@ def test_plan_compiles_to_intents(plan_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _discover_golden_cases() -> tuple[list[tuple[Path, Path]], list[Path]]:
+    """Discover (plan, golden) pairs. Returns (cases, orphans)."""
+    cases = []
+    orphans = []
+    for golden in sorted(GOLDEN_DIR.glob("*.expected.json")):
+        stem = golden.name.removesuffix(".expected.json")
+        plan = PLANS_DIR / f"{stem}.yaml"
+        if plan.exists():
+            cases.append((plan, golden))
+        else:
+            orphans.append(golden)
+    return cases, orphans
+
+
+def _run_golden_case(mission_file: Path, golden_file: Path) -> tuple[bool, str]:
+    """Compare compiler output against golden expected JSON."""
+    plan = load_mission_plan(mission_file)
+    intents = compile_plan_to_intents(plan)
+    actual = [
+        {
+            "service_id": i.service_id,
+            "priority": i.priority,
+            "workflow_name": i.workflow_name,
+            "steps": [
+                {"name": s.name, "resource_class": s.resource_class.value}
+                for s in i.steps
+            ],
+            "resource_hints": i.resource_hints,
+        }
+        for i in intents
+    ]
+    expected = json.loads(golden_file.read_text(encoding="utf-8"))
+    if actual != expected:
+        return False, json.dumps({"expected": expected, "actual": actual}, indent=2)
+    return True, ""
+
+
 def test_all_golden_evals_pass() -> None:
     """All golden eval files must match current compiler output exactly."""
-    cases, orphans = _discover_cases()
+    cases, orphans = _discover_golden_cases()
     assert not orphans, (
         f"Orphan golden files with no matching plan: {[o.name for o in orphans]}"
     )
     assert len(cases) >= 1, "No golden eval cases discovered"
 
+    first_diff: str | None = None
     failures = []
     for mission, golden in cases:
-        ok, msg = _run_case(mission, golden)
+        ok, msg = _run_golden_case(mission, golden)
         if not ok:
             failures.append(mission.name)
+            if first_diff is None:
+                first_diff = msg
 
     assert not failures, (
-        f"Golden eval mismatches for: {failures}. "
-        "Re-generate with: PYTHONPATH=src:. python3 scripts/run_eval.sh"
+        f"Golden eval mismatches for: {failures}\n"
+        f"First mismatch detail:\n{first_diff}"
     )
 
 
