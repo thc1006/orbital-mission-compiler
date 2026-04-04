@@ -338,22 +338,20 @@ def render_kueue_job(
         ]
 
     # ── FPGA handling (legacy only — no DRA driver available) ─────────
-    # Note: GPU+FPGA on the same pod is not supported (ORCHIDE slide 14
-    # uses separate node types). If both are present, GPU takes priority
-    # for primary step selection; FPGA resources are still added but the
-    # nodeSelector would conflict. This is acceptable because ORCHIDE
-    # services target a single accelerator type per workflow.
-    if requires_fpga and not requires_gpu:
+    # ORCHIDE slide 14 uses separate node types (GPU vs FPGA). Mixed
+    # GPU+FPGA in a single pod would be unschedulable — reject early.
+    if requires_gpu and requires_fpga:
+        raise ValueError(
+            f"Workflow intent '{intent.workflow_name}' requests both GPU and FPGA "
+            "resources, but mixed GPU+FPGA execution in a single pod is not supported."
+        )
+    if requires_fpga:
         container["resources"]["requests"]["xilinx.com/fpga"] = "1"
         container["resources"].setdefault("limits", {})["xilinx.com/fpga"] = "1"
         pod_spec["nodeSelector"] = {"accelerator": "fpga"}
         pod_spec["tolerations"] = [
             {"key": "xilinx.com/fpga", "operator": "Exists", "effect": "NoSchedule"}
         ]
-    elif requires_fpga:
-        # Mixed GPU+FPGA: add FPGA resource request but let GPU handle scheduling.
-        container["resources"]["requests"]["xilinx.com/fpga"] = "1"
-        container["resources"].setdefault("limits", {})["xilinx.com/fpga"] = "1"
 
     job_annotations: dict[str, str] = {
         "orbital/priority": str(intent.priority),

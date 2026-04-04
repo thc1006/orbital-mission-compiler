@@ -7,6 +7,8 @@ Issue #46: Kueue DRA rendering for heterogeneous accelerators.
 Reference: ORCHIDE slide 14 (heterogeneous hardware), Kueue v0.17 DRA docs.
 """
 
+import pytest
+
 from orbital_mission_compiler.compiler import (
     render_kueue_job,
     render_resource_claim_templates,
@@ -232,28 +234,11 @@ def _gpu_fpga_intent() -> WorkflowIntent:
 
 
 class TestMixedGpuFpga:
-    """Mixed GPU+FPGA: GPU owns scheduling (DRA), FPGA gets resource request only."""
+    """Mixed GPU+FPGA is rejected — not schedulable on separate node pools."""
 
-    def test_mixed_has_gpu_dra_claims(self):
-        job = render_kueue_job(_gpu_fpga_intent())
-        pod_spec = job["spec"]["template"]["spec"]
-        assert "resourceClaims" in pod_spec
-
-    def test_mixed_has_fpga_resource_request(self):
-        job = render_kueue_job(_gpu_fpga_intent())
-        resources = job["spec"]["template"]["spec"]["containers"][0]["resources"]
-        assert resources["requests"]["xilinx.com/fpga"] == "1"
-
-    def test_mixed_no_fpga_node_selector(self):
-        """FPGA should NOT set nodeSelector when GPU DRA handles scheduling."""
-        job = render_kueue_job(_gpu_fpga_intent())
-        pod_spec = job["spec"]["template"]["spec"]
-        assert "nodeSelector" not in pod_spec
-
-    def test_mixed_no_fpga_tolerations(self):
-        job = render_kueue_job(_gpu_fpga_intent())
-        pod_spec = job["spec"]["template"]["spec"]
-        assert "tolerations" not in pod_spec
+    def test_mixed_raises_value_error(self):
+        with pytest.raises(ValueError, match="both GPU and FPGA"):
+            render_kueue_job(_gpu_fpga_intent())
 
 
 # ── CPU (unchanged) ──────────────────────────────────────────────────────
