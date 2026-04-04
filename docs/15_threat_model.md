@@ -47,7 +47,7 @@ The compiler operates across four trust boundaries:
 |---|---|---|---|---|---|
 | T1 | **Tampering** | YAML deserialization attack (billion laughs / alias bomb) | Crafted YAML with recursive anchors or entity expansion | `yaml.safe_load` used consistently (CWE-502); Pydantic typed validation post-parse | No explicit document size limit; `safe_load` prevents code execution but large documents may exhaust memory |
 | T2 | **Tampering** | OPA policy bypass via crafted input | Input fields engineered to satisfy policy rules while violating semantic intent | Schema + Policy dual-layer validation (12 error categories in ablation study); defense-in-depth on 5 overlapping rules | Novel field combinations outside tested corpus may bypass rules; policy coverage depends on rule completeness |
-| T3 | **Tampering** | MCP path traversal | `../../etc/passwd` in plan path argument to MCP tools | CWE-22: multi-layer validation — rejects absolute paths, `..` components, directory components; symlink-safe `resolve()` + `relative_to()` boundary check | Bundle path validation slightly broader than plan path; follows repo root boundary |
+| T3 | **Tampering** | MCP path traversal | `../../etc/passwd` in plan path argument to MCP tools | CWE-22: multi-layer validation — rejects absolute paths, `..` components, directory components; symlink-safe `resolve()` + `relative_to()` boundary check | Plan paths restricted to `configs/mission_plans/`; bundle paths restricted to `configs/policies/` via repo-root-relative resolution |
 | T4 | **Denial of Service** | OPA subprocess hang or resource exhaustion | Pathological Rego evaluation or extremely large input payload | CWE-400: 30-second timeout (`OPA_TIMEOUT_SECONDS`); subprocess killed on expiry | No memory limit on OPA process; no rate limiting on MCP tool invocations |
 | T5 | **Information Disclosure** | OPA stderr leaks internal filesystem paths | OPA debug/warning messages exposing server directory structure | CWE-209: stdout prioritized over stderr; stderr returned only as fallback when stdout is empty | Partial leak path remains when OPA produces no stdout (edge case) |
 | T6 | **Spoofing** | Rendered artifact substitution between compiler and deployment | Man-in-the-middle replaces output YAML before satellite uplink | None — out of compiler scope | **No artifact signing or integrity hash**; output YAML has no provenance chain; deployment interface (TB3) must verify independently |
@@ -60,7 +60,7 @@ The compiler operates across four trust boundaries:
 
 ## 3. Existing CWE Mitigations
 
-The compiler implements hardening for the following CWEs, all tested and documented in CHANGELOG v0.2.0:
+The compiler implements hardening for the following CWEs. Test coverage is summarized below, and selected security hardening changes are documented in CHANGELOG v0.2.0:
 
 | CWE | Name | Mitigation | Location | Tests |
 |---|---|---|---|---|

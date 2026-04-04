@@ -33,7 +33,7 @@ class TestDocumentStructure:
 
     def test_has_trust_boundary_section(self):
         doc = _read_doc()
-        assert "Trust Boundar" in doc, "Must have a trust boundary section"
+        assert "Trust Boundaries" in doc, "Must have a Trust Boundaries section"
 
     def test_has_stride_table(self):
         doc = _read_doc()
@@ -54,18 +54,13 @@ class TestDocumentStructure:
 
 
 class TestTrustBoundaries:
-    """All trust boundaries must be documented."""
+    """All 4 trust boundaries (TB1-TB4) must be documented."""
 
-    @pytest.mark.parametrize("boundary", [
-        "YAML",          # User input → compiler
-        "OPA",           # Compiler → policy engine
-        "rendered",      # Compiler → output artifacts
-        "MCP",           # AI agent → MCP server
-    ])
-    def test_trust_boundary_present(self, boundary: str):
+    @pytest.mark.parametrize("boundary_id", ["TB1", "TB2", "TB3", "TB4"])
+    def test_trust_boundary_present(self, boundary_id: str):
         doc = _read_doc()
-        assert boundary.lower() in doc.lower(), (
-            f"Trust boundary not documented: {boundary}"
+        assert boundary_id in doc, (
+            f"Trust boundary not documented: {boundary_id}"
         )
 
 
@@ -94,12 +89,14 @@ class TestStrideCategories:
 
 
 class TestExistingMitigations:
-    """Existing security hardening must be referenced."""
+    """All 6 existing CWE mitigations must be referenced."""
 
     @pytest.mark.parametrize("cwe", [
         "CWE-22",   # Path traversal
-        "CWE-400",  # DoS / timeout
         "CWE-209",  # Information disclosure
+        "CWE-250",  # Unnecessary privileges
+        "CWE-377",  # Insecure temporary file
+        "CWE-400",  # DoS / timeout
         "CWE-502",  # YAML deserialization
     ])
     def test_cwe_referenced(self, cwe: str):
@@ -111,21 +108,23 @@ class TestExistingMitigations:
 
 
 class TestThreatCoverage:
-    """At least 8 specific threats must be documented."""
+    """All 10 threats (T1-T10) must be documented."""
 
-    def test_minimum_threat_count(self):
+    def test_all_ten_threats_present(self):
         doc = _read_doc()
-        # Count rows in threat table (lines starting with | T)
-        threat_rows = [line for line in doc.split("\n") if line.strip().startswith("| T") and "|" in line[3:]]
-        assert len(threat_rows) >= 8, (
-            f"Expected at least 8 threats, found {len(threat_rows)}"
+        threat_rows = [
+            line for line in doc.split("\n")
+            if line.strip().startswith("| T") and "|" in line[3:]
+        ]
+        assert len(threat_rows) >= 10, (
+            f"Expected at least 10 threats, found {len(threat_rows)}"
         )
 
 
 # ── CCSDS terminology ───────────────────────────────────────────────────
 
 
-class TestCcdsTerminology:
+class TestCcsdsTerminology:
     """CCSDS 522.0-B terminology must be mapped."""
 
     @pytest.mark.parametrize("term", [
