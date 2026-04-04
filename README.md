@@ -35,8 +35,8 @@ This is not a flight-ready onboard satellite runtime. It does not implement radi
 git clone https://github.com/thc1006/satellite-mission-compiler.git
 cd satellite-mission-compiler
 pip install -e ".[dev]"
-make test        # 230 tests
-make eval        # 3 golden translation checks
+make test        # run the test suite
+make eval        # run golden translation checks
 make opa-smoke   # OPA policy evaluation (requires opa CLI)
 make argo-smoke  # Argo manifest lint (requires argo CLI)
 ```
