@@ -1,0 +1,58 @@
+Real GPU Validation Experiment
+==============================
+Date: 2026-04-04
+Cluster: K8s v1.35.1, single node
+GPU: NVIDIA GeForce RTX 5080 (Blackwell), 16303 MiB, Driver 580.126.09, CUDA 13.0
+DRA: gpu.nvidia.com DeviceClass via nvidia-dra-driver-gpu
+
+Argo Workflow:
+  Status: Succeeded, Progress: 3/3, Duration: 40s
+  Steps:
+    preprocess (busybox:1.36, CPU): 9s
+    gpu-detect (nvidia/cuda:13.0.0-base-ubuntu22.04, GPU via DRA): 3s
+    postprocess (busybox:1.36, CPU): 4s
+  GPU step output: nvidia-smi confirmed RTX 5080, CUDA 13.0
+  Note: Argo renderer produces soft-preference nodeAffinity only.
+  DRA ResourceClaim was added manually via podSpecPatch for this experiment.
+  Future work: integrate DRA claims into render_argo_workflow.
+
+Conclusion: Rendered Argo Workflow DAG correctly executes real CUDA
+containers on actual GPU hardware via DRA resource claims.
+
+Phase 3: GPU Available vs Unavailable Comparison
+=================================================
+Same container image (nvidia/cuda:13.0.0-base-ubuntu22.04), two paths:
+
+  GPU Path (with DRA ResourceClaim):
+    Output: PATH=GPU
+    Device: NVIDIA GeForce RTX 5080, 16303 MiB
+    Status: Succeeded
+
+  CPU Fallback (without DRA ResourceClaim):
+    Output: PATH=CPU-FALLBACK
+    Device: No GPU device available, running CPU path
+    Status: Succeeded
+
+Conclusion: DRA resource claims control GPU device visibility.
+Without a claim, the same container runs the CPU fallback path.
+
+Phase 4: Kueue GPU Contention with Real CUDA Containers
+=========================================================
+Setup: 2 Jobs with DRA GPU claims, GPU quota=1
+Both used nvidia/cuda:13.0.0-base-ubuntu22.04 running nvidia-smi
+
+Finding: Both Jobs were admitted simultaneously by Kueue.
+DRA-based GPU allocation is managed by the nvidia-dra-driver,
+not by Kueue's ClusterQueue nvidia.com/gpu quota. This means
+Kueue quota enforcement operates on extended resources, while
+DRA claims bypass the quota layer and are managed by the
+DRA driver's own allocation logic.
+
+Both Jobs completed successfully:
+  Alpha: nvidia-smi confirmed RTX 5080, duration 20s
+  Beta: nvidia-smi confirmed RTX 5080, duration 8s
+
+This is an important architectural finding for the paper:
+Kueue admission and DRA allocation are complementary but
+independent mechanisms. Quota contention for DRA resources
+requires DRA-level policies, not Kueue ClusterQueue quotas.

@@ -1,0 +1,48 @@
+# Real GPU validation plan using CUDA containers.
+# Validates the compilation pipeline with real GPU hardware.
+# Note: Argo renderer uses soft-preference nodeAffinity for GPU steps;
+# DRA ResourceClaims are produced by the Kueue renderer, not Argo.
+mission_id: validation-gpu-real
+client_id: paper-camera-ready
+events:
+  - timestamp: "2026-04-04T19:00:00Z"
+    event_type: acquisition
+    orbit: 1
+    duration_seconds: 30.0
+    instrument: optical-camera
+    ground_visibility: false
+    region_type: ocean
+    services:
+      - service_id: gpu-inference
+        priority: 85
+        landscape_type: ocean
+        execution_mode: sequential
+        steps:
+          - name: preprocess
+            image: busybox:1.36
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo '[preprocess] Normalizing input' && sleep 1 && echo '[preprocess] Done'"]
+          - name: gpu-detect
+            image: nvidia/cuda:13.0.0-base-ubuntu22.04
+            phase: ai
+            resource_class: gpu
+            fallback_resource_class: cpu
+            needs_acceleration: true
+            preferred_node_selector:
+              accelerator: nvidia
+            command: ["sh", "-c"]
+            args: ["if nvidia-smi > /dev/null 2>&1; then echo '[gpu-detect] PATH=GPU' && nvidia-smi; else echo '[gpu-detect] PATH=CPU-FALLBACK (no GPU device)'; fi"]
+          - name: postprocess
+            image: busybox:1.36
+            phase: postprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo '[postprocess] Packaging results' && sleep 1 && echo '[postprocess] Done'"]
+  - timestamp: "2026-04-04T19:05:00Z"
+    event_type: download
+    orbit: 1
+    duration_seconds: 180.0
+    instrument: x-band
+    ground_visibility: true
