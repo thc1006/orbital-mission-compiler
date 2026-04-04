@@ -1,0 +1,18 @@
+# Minimal valid plan: 1 ACQ event, 1 service, 1 CPU step.
+# Serves as the simplest baseline for schema validation testing.
+mission_id: mission-minimal-cpu
+client_id: minimal-user
+events:
+  - timestamp: "2029-11-06T10:00:00Z"
+    event_type: acquisition
+    instrument: INST_1
+    services:
+      - service_id: thumbnail-gen
+        priority: 10
+        execution_mode: sequential
+        steps:
+          - name: generate-thumbnail
+            image: busybox:1.36
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo generate-thumbnail"]

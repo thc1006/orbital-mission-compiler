@@ -1,0 +1,55 @@
+# Multi-instrument acquisition: 2 ACQ events with different instruments.
+# Demonstrates ORCHIDE slide 9 INST field variation (INST_1, INST_2).
+mission_id: mission-multi-instrument
+client_id: multi-inst-user
+events:
+  - timestamp: "2029-11-01T08:00:00Z"
+    event_type: acquisition
+    orbit: 1
+    duration_seconds: 6.0
+    instrument: INST_1
+    ground_visibility: false
+    region_type: land
+    services:
+      - service_id: vegetation-index
+        priority: 60
+        landscape_type: land
+        execution_mode: sequential
+        steps:
+          - name: calibrate
+            image: ghcr.io/example/calibrate:0.2.0
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo calibrate"]
+          - name: compute-ndvi
+            image: ghcr.io/example/ndvi:0.2.0
+            phase: ai
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo compute-ndvi"]
+  - timestamp: "2029-11-01T08:10:00Z"
+    event_type: acquisition
+    orbit: 1
+    duration_seconds: 8.0
+    instrument: INST_2
+    ground_visibility: false
+    region_type: ocean
+    services:
+      - service_id: ocean-color
+        priority: 55
+        landscape_type: ocean
+        execution_mode: sequential
+        steps:
+          - name: radiometric-correction
+            image: ghcr.io/example/radiometric:0.2.0
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo radiometric-correction"]
+          - name: chlorophyll-estimation
+            image: ghcr.io/example/chlorophyll:0.2.0
+            phase: ai
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo chlorophyll-estimation"]

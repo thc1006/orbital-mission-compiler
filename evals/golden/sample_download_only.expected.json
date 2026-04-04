@@ -1,0 +1,25 @@
+[
+  {
+    "service_id": "quicklook",
+    "priority": 20,
+    "workflow_name": "mission-download-only-quicklook-2029-11-08t05-00-00z",
+    "steps": [
+      {
+        "name": "generate-quicklook",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-08T05:00:00Z",
+      "ground_visibility": false,
+      "region_type": null,
+      "orbit": 1,
+      "duration_seconds": 2.0,
+      "landscape_type": null,
+      "execution_mode": "sequential",
+      "requires_gpu": false,
+      "requires_fpga": false,
+      "fallback_enabled": false
+    }
+  }
+]

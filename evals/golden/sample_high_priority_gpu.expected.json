@@ -1,0 +1,33 @@
+[
+  {
+    "service_id": "emergency-detection",
+    "priority": 95,
+    "workflow_name": "mission-high-priority-gpu-emergency-detection-2029-11-07t18-45-",
+    "steps": [
+      {
+        "name": "preprocess-imagery",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "ai-classify-emergency",
+        "resource_class": "gpu"
+      },
+      {
+        "name": "generate-alert-package",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-07T18:45:00Z",
+      "ground_visibility": false,
+      "region_type": "ocean",
+      "orbit": 2,
+      "duration_seconds": 20.0,
+      "landscape_type": "ocean",
+      "execution_mode": "sequential",
+      "requires_gpu": true,
+      "requires_fpga": false,
+      "fallback_enabled": true
+    }
+  }
+]

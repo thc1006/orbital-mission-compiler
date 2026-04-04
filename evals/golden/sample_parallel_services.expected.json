@@ -1,0 +1,56 @@
+[
+  {
+    "service_id": "ship-tracking",
+    "priority": 85,
+    "workflow_name": "mission-parallel-services-ship-tracking-2029-11-02t12-00-00z",
+    "steps": [
+      {
+        "name": "detect-vessels",
+        "resource_class": "gpu"
+      },
+      {
+        "name": "classify-vessels",
+        "resource_class": "gpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-02T12:00:00Z",
+      "ground_visibility": false,
+      "region_type": "ocean",
+      "orbit": 2,
+      "duration_seconds": 15.0,
+      "landscape_type": "ocean",
+      "execution_mode": "parallel",
+      "requires_gpu": true,
+      "requires_fpga": false,
+      "fallback_enabled": true
+    }
+  },
+  {
+    "service_id": "wave-analysis",
+    "priority": 40,
+    "workflow_name": "mission-parallel-services-wave-analysis-2029-11-02t12-00-00z",
+    "steps": [
+      {
+        "name": "extract-spectra",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "estimate-wave-height",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-02T12:00:00Z",
+      "ground_visibility": false,
+      "region_type": "ocean",
+      "orbit": 2,
+      "duration_seconds": 15.0,
+      "landscape_type": "ocean",
+      "execution_mode": "parallel",
+      "requires_gpu": false,
+      "requires_fpga": false,
+      "fallback_enabled": false
+    }
+  }
+]

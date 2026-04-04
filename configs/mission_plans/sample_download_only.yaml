@@ -1,0 +1,27 @@
+# Minimal ACQ + DOWNLOAD event plan.
+# Demonstrates ORCHIDE slide 9 DOWNLOAD phase with ground_visibility=true.
+mission_id: mission-download-only
+client_id: download-demo-user
+events:
+  - timestamp: "2029-11-08T05:00:00Z"
+    event_type: acquisition
+    orbit: 1
+    duration_seconds: 2.0
+    instrument: INST_1
+    ground_visibility: false
+    services:
+      - service_id: quicklook
+        priority: 20
+        execution_mode: sequential
+        steps:
+          - name: generate-quicklook
+            image: busybox:1.36
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo generate-quicklook"]
+  - timestamp: "2029-11-08T06:30:00Z"
+    event_type: download
+    orbit: 1
+    duration_seconds: 240.0
+    instrument: X_BAND
+    ground_visibility: true
