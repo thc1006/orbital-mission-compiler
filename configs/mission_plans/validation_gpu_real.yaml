@@ -30,8 +30,10 @@ events:
             resource_class: gpu
             fallback_resource_class: cpu
             needs_acceleration: true
+            preferred_node_selector:
+              accelerator: nvidia
             command: ["sh", "-c"]
-            args: ["echo '[gpu-detect] Running nvidia-smi' && nvidia-smi && echo '[gpu-detect] GPU inference complete'"]
+            args: ["if nvidia-smi > /dev/null 2>&1; then echo '[gpu-detect] PATH=GPU' && nvidia-smi; else echo '[gpu-detect] PATH=CPU-FALLBACK (no GPU device)'; fi"]
           - name: postprocess
             image: busybox:1.36
             phase: postprocessing
