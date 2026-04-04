@@ -209,7 +209,7 @@ def parse_sizes(sizes_str: str) -> list[int]:
     """
     parts = [s.strip() for s in sizes_str.split(",") if s.strip()]
     if not parts:
-        raise argparse.ArgumentTypeError("--sizes must contain at least one positive integer")
+        raise argparse.ArgumentTypeError("must contain at least one positive integer")
     result: list[int] = []
     for part in parts:
         try:
