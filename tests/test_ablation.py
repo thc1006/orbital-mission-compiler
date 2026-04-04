@@ -60,8 +60,9 @@ class TestSchemaValidation:
     """Schema-only validation catches structural errors."""
 
     def test_detects_empty_mission_id(self):
-        plan = {"mission_id": "", "events": []}
-        detected, _ = run_schema_validation(plan)
+        corpus = generate_mutation_corpus()
+        case = [c for c in corpus if c["category"] == ErrorCategory.EMPTY_MISSION_ID][0]
+        detected, _ = run_schema_validation(case["plan"])
         assert detected
 
     def test_misses_zero_priority(self):
@@ -148,6 +149,17 @@ class TestCombinedValidation:
             )
 
 
+# ── Shared fixture (runs ablation once per module) ───────────────────────
+
+
+@pytest.fixture(scope="module")
+def ablation_results():
+    """Run the ablation study once and share across all tests in this module."""
+    if not OPA_AVAILABLE:
+        pytest.skip("OPA CLI not available")
+    return run_ablation_study()
+
+
 # ── Full ablation run ────────────────────────────────────────────────────
 
 
@@ -155,31 +167,28 @@ class TestCombinedValidation:
 class TestAblationResults:
     """run_ablation_study produces well-structured results."""
 
-    def test_results_have_all_arms(self):
-        results = run_ablation_study()
+    def test_results_have_all_arms(self, ablation_results):
         for arm in ValidationArm:
-            assert arm in results, f"Results missing arm: {arm.value}"
+            assert arm in ablation_results, f"Results missing arm: {arm.value}"
 
-    def test_results_have_all_categories(self):
-        results = run_ablation_study()
+    def test_results_have_all_categories(self, ablation_results):
         for arm in ValidationArm:
             for cat in ErrorCategory:
-                assert cat in results[arm], (
+                assert cat in ablation_results[arm], (
                     f"Results[{arm.value}] missing category: {cat.value}"
                 )
 
-    def test_combined_has_perfect_detection(self):
-        results = run_ablation_study()
+    def test_combined_has_perfect_detection(self, ablation_results):
         for cat in ErrorCategory:
             if cat == ErrorCategory.VALID:
-                assert results[ValidationArm.COMBINED][cat] == 0.0, (
+                assert ablation_results[ValidationArm.COMBINED][cat] == 0.0, (
                     f"Combined should have 0% detection on valid plans, "
-                    f"got {results[ValidationArm.COMBINED][cat]}"
+                    f"got {ablation_results[ValidationArm.COMBINED][cat]}"
                 )
             else:
-                assert results[ValidationArm.COMBINED][cat] == 1.0, (
+                assert ablation_results[ValidationArm.COMBINED][cat] == 1.0, (
                     f"Combined should catch all {cat.value}, "
-                    f"got {results[ValidationArm.COMBINED][cat]}"
+                    f"got {ablation_results[ValidationArm.COMBINED][cat]}"
                 )
 
 
@@ -190,21 +199,18 @@ class TestAblationResults:
 class TestResultsFormatting:
     """format_results_table outputs a usable markdown table."""
 
-    def test_table_is_string(self):
-        results = run_ablation_study()
-        table = format_results_table(results)
+    def test_table_is_string(self, ablation_results):
+        table = format_results_table(ablation_results)
         assert isinstance(table, str)
 
-    def test_table_has_header_row(self):
-        results = run_ablation_study()
-        table = format_results_table(results)
+    def test_table_has_header_row(self, ablation_results):
+        table = format_results_table(ablation_results)
         assert "Schema" in table
         assert "Policy" in table
         assert "Combined" in table
 
-    def test_table_has_all_categories(self):
-        results = run_ablation_study()
-        table = format_results_table(results)
+    def test_table_has_all_categories(self, ablation_results):
+        table = format_results_table(ablation_results)
         for cat in ErrorCategory:
             if cat != ErrorCategory.VALID:
                 assert cat.value in table, f"Table missing category row: {cat.value}"
