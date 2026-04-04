@@ -7,26 +7,26 @@ to keep tests fast.
 
 from __future__ import annotations
 
+import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
+from orbital_mission_compiler.policy import opa_available
+
 # The benchmark script lives in scripts/ and is not a package module.
-# Import its functions by manipulating sys.path.
-_SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+# Load via importlib to avoid mutating sys.path for the whole test run.
+_SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "benchmark_scaling.py"
+_spec = importlib.util.spec_from_file_location("benchmark_scaling", _SCRIPT_PATH)
+assert _spec is not None and _spec.loader is not None
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
 
-from benchmark_scaling import (  # noqa: E402
-    PLAN_SIZES,
-    build_parser,
-    main,
-    parse_sizes,
-)
-
-from orbital_mission_compiler.policy import opa_available  # noqa: E402
+PLAN_SIZES = _mod.PLAN_SIZES
+build_parser = _mod.build_parser
+main = _mod.main
+parse_sizes = _mod.parse_sizes
 
 
 class TestParseSizes:
@@ -103,6 +103,7 @@ class TestBenchmarkJsonOutput:
         assert meta["sizes"] == [10]
         assert meta["iterations"] == 1
         assert meta["policy_skipped"] is True
+        assert meta["timing_unit"] == "seconds"
         assert "timestamp" in meta
 
         # Results structure

@@ -286,6 +286,7 @@ def write_json_output(
             "sizes": sizes,
             "iterations": iterations,
             "policy_skipped": policy_skipped,
+            "timing_unit": "seconds",
         },
         "results": results,
     }
@@ -329,7 +330,9 @@ def main(argv: list[str] | None = None) -> None:
     has_policy = not skip_policy
     print_results(results, has_policy=has_policy)
 
-    if args.output:
+    if args.output is not None:
+        if not args.output.strip():
+            parser.error("--output path must not be empty")
         try:
             write_json_output(
                 path=args.output,
