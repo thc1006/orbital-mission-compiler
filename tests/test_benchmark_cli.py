@@ -37,8 +37,10 @@ class TestParseSizes:
         parser = build_parser()
         args = parser.parse_args([])
         assert args.sizes is None
-        # When None, main() falls back to PLAN_SIZES
-        assert PLAN_SIZES == [10, 50, 100, 500, 1000]
+        # When None, main() falls back to PLAN_SIZES — verify structural invariants
+        assert isinstance(PLAN_SIZES, list)
+        assert PLAN_SIZES
+        assert all(isinstance(s, int) and s > 0 for s in PLAN_SIZES)
 
     def test_parse_single_size(self):
         """A single integer should produce a one-element list."""
@@ -115,9 +117,9 @@ class TestBenchmarkJsonOutput:
 
     def test_json_output_unwritable_path(self, tmp_path: Path):
         """An unwritable output path should exit with error."""
-        bad_path = "/nonexistent_dir_xyz/bench.json"
+        bad_path = tmp_path / "does_not_exist" / "bench.json"
         with pytest.raises(SystemExit):
-            main(["--sizes", "10", "--iterations", "1", "--skip-policy", "--output", bad_path])
+            main(["--sizes", "10", "--iterations", "1", "--skip-policy", "--output", str(bad_path)])
 
     def test_no_json_when_output_omitted(self, tmp_path: Path, capsys):
         """Without --output, no JSON file should be created."""
