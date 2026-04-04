@@ -11,8 +11,10 @@ REQUIRED = [
     "docs/04_architecture.md",
     "docs/07_installation_matrix.md",
     "docs/12_phase2_local_demo.md",
+    "docs/14_traceability_matrix.md",
     "src/orbital_mission_compiler/compiler.py",
     "tests/test_compiler.py",
+    "tests/test_traceability.py",
     "configs/mission_plans/sample_gpu_cpu_fallback.yaml",
     "manifests/examples/argo-gpu-cpu-fallback.yaml",
 ]
