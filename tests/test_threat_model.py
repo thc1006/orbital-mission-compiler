@@ -15,8 +15,9 @@ THREAT_MODEL_DOC = Path("docs/15_threat_model.md")
 
 
 def _read_doc() -> str:
-    if not THREAT_MODEL_DOC.is_file():
-        pytest.skip(f"{THREAT_MODEL_DOC} not yet created")
+    assert THREAT_MODEL_DOC.is_file(), (
+        f"Threat model document missing: {THREAT_MODEL_DOC}"
+    )
     return THREAT_MODEL_DOC.read_text(encoding="utf-8")
 
 
