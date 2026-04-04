@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -80,8 +80,8 @@ def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
     for i in range(len(acq_events)):
         for j in range(i + 1, len(acq_events)):
             a, b = acq_events[i], acq_events[j]
-            max_start = max(a["start"], b["start"])
-            min_end = min(a["end"], b["end"])
+            max_start = max(cast(float, a["start"]), cast(float, b["start"]))
+            min_end = min(cast(float, a["end"]), cast(float, b["end"]))
             if max_start < min_end:
                 conflicts.append({
                     "event_a": a["timestamp"],

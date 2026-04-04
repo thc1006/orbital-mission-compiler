@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from .compiler import load_mission_plan, compile_plan_to_intents
+
+logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PLANS_DIR = _REPO_ROOT / "configs" / "mission_plans"
@@ -50,26 +53,27 @@ def run_case(mission_file: Path, golden_file: Path) -> tuple[bool, str]:
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     cases, orphans = discover_cases()
     if orphans:
         for o in orphans:
-            print(f"EVAL ERROR: golden file {o.name} has no matching plan in {PLANS_DIR}")
+            logger.error("EVAL ERROR: golden file %s has no matching plan in %s", o.name, PLANS_DIR)
         return 1
     if not cases:
-        print("EVAL ERROR: no eval cases discovered")
+        logger.error("EVAL ERROR: no eval cases discovered")
         return 1
-    failed = []
+    failed: list[tuple[str, str]] = []
     for mission, golden in cases:
         ok, msg = run_case(mission, golden)
         if ok:
-            print(f"EVAL PASSED: {msg}")
+            logger.info("EVAL PASSED: %s", msg)
         else:
             failed.append((mission.name, msg))
     if failed:
-        print("EVAL FAILED")
+        logger.error("EVAL FAILED")
         for name, msg in failed:
-            print(name)
-            print(msg)
+            logger.error("%s", name)
+            logger.error("%s", msg)
         return 1
     return 0
 

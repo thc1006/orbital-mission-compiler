@@ -32,9 +32,19 @@ jobs:
       - name: Lint
         run: python3 -m ruff check .
 
+      - name: Type check
+        run: python3 -m mypy src/orbital_mission_compiler
+
       - name: Unit tests with coverage
         run: |
-          python3 -m pytest -q --cov=orbital_mission_compiler --cov-report=term-missing --cov-fail-under=70
+          python3 -m pytest -q --cov=orbital_mission_compiler --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
       - name: Golden evals
         run: python3 -m orbital_mission_compiler.eval_runner
