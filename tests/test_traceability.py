@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from orbital_mission_compiler.compiler import compile_plan_to_intents, load_mission_plan
 from orbital_mission_compiler.schemas import (
     AIService,
     ExecutionMode,
@@ -26,6 +27,7 @@ from orbital_mission_compiler.schemas import (
 )
 
 TRACEABILITY_DOC = Path("docs/14_traceability_matrix.md")
+SAMPLE_PLAN = "configs/mission_plans/sample_maritime_surveillance.yaml"
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -53,20 +55,27 @@ def _extract_rego_rules(rego_path: str = "configs/policies/mission_plan.rego") -
     return re.findall(r'msg\s*:=\s*(?:sprintf\()?"([^"]+)"', text)
 
 
+# Pre-compute at module level to avoid redundant file reads.
+_REGO_RULES = _extract_rego_rules()
+
+
 def _resource_hints_keys() -> set[str]:
-    """Return the set of resource_hints keys built in compile_plan_to_intents."""
-    return {
-        "event_timestamp",
-        "ground_visibility",
-        "region_type",
-        "orbit",
-        "duration_seconds",
-        "landscape_type",
-        "execution_mode",
-        "requires_gpu",
-        "requires_fpga",
-        "fallback_enabled",
-    }
+    """Derive resource_hints keys from actual compiler output."""
+    plan = load_mission_plan(SAMPLE_PLAN)
+    intents = compile_plan_to_intents(plan)
+    return set(intents[0].resource_hints.keys())
+
+
+def _doc_contains_enum_entry(doc: str, value: str) -> bool:
+    """Return True when an enum value appears as a distinct doc entry."""
+    escaped = re.escape(value.lower())
+    patterns = (
+        rf"`{escaped}`",
+        rf"\|\s*`{escaped}`\s*[,|]",
+        rf"\|\s*{escaped}\s*[,|]",
+    )
+    doc_lower = doc.lower()
+    return any(re.search(p, doc_lower) for p in patterns)
 
 
 # ── Document existence ───────────────────────────────────────────────────
@@ -146,28 +155,28 @@ class TestEnumCompleteness:
     @pytest.mark.parametrize("value", sorted(_enum_member_names(ResourceClass)))
     def test_resource_class_traced(self, value: str):
         doc = _read_doc()
-        assert value in doc.lower(), (
+        assert _doc_contains_enum_entry(doc, value), (
             f"ResourceClass.{value} not found in traceability doc"
         )
 
     @pytest.mark.parametrize("value", sorted(_enum_member_names(StepPhase)))
     def test_step_phase_traced(self, value: str):
         doc = _read_doc()
-        assert value in doc.lower(), (
+        assert _doc_contains_enum_entry(doc, value), (
             f"StepPhase.{value} not found in traceability doc"
         )
 
     @pytest.mark.parametrize("value", sorted(_enum_member_names(ExecutionMode)))
     def test_execution_mode_traced(self, value: str):
         doc = _read_doc()
-        assert value in doc.lower(), (
+        assert _doc_contains_enum_entry(doc, value), (
             f"ExecutionMode.{value} not found in traceability doc"
         )
 
     @pytest.mark.parametrize("value", sorted(_enum_member_names(MissionEventType)))
     def test_event_type_traced(self, value: str):
         doc = _read_doc()
-        assert value in doc.lower(), (
+        assert _doc_contains_enum_entry(doc, value), (
             f"MissionEventType.{value} not found in traceability doc"
         )
 
@@ -179,17 +188,15 @@ class TestOpaPolicyCompleteness:
 
     @pytest.mark.parametrize(
         "rule_msg",
-        _extract_rego_rules(),
-        ids=[f"rule-{i+1}" for i in range(len(_extract_rego_rules()))],
+        _REGO_RULES,
+        ids=[f"rule-{i+1}" for i in range(len(_REGO_RULES))],
     )
     def test_opa_rule_traced(self, rule_msg: str):
         doc = _read_doc()
-        # Check for the rule message or a close keyword from it
-        keywords = [w for w in rule_msg.split() if len(w) > 4][:3]
-        found = any(kw.lower() in doc.lower() for kw in keywords)
-        assert found, (
-            f"OPA rule not found in traceability doc: {rule_msg!r}\n"
-            f"Searched keywords: {keywords}"
+        normalized_doc = re.sub(r"\s+", " ", doc).strip().lower()
+        normalized_msg = re.sub(r"\s+", " ", rule_msg).strip().lower()
+        assert normalized_msg in normalized_doc, (
+            f"OPA rule not found in traceability doc: {rule_msg!r}"
         )
 
 

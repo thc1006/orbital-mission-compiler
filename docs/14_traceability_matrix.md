@@ -79,18 +79,18 @@ Each field in the Pydantic schema models is mapped to its ORCHIDE source (or mar
 
 Each deny rule in `configs/policies/mission_plan.rego` is mapped to its ORCHIDE source or marked as Author-Imposed. Rules are numbered 1–10 matching the Rego file order.
 
-| Rule # | Deny Message | ORCHIDE Source | Slide / D3.1 Ref | Test Case | Author-Imposed? |
+| Rule # | Deny Message (exact Rego `msg`) | ORCHIDE Source | Slide / D3.1 Ref | Test Case | Author-Imposed? |
 |---|---|---|---|---|---|
 | 1 | `mission_id must not be empty` | Structural requirement for plan identity | D3.1 §3.3.1 | `test_policy.py::test_deny_empty_mission_id` | **Yes** — ORCHIDE does not specify validation rules |
 | 2 | `mission plan must contain at least one event` | Structural requirement | — | `test_policy.py::test_deny_zero_events` | **Yes** — structural guard |
 | 3 | `acquisition event %v must declare at least one service` | ACQ rows have WORKFLOW columns | Slide 9 | `test_policy.py::test_deny_acquisition_no_services` | No — derived from slide 9 table structure |
-| 4 | `GPU step %q should declare fallback_resource_class` | — | — | `test_policy.py::test_deny_gpu_no_fallback` | **Yes** — ground-side reliability for local demo |
-| 5 | `service %q has zero priority` | Priorities are 1-4 in ORCHIDE; 0 is misconfiguration | Slide 9 (PRIORITY columns) | `test_policy.py::test_deny_zero_priority` | No — derived from slide 9 priority semantics |
-| 6 | `step %q claims needs_acceleration but uses cpu` | ukAccel mediates GPU/FPGA only; CPU is host | Slide 18 | `test_policy.py::test_deny_acceleration_on_cpu` | No — derived from slide 18 ukAccel scope |
-| 7 | `download event %v must not declare services` | DOWNLOAD rows have no WORKFLOW columns | Slide 9 | `test_policy.py::test_deny_download_with_services` | No — derived from slide 9 table structure |
-| 8 | `download event %v requires ground_visibility` | DOWNLOAD requires VISI=1 | Slide 9 | `test_policy.py::test_deny_download_without_visibility` | No — derived from slide 9 VISI column |
-| 9 | `service %q has no steps` | Pipeline requires ≥1 stage | Slide 10 | `test_policy.py` (implicit via schema min_length=1) | No — derived from slide 10 pipeline model |
-| 10 | `service %q has unrecognized landscape_type` | TYPE = O (ocean) or L (land) | Slide 9 (TYPE_D1-D4) | `test_policy.py` | No — derived from slide 9 TYPE column |
+| 4 | `GPU step %q should declare fallback_resource_class for local demo reliability` | — | — | `test_policy.py::test_deny_gpu_no_fallback` | **Yes** — ground-side reliability; rule requires `resource_class == "gpu"` AND `needs_acceleration == true` AND no `fallback_resource_class` |
+| 5 | `service %q has zero priority, which is likely a misconfiguration` | Priorities are 1-4 in ORCHIDE; 0 is misconfiguration | Slide 9 (PRIORITY columns) | `test_policy.py::test_deny_zero_priority` | No — derived from slide 9 priority semantics |
+| 6 | `step %q claims needs_acceleration but uses cpu resource class` | ukAccel mediates GPU/FPGA only; CPU is host | Slide 18 | `test_policy.py::test_deny_acceleration_on_cpu` | No — derived from slide 18 ukAccel scope |
+| 7 | `download event %v must not declare services (transmission only)` | DOWNLOAD rows have no WORKFLOW columns | Slide 9 | `test_policy.py::test_deny_download_with_services` | No — derived from slide 9 table structure |
+| 8 | `download event %v requires ground_visibility (station must be visible for transmission)` | DOWNLOAD requires VISI=1 | Slide 9 | `test_policy.py::test_deny_download_without_visibility` | No — derived from slide 9 VISI column |
+| 9 | `service %q has no steps and cannot produce a workflow` | Pipeline requires ≥1 stage | Slide 10 | `test_policy.py` (implicit via schema min_length=1) | No — derived from slide 10 pipeline model |
+| 10 | `service %q has unrecognized landscape_type %q (expected: ocean, land)` | TYPE = O (ocean) or L (land) | Slide 9 (TYPE_D1-D4) | `test_policy.py` | No — derived from slide 9 TYPE column |
 
 ### Policy Layering Note
 
@@ -139,11 +139,13 @@ The following features are explicitly added by this project to fill gaps that OR
 
 | Dimension | Total Items | ORCHIDE-Derived | Author-Imposed | Coverage |
 |---|---|---|---|---|
-| Schema fields (all models) | 28 | 21 | 7 | 100% traced |
+| Schema fields (4 mission-plan models) | 27 | 21 | 6 | 100% traced |
 | Enum values | 11 | 11 | 0 | 100% traced |
 | OPA deny rules | 10 | 7 | 3 | 100% traced |
 | Resource hints keys | 10 | 7 | 3 | 100% traced |
-| **Total** | **59** | **46 (78%)** | **13 (22%)** | **100% traced** |
+| **Total** | **58** | **46 (79%)** | **12 (21%)** | **100% traced** |
+
+Note: this summary counts the four mission-plan schema models (`MissionPlan`, `MissionEvent`, `AIService`, `WorkflowStep`) and excludes the internal `WorkflowIntent` compiler IR model.
 
 ---
 
