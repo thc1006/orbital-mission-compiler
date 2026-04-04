@@ -19,6 +19,7 @@ from orbital_mission_compiler.ablation import (
     format_results_table,
 )
 from orbital_mission_compiler.policy import opa_available
+from orbital_mission_compiler.schemas import MissionPlan
 
 OPA_AVAILABLE = opa_available()
 
@@ -126,22 +127,36 @@ class TestCombinedValidation:
     """Combined schema+policy catches all error categories."""
 
     def test_combined_catches_all_invalid(self):
+        """Mirror the actual combined arm: normalize through schema before policy."""
         corpus = generate_mutation_corpus()
         invalid = [c for c in corpus if c["category"] != ErrorCategory.VALID]
         for case in invalid:
-            schema_hit, _ = run_schema_validation(case["plan"])
-            policy_hit, _ = run_policy_validation(case["plan"])
-            assert schema_hit or policy_hit, (
+            raw = case["plan"]
+            schema_hit, _ = run_schema_validation(raw)
+            if schema_hit:
+                combined_hit = True
+            else:
+                normalized = MissionPlan.model_validate(raw).model_dump(mode="json")
+                policy_hit, _ = run_policy_validation(normalized)
+                combined_hit = policy_hit
+            assert combined_hit, (
                 f"Combined missed {case['category'].value}: {case['description']}"
             )
 
     def test_no_false_positives_on_valid(self):
+        """Mirror the actual combined arm: normalize through schema before policy."""
         corpus = generate_mutation_corpus()
         valid = [c for c in corpus if c["category"] == ErrorCategory.VALID]
         for case in valid:
-            schema_hit, _ = run_schema_validation(case["plan"])
-            policy_hit, _ = run_policy_validation(case["plan"])
-            assert not schema_hit and not policy_hit, (
+            raw = case["plan"]
+            schema_hit, _ = run_schema_validation(raw)
+            if schema_hit:
+                combined_hit = True
+            else:
+                normalized = MissionPlan.model_validate(raw).model_dump(mode="json")
+                policy_hit, _ = run_policy_validation(normalized)
+                combined_hit = policy_hit
+            assert not combined_hit, (
                 f"False positive on valid plan: {case['description']}"
             )
 
