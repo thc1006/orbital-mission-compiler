@@ -234,22 +234,73 @@ def render_argo_workflow(intent: WorkflowIntent) -> dict[str, Any]:
     return workflow
 
 
+def _rct_name_for_intent(intent: WorkflowIntent, device: str) -> str:
+    """Deterministic ResourceClaimTemplate name for a given intent and device type."""
+    return sanitize_k8s_name(f"{intent.workflow_name}-{device}-claim", max_len=62)
+
+
+def render_resource_claim_templates(
+    intent: WorkflowIntent,
+    namespace: str = "orbital-demo",
+) -> list[dict[str, Any]]:
+    """Render DRA ResourceClaimTemplates for accelerator steps.
+
+    GPU steps produce a ResourceClaimTemplate with deviceClassName gpu.nvidia.com.
+    FPGA steps produce nothing (no DRA driver available as of 2026-04).
+    CPU steps produce nothing.
+    """
+    templates: list[dict[str, Any]] = []
+    requires_gpu = intent.resource_hints.get("requires_gpu", False)
+    if requires_gpu:
+        templates.append({
+            "apiVersion": "resource.k8s.io/v1",
+            "kind": "ResourceClaimTemplate",
+            "metadata": {
+                "name": _rct_name_for_intent(intent, "gpu"),
+                "namespace": namespace,
+            },
+            "spec": {
+                "spec": {
+                    "devices": {
+                        "requests": [
+                            {
+                                "name": "gpu",
+                                "exactly": {
+                                    "deviceClassName": "gpu.nvidia.com",
+                                },
+                            }
+                        ],
+                    },
+                },
+            },
+        })
+    return templates
+
+
 def render_kueue_job(
     intent: WorkflowIntent,
     queue_name: str = "orbital-demo-local",
     namespace: str = "orbital-demo",
     cpu_request: str = "1",
     memory_request: str = "256Mi",
+    dra_enabled: bool = True,
 ) -> dict[str, Any]:
     if not isinstance(cpu_request, str) or not cpu_request.strip():
         raise ValueError("cpu_request must not be empty")
     if not isinstance(memory_request, str) or not memory_request.strip():
         raise ValueError("memory_request must not be empty")
     requires_gpu = intent.resource_hints.get("requires_gpu", False)
+    requires_fpga = intent.resource_hints.get("requires_fpga", False)
 
-    # Pick the primary compute step (GPU step if present, else first step).
+    # Pick the primary compute step (GPU > FPGA > first step).
     gpu_steps = [s for s in intent.steps if s.resource_class == ResourceClass.GPU]
-    primary = gpu_steps[0] if gpu_steps else intent.steps[0]
+    fpga_steps = [s for s in intent.steps if s.resource_class == ResourceClass.FPGA]
+    if gpu_steps:
+        primary = gpu_steps[0]
+    elif fpga_steps:
+        primary = fpga_steps[0]
+    else:
+        primary = intent.steps[0]
 
     container: dict[str, Any] = {
         "name": sanitize_k8s_name(primary.name),
@@ -263,23 +314,51 @@ def render_kueue_job(
             },
         },
     }
-    if requires_gpu:
-        container["resources"]["requests"]["nvidia.com/gpu"] = "1"
-        container["resources"]["limits"] = {"nvidia.com/gpu": "1"}
 
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
         "containers": [container],
     }
-    if requires_gpu:
+
+    # ── GPU handling ──────────────────────────────────────────────────
+    if requires_gpu and dra_enabled:
+        # DRA path: ResourceClaim reference instead of static resource request.
+        rct_name = _rct_name_for_intent(intent, "gpu")
+        pod_spec["resourceClaims"] = [
+            {"name": "gpu", "resourceClaimTemplateName": rct_name},
+        ]
+        container["resources"]["claims"] = [{"name": "gpu"}]
+    elif requires_gpu:
+        # Legacy path: static nvidia.com/gpu request.
+        container["resources"]["requests"]["nvidia.com/gpu"] = "1"
+        container["resources"]["limits"] = {"nvidia.com/gpu": "1"}
         pod_spec["nodeSelector"] = {"accelerator": "nvidia"}
         pod_spec["tolerations"] = [
             {"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}
         ]
 
+    # ── FPGA handling (legacy only — no DRA driver available) ─────────
+    # Note: GPU+FPGA on the same pod is not supported (ORCHIDE slide 14
+    # uses separate node types). If both are present, GPU takes priority
+    # for primary step selection; FPGA resources are still added but the
+    # nodeSelector would conflict. This is acceptable because ORCHIDE
+    # services target a single accelerator type per workflow.
+    if requires_fpga and not requires_gpu:
+        container["resources"]["requests"]["xilinx.com/fpga"] = "1"
+        container["resources"].setdefault("limits", {})["xilinx.com/fpga"] = "1"
+        pod_spec["nodeSelector"] = {"accelerator": "fpga"}
+        pod_spec["tolerations"] = [
+            {"key": "xilinx.com/fpga", "operator": "Exists", "effect": "NoSchedule"}
+        ]
+    elif requires_fpga:
+        # Mixed GPU+FPGA: add FPGA resource request but let GPU handle scheduling.
+        container["resources"]["requests"]["xilinx.com/fpga"] = "1"
+        container["resources"].setdefault("limits", {})["xilinx.com/fpga"] = "1"
+
     job_annotations: dict[str, str] = {
         "orbital/priority": str(intent.priority),
         "orbital/requires-gpu": str(requires_gpu).lower(),
+        "orbital/requires-fpga": str(requires_fpga).lower(),
         "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),
     }
 

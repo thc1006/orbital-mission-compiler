@@ -11,6 +11,7 @@ from .compiler import (
     load_mission_plan,
     compile_plan_to_intents,
     render_kueue_job,
+    render_resource_claim_templates,
     write_individual_workflows,
     sanitize_k8s_name,
 )
@@ -75,10 +76,12 @@ def cmd_render_kueue(args):
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
     for intent in intents:
+        templates = render_resource_claim_templates(intent, namespace=args.namespace)
         job = render_kueue_job(intent, queue_name=args.queue, namespace=args.namespace)
+        docs = templates + [job]
         safe_name = sanitize_k8s_name(intent.workflow_name)
         out = out_dir / f"{safe_name}-kueue.yaml"
-        out.write_text(yaml.safe_dump(job, sort_keys=False), encoding="utf-8")
+        out.write_text(yaml.safe_dump_all(docs, sort_keys=False), encoding="utf-8")
         written.append(str(out))
     print(json.dumps({"status": "ok", "files": written}))
 
