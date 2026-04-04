@@ -51,7 +51,7 @@ The compiler operates across four trust boundaries:
 | T4 | **Denial of Service** | OPA subprocess hang or resource exhaustion | Pathological Rego evaluation or extremely large input payload | CWE-400: 30-second timeout (`OPA_TIMEOUT_SECONDS`); subprocess killed on expiry | No memory limit on OPA process; no rate limiting on MCP tool invocations |
 | T5 | **Information Disclosure** | OPA stderr leaks internal filesystem paths | OPA debug/warning messages exposing server directory structure | CWE-209: stdout prioritized over stderr; stderr returned only as fallback when stdout is empty | Partial leak path remains when OPA produces no stdout (edge case) |
 | T6 | **Spoofing** | Rendered artifact substitution between compiler and deployment | Man-in-the-middle replaces output YAML before satellite uplink | None — out of compiler scope | **No artifact signing or integrity hash**; output YAML has no provenance chain; deployment interface (TB3) must verify independently |
-| T7 | **Repudiation** | Untraceable compilation decisions | Operator disputes which plan/policy version produced specific artifacts | Python `logging` module; `orbital/*` annotations in rendered YAML carry mission-id, service-id, priority | **No immutable audit trail**; no compilation receipt linking input hash → output hash → policy version |
+| T7 | **Repudiation** | Untraceable compilation decisions | Operator disputes which plan/policy version produced specific artifacts | Python `logging` module; rendered YAML includes traceability labels (`mission-id`, `service-id`, `priority`) and `orbital/*` annotations (`orbital/priority`, `orbital/execution-mode`, etc.) | **No immutable audit trail**; no compilation receipt linking input hash → output hash → policy version |
 | T8 | **Elevation of Privilege** | MCP tool used to compile arbitrary plans | AI agent invokes tools with manipulated path arguments | CWE-22 path validation restricts to `configs/mission_plans/` directory | MCP stdio transport has no authentication; any connected client has full tool access; authorization depends on transport layer |
 | T9 | **Tampering** | OPA binary supply chain compromise | Attacker replaces `opa` binary on system PATH | `shutil.which("opa")` locates binary; CI pins OPA version (v1.15.1) with HTTPS download | **No runtime checksum verification** of OPA binary; local development relies on system PATH trust |
 | T10 | **Tampering** | Kubernetes YAML injection via unsanitized fields | Malicious values in mission plan string fields pass through to Argo/Kueue annotations | `sanitize_k8s_name()` applies RFC 1123 sanitization to names and labels | Annotation values and container args are not fully sanitized; K8s API server provides final validation layer |
@@ -87,7 +87,7 @@ The compiler implements hardening for the following CWEs. Test coverage is summa
 
 | Risk | Rationale |
 |---|---|
-| **T3: Bundle path breadth** | Repo root boundary is acceptable; Kubernetes RBAC provides additional access control |
+| **T3: Bundle path breadth** | Bundle paths restricted to `configs/policies/`; this narrow boundary is acceptable, and Kubernetes RBAC provides additional access control |
 | **T8: MCP no auth** | MCP stdio transport is local-only; authentication is a transport-layer concern per MCP spec |
 | **T10: Annotation injection** | K8s API server validates all resources before admission; compiler is not the final trust boundary |
 
