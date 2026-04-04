@@ -26,7 +26,7 @@ class TestDocumentStructure:
 
     def test_has_multi_system_table(self):
         doc = _read_doc()
-        assert "ORCHIDE" in doc and "EOEPCA" in doc, (
+        assert "ORCHIDE" in doc and "EOEPCA+" in doc, (
             "Must compare against ORCHIDE and EOEPCA+"
         )
 
@@ -47,7 +47,7 @@ class TestReviewerRequestedDimensions:
 
 
 class TestAdditionalDimensions:
-    """Additional comparison dimensions with exact labels."""
+    """All 10 additional dimensions with exact labels."""
 
     @pytest.mark.parametrize("dimension", [
         "Validation Approach",
@@ -57,6 +57,7 @@ class TestAdditionalDimensions:
         "Extensibility Model",
         "AI Agent Interface",
         "Execution Environment",
+        "ORCHIDE Relationship",
         "CCSDS Alignment",
         "Open Source",
     ])
@@ -72,7 +73,7 @@ class TestComparedSystems:
 
     @pytest.mark.parametrize("system", [
         "ORCHIDE",
-        "EOEPCA",
+        "EOEPCA+",
         "KubeSpace",
         "DLR Sentinel+Argo",
         "This compiler",
