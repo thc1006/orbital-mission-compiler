@@ -1,0 +1,83 @@
+[
+  {
+    "service_id": "terrain-mapping-pass1",
+    "priority": 50,
+    "workflow_name": "mission-multi-orbit-terrain-mapping-pass1-2029-11-04t00-15-00z",
+    "steps": [
+      {
+        "name": "orthorectify",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "dem-extract",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-04T00:15:00Z",
+      "ground_visibility": false,
+      "region_type": "land",
+      "orbit": 1,
+      "duration_seconds": 5.0,
+      "landscape_type": "land",
+      "execution_mode": "sequential",
+      "requires_gpu": false,
+      "requires_fpga": false,
+      "fallback_enabled": false
+    }
+  },
+  {
+    "service_id": "terrain-mapping-pass2",
+    "priority": 50,
+    "workflow_name": "mission-multi-orbit-terrain-mapping-pass2-2029-11-04t01-45-00z",
+    "steps": [
+      {
+        "name": "orthorectify",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "dem-extract",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-04T01:45:00Z",
+      "ground_visibility": false,
+      "region_type": "land",
+      "orbit": 2,
+      "duration_seconds": 5.0,
+      "landscape_type": "land",
+      "execution_mode": "sequential",
+      "requires_gpu": false,
+      "requires_fpga": false,
+      "fallback_enabled": false
+    }
+  },
+  {
+    "service_id": "terrain-mapping-pass3",
+    "priority": 50,
+    "workflow_name": "mission-multi-orbit-terrain-mapping-pass3-2029-11-04t03-15-00z",
+    "steps": [
+      {
+        "name": "orthorectify",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "dem-extract",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-04T03:15:00Z",
+      "ground_visibility": false,
+      "region_type": "land",
+      "orbit": 3,
+      "duration_seconds": 5.0,
+      "landscape_type": "land",
+      "execution_mode": "sequential",
+      "requires_gpu": false,
+      "requires_fpga": false,
+      "fallback_enabled": false
+    }
+  }
+]

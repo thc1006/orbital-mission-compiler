@@ -1,0 +1,33 @@
+[
+  {
+    "service_id": "sar-compression",
+    "priority": 70,
+    "workflow_name": "mission-fpga-signal-sar-compression-2029-11-03t06-30-00z",
+    "steps": [
+      {
+        "name": "raw-iq-decode",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "fpga-compress",
+        "resource_class": "fpga"
+      },
+      {
+        "name": "package-output",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-03T06:30:00Z",
+      "ground_visibility": false,
+      "region_type": "land",
+      "orbit": 1,
+      "duration_seconds": 3.0,
+      "landscape_type": "land",
+      "execution_mode": "sequential",
+      "requires_gpu": false,
+      "requires_fpga": true,
+      "fallback_enabled": true
+    }
+  }
+]

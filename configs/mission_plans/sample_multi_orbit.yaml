@@ -1,0 +1,86 @@
+# Multi-orbit mission: 3 ACQ events across orbits 1, 2, 3 with download at orbit 3.
+# Demonstrates ORCHIDE slide 9 multi-pass mission planning.
+mission_id: mission-multi-orbit
+client_id: multi-orbit-user
+events:
+  - timestamp: "2029-11-04T00:15:00Z"
+    event_type: acquisition
+    orbit: 1
+    duration_seconds: 5.0
+    instrument: INST_1
+    ground_visibility: false
+    region_type: land
+    services:
+      - service_id: terrain-mapping-pass1
+        priority: 50
+        landscape_type: land
+        execution_mode: sequential
+        steps:
+          - name: orthorectify
+            image: ghcr.io/example/ortho:0.2.0
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo orthorectify"]
+          - name: dem-extract
+            image: ghcr.io/example/dem:0.2.0
+            phase: ai
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo dem-extract"]
+  - timestamp: "2029-11-04T01:45:00Z"
+    event_type: acquisition
+    orbit: 2
+    duration_seconds: 5.0
+    instrument: INST_1
+    ground_visibility: false
+    region_type: land
+    services:
+      - service_id: terrain-mapping-pass2
+        priority: 50
+        landscape_type: land
+        execution_mode: sequential
+        steps:
+          - name: orthorectify
+            image: ghcr.io/example/ortho:0.2.0
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo orthorectify"]
+          - name: dem-extract
+            image: ghcr.io/example/dem:0.2.0
+            phase: ai
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo dem-extract"]
+  - timestamp: "2029-11-04T03:15:00Z"
+    event_type: acquisition
+    orbit: 3
+    duration_seconds: 5.0
+    instrument: INST_1
+    ground_visibility: false
+    region_type: land
+    services:
+      - service_id: terrain-mapping-pass3
+        priority: 50
+        landscape_type: land
+        execution_mode: sequential
+        steps:
+          - name: orthorectify
+            image: ghcr.io/example/ortho:0.2.0
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo orthorectify"]
+          - name: dem-extract
+            image: ghcr.io/example/dem:0.2.0
+            phase: ai
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo dem-extract"]
+  - timestamp: "2029-11-04T04:30:00Z"
+    event_type: download
+    orbit: 3
+    duration_seconds: 300.0
+    instrument: X_BAND
+    ground_visibility: true

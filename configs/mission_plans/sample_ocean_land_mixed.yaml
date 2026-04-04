@@ -1,0 +1,61 @@
+# Mixed ocean/land scenario: 1 ACQ event with 2 services targeting different landscapes.
+# Demonstrates ORCHIDE slide 9 landscape_type field (O=ocean, L=land) in a single pass.
+mission_id: mission-ocean-land-mixed
+client_id: mixed-landscape-user
+events:
+  - timestamp: "2029-11-05T14:20:00Z"
+    event_type: acquisition
+    orbit: 1
+    duration_seconds: 12.0
+    instrument: INST_1
+    ground_visibility: false
+    region_type: coastal
+    services:
+      - service_id: coastal-ship-detection
+        priority: 80
+        landscape_type: ocean
+        execution_mode: sequential
+        steps:
+          - name: preprocess-maritime
+            image: ghcr.io/example/preprocess:0.1.0
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo preprocess-maritime"]
+          - name: detect-ships
+            image: ghcr.io/example/ship-detector:0.1.0
+            phase: ai
+            resource_class: gpu
+            fallback_resource_class: cpu
+            needs_acceleration: true
+            preferred_node_selector:
+              accelerator: nvidia
+            command: ["sh", "-c"]
+            args: ["echo detect-ships"]
+      - service_id: coastal-fire-detection
+        priority: 85
+        landscape_type: land
+        execution_mode: sequential
+        steps:
+          - name: preprocess-land
+            image: ghcr.io/example/preprocess:0.1.0
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo preprocess-land"]
+          - name: detect-fires
+            image: ghcr.io/example/fire-detector:0.1.0
+            phase: ai
+            resource_class: gpu
+            fallback_resource_class: cpu
+            needs_acceleration: true
+            preferred_node_selector:
+              accelerator: nvidia
+            command: ["sh", "-c"]
+            args: ["echo detect-fires"]
+          - name: alert-generation
+            image: ghcr.io/example/alerter:0.1.0
+            phase: postprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo alert-generation"]

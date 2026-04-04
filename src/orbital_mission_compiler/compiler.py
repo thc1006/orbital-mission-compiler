@@ -18,7 +18,7 @@ def sanitize_k8s_name(name: str, max_len: int = 63) -> str:
     s = re.sub(r"[^a-z0-9-]", "-", s)
     s = re.sub(r"-+", "-", s)
     s = s.strip("-")
-    return s[:max_len] or "step"
+    return s[:max_len].rstrip("-") or "step"
 
 
 def scale_priority_orchide(priority: int) -> int:

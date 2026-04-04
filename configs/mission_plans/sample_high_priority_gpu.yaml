@@ -1,0 +1,40 @@
+# High-priority GPU service with 3-phase pipeline (preprocessing + AI + postprocessing).
+# Demonstrates ORCHIDE slide 9 priority mapping (95 -> ORCHIDE priority 1).
+mission_id: mission-high-priority-gpu
+client_id: priority-demo-user
+events:
+  - timestamp: "2029-11-07T18:45:00Z"
+    event_type: acquisition
+    orbit: 2
+    duration_seconds: 20.0
+    instrument: INST_1
+    ground_visibility: false
+    region_type: ocean
+    services:
+      - service_id: emergency-detection
+        priority: 95
+        landscape_type: ocean
+        execution_mode: sequential
+        steps:
+          - name: preprocess-imagery
+            image: ghcr.io/example/preprocess:0.1.0
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo preprocess-imagery"]
+          - name: ai-classify-emergency
+            image: ghcr.io/example/emergency-classifier:0.1.0
+            phase: ai
+            resource_class: gpu
+            fallback_resource_class: cpu
+            needs_acceleration: true
+            preferred_node_selector:
+              accelerator: nvidia
+            command: ["sh", "-c"]
+            args: ["echo ai-classify-emergency"]
+          - name: generate-alert-package
+            image: ghcr.io/example/alert-packager:0.1.0
+            phase: postprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo generate-alert-package"]

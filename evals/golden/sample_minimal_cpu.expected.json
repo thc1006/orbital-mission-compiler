@@ -1,0 +1,25 @@
+[
+  {
+    "service_id": "thumbnail-gen",
+    "priority": 10,
+    "workflow_name": "mission-minimal-cpu-thumbnail-gen-2029-11-06t10-00-00z",
+    "steps": [
+      {
+        "name": "generate-thumbnail",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-06T10:00:00Z",
+      "ground_visibility": false,
+      "region_type": null,
+      "orbit": null,
+      "duration_seconds": null,
+      "landscape_type": null,
+      "execution_mode": "sequential",
+      "requires_gpu": false,
+      "requires_fpga": false,
+      "fallback_enabled": false
+    }
+  }
+]

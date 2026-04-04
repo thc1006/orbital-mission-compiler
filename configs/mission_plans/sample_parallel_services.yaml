@@ -1,0 +1,55 @@
+# Parallel execution mode: 1 ACQ event with 2 services in parallel.
+# Demonstrates ORCHIDE slide 14 concurrent workflow scheduling.
+mission_id: mission-parallel-services
+client_id: parallel-demo-user
+events:
+  - timestamp: "2029-11-02T12:00:00Z"
+    event_type: acquisition
+    orbit: 2
+    duration_seconds: 15.0
+    instrument: INST_1
+    ground_visibility: false
+    region_type: ocean
+    services:
+      - service_id: ship-tracking
+        priority: 85
+        landscape_type: ocean
+        execution_mode: parallel
+        steps:
+          - name: detect-vessels
+            image: ghcr.io/example/vessel-detector:0.3.0
+            phase: ai
+            resource_class: gpu
+            fallback_resource_class: cpu
+            needs_acceleration: true
+            preferred_node_selector:
+              accelerator: nvidia
+            command: ["sh", "-c"]
+            args: ["echo detect-vessels"]
+          - name: classify-vessels
+            image: ghcr.io/example/vessel-classifier:0.3.0
+            phase: ai
+            resource_class: gpu
+            fallback_resource_class: cpu
+            needs_acceleration: true
+            preferred_node_selector:
+              accelerator: nvidia
+            command: ["sh", "-c"]
+            args: ["echo classify-vessels"]
+      - service_id: wave-analysis
+        priority: 40
+        landscape_type: ocean
+        execution_mode: parallel
+        steps:
+          - name: extract-spectra
+            image: ghcr.io/example/spectra:0.3.0
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo extract-spectra"]
+          - name: estimate-wave-height
+            image: ghcr.io/example/wave-height:0.3.0
+            phase: ai
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo estimate-wave-height"]

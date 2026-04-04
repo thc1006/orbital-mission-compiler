@@ -1,0 +1,56 @@
+[
+  {
+    "service_id": "vegetation-index",
+    "priority": 60,
+    "workflow_name": "mission-multi-instrument-vegetation-index-2029-11-01t08-00-00z",
+    "steps": [
+      {
+        "name": "calibrate",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "compute-ndvi",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-01T08:00:00Z",
+      "ground_visibility": false,
+      "region_type": "land",
+      "orbit": 1,
+      "duration_seconds": 6.0,
+      "landscape_type": "land",
+      "execution_mode": "sequential",
+      "requires_gpu": false,
+      "requires_fpga": false,
+      "fallback_enabled": false
+    }
+  },
+  {
+    "service_id": "ocean-color",
+    "priority": 55,
+    "workflow_name": "mission-multi-instrument-ocean-color-2029-11-01t08-10-00z",
+    "steps": [
+      {
+        "name": "radiometric-correction",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "chlorophyll-estimation",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-01T08:10:00Z",
+      "ground_visibility": false,
+      "region_type": "ocean",
+      "orbit": 1,
+      "duration_seconds": 8.0,
+      "landscape_type": "ocean",
+      "execution_mode": "sequential",
+      "requires_gpu": false,
+      "requires_fpga": false,
+      "fallback_enabled": false
+    }
+  }
+]

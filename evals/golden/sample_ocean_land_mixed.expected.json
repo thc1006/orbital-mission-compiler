@@ -1,0 +1,60 @@
+[
+  {
+    "service_id": "coastal-ship-detection",
+    "priority": 80,
+    "workflow_name": "mission-ocean-land-mixed-coastal-ship-detection-2029-11-05t14-2",
+    "steps": [
+      {
+        "name": "preprocess-maritime",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "detect-ships",
+        "resource_class": "gpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-05T14:20:00Z",
+      "ground_visibility": false,
+      "region_type": "coastal",
+      "orbit": 1,
+      "duration_seconds": 12.0,
+      "landscape_type": "ocean",
+      "execution_mode": "sequential",
+      "requires_gpu": true,
+      "requires_fpga": false,
+      "fallback_enabled": true
+    }
+  },
+  {
+    "service_id": "coastal-fire-detection",
+    "priority": 85,
+    "workflow_name": "mission-ocean-land-mixed-coastal-fire-detection-2029-11-05t14-2",
+    "steps": [
+      {
+        "name": "preprocess-land",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "detect-fires",
+        "resource_class": "gpu"
+      },
+      {
+        "name": "alert-generation",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2029-11-05T14:20:00Z",
+      "ground_visibility": false,
+      "region_type": "coastal",
+      "orbit": 1,
+      "duration_seconds": 12.0,
+      "landscape_type": "land",
+      "execution_mode": "sequential",
+      "requires_gpu": true,
+      "requires_fpga": false,
+      "fallback_enabled": true
+    }
+  }
+]

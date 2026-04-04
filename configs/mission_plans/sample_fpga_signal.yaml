@@ -1,0 +1,38 @@
+# FPGA-based signal processing service.
+# Demonstrates ORCHIDE slide 14 FPGA resource class with CPU fallback.
+mission_id: mission-fpga-signal
+client_id: fpga-demo-user
+events:
+  - timestamp: "2029-11-03T06:30:00Z"
+    event_type: acquisition
+    orbit: 1
+    duration_seconds: 3.0
+    instrument: SAR_1
+    ground_visibility: false
+    region_type: land
+    services:
+      - service_id: sar-compression
+        priority: 70
+        landscape_type: land
+        execution_mode: sequential
+        steps:
+          - name: raw-iq-decode
+            image: ghcr.io/example/sar-decode:0.1.0
+            phase: preprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo raw-iq-decode"]
+          - name: fpga-compress
+            image: ghcr.io/example/fpga-compress:0.1.0
+            phase: ai
+            resource_class: fpga
+            fallback_resource_class: cpu
+            needs_acceleration: true
+            command: ["sh", "-c"]
+            args: ["echo fpga-compress"]
+          - name: package-output
+            image: ghcr.io/example/packager:0.1.0
+            phase: postprocessing
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo package-output"]

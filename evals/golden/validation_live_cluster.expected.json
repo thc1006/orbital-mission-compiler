@@ -1,0 +1,33 @@
+[
+  {
+    "service_id": "ship-detection",
+    "priority": 80,
+    "workflow_name": "validation-live-ship-detection-2026-04-02t23-00-00z",
+    "steps": [
+      {
+        "name": "preprocess",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "detect",
+        "resource_class": "cpu"
+      },
+      {
+        "name": "postprocess",
+        "resource_class": "cpu"
+      }
+    ],
+    "resource_hints": {
+      "event_timestamp": "2026-04-02T23:00:00Z",
+      "ground_visibility": false,
+      "region_type": "ocean",
+      "orbit": 1,
+      "duration_seconds": 10.0,
+      "landscape_type": "ocean",
+      "execution_mode": "sequential",
+      "requires_gpu": false,
+      "requires_fpga": false,
+      "fallback_enabled": false
+    }
+  }
+]
