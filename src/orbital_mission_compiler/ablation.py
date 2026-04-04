@@ -336,19 +336,28 @@ def run_ablation_study() -> dict[ValidationArm, dict[ErrorCategory, float]]:
 
         for case in cases:
             raw = case["plan"]
-            s_det, _ = run_schema_validation(raw)
+
+            # Validate once — reuse model for both schema arm and
+            # combined arm normalization (avoids redundant parsing).
+            try:
+                model = MissionPlan.model_validate(raw)
+                s_det = False
+            except (ValidationError, ValueError):
+                model = None
+                s_det = True
 
             # Policy-only arm: raw dict (no schema normalization).
             p_det, _ = run_policy_validation(raw)
 
             # Combined arm: if schema passes, normalize through
-            # MissionPlan.model_dump(mode='json') before policy eval,
-            # matching the real CLI/MCP pipeline.
+            # model_dump(mode='json') before policy eval, matching
+            # the real CLI/MCP pipeline.
             if s_det:
                 c_det = True
             else:
-                normalized = MissionPlan.model_validate(raw).model_dump(mode="json")
-                c_policy_det, _ = run_policy_validation(normalized)
+                c_policy_det, _ = run_policy_validation(
+                    model.model_dump(mode="json")
+                )
                 c_det = c_policy_det
 
             if s_det:
