@@ -47,27 +47,35 @@ class TestReviewerRequestedDimensions:
 
 
 class TestAdditionalDimensions:
-    """Additional comparison dimensions for completeness."""
+    """Additional comparison dimensions with exact labels."""
 
     @pytest.mark.parametrize("dimension", [
-        "Validation",
+        "Validation Approach",
+        "Policy Framework",
+        "Defense-in-Depth",
         "Hardware Abstraction",
-        "Extensibility",
+        "Extensibility Model",
+        "AI Agent Interface",
+        "Execution Environment",
+        "CCSDS Alignment",
+        "Open Source",
     ])
     def test_dimension_present(self, dimension: str):
         doc = _read_doc()
-        assert dimension.lower() in doc.lower(), (
+        assert dimension in doc, (
             f"Comparison dimension missing: {dimension}"
         )
 
 
 class TestComparedSystems:
-    """Must compare against key related systems."""
+    """All 5 compared systems must be present."""
 
     @pytest.mark.parametrize("system", [
         "ORCHIDE",
         "EOEPCA",
         "KubeSpace",
+        "DLR Sentinel+Argo",
+        "This compiler",
     ])
     def test_system_compared(self, system: str):
         doc = _read_doc()

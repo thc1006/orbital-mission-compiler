@@ -1,6 +1,6 @@
 # 16 — Expanded Comparison Table
 
-> Multi-dimensional comparison of this compiler against related systems.
+> 5 systems × 13 dimensions comparison of this compiler against related systems.
 > Addresses IEEE SMC-IT/SCC 2026 reviewer feedback: expand Table I with
 > problem layer, artifact granularity, and scheduling scope dimensions.
 
@@ -32,7 +32,7 @@
 
 | Dimension | This Compiler | ORCHIDE | EOEPCA+ | KubeSpace | DLR Sentinel+Argo |
 |---|---|---|---|---|---|
-| **Validation Approach** | Schema (Pydantic) + Policy-as-code (OPA/Rego), 12 error categories | None documented | OGC schema validation | None (cluster-level only) | None (assumes valid CWL) |
+| **Validation Approach** | Schema (Pydantic) + Policy-as-code (OPA/Rego), 12 invalid error categories | None documented | OGC schema validation | None (cluster-level only) | None (assumes valid CWL) |
 | **Policy Framework** | OPA/Rego: 10 deny rules, ORCHIDE slide-traceable | None | None | None | None |
 | **Defense-in-Depth** | 5 rules overlap between schema + policy layers | N/A | N/A | N/A | N/A |
 
