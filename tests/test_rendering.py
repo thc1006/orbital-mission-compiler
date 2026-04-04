@@ -48,7 +48,7 @@ def test_argo_workflow_has_priority_annotation():
     intent = _intents("configs/mission_plans/sample_orchide_format.yaml")[0]
     wf = render_argo_workflow(intent)
     annotations = wf["metadata"].get("annotations", {})
-    assert annotations["orbital/priority"] == "1"
+    assert annotations["orbital/priority"] == "90"
 
 
 # ── Argo: resource hints in workflow annotations ─────────────────────
@@ -70,7 +70,7 @@ def test_kueue_job_has_priority_annotation():
     intent = _intents("configs/mission_plans/sample_orchide_format.yaml")[0]
     job = render_kueue_job(intent)
     annotations = job["metadata"].get("annotations", {})
-    assert annotations["orbital/priority"] == "1"
+    assert annotations["orbital/priority"] == "90"
 
 
 def test_kueue_job_has_resource_annotations():
