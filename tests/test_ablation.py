@@ -23,6 +23,13 @@ from orbital_mission_compiler.policy import opa_available
 OPA_AVAILABLE = opa_available()
 
 
+def _pick(corpus: list[dict], cat: ErrorCategory) -> dict:
+    """Pick the first corpus case for a category, with a clear error on miss."""
+    case = next((c for c in corpus if c["category"] == cat), None)
+    assert case is not None, f"Corpus missing category: {cat.value}"
+    return case
+
+
 # ── Corpus completeness ──────────────────────────────────────────────────
 
 
@@ -61,30 +68,24 @@ class TestSchemaValidation:
 
     def test_detects_empty_mission_id(self):
         corpus = generate_mutation_corpus()
-        case = [c for c in corpus if c["category"] == ErrorCategory.EMPTY_MISSION_ID][0]
-        detected, _ = run_schema_validation(case["plan"])
+        detected, _ = run_schema_validation(_pick(corpus, ErrorCategory.EMPTY_MISSION_ID)["plan"])
         assert detected
 
     def test_misses_zero_priority(self):
         """Schema allows priority=0; only policy catches this."""
         corpus = generate_mutation_corpus()
-        zero_prio = [c for c in corpus if c["category"] == ErrorCategory.ZERO_PRIORITY]
-        assert len(zero_prio) >= 1
-        detected, _ = run_schema_validation(zero_prio[0]["plan"])
+        detected, _ = run_schema_validation(_pick(corpus, ErrorCategory.ZERO_PRIORITY)["plan"])
         assert not detected, "Schema should NOT catch zero priority"
 
     def test_misses_cpu_acceleration(self):
         """Schema has no cross-field constraint for CPU+acceleration."""
         corpus = generate_mutation_corpus()
-        cpu_accel = [c for c in corpus if c["category"] == ErrorCategory.CPU_ACCELERATION]
-        assert len(cpu_accel) >= 1
-        detected, _ = run_schema_validation(cpu_accel[0]["plan"])
+        detected, _ = run_schema_validation(_pick(corpus, ErrorCategory.CPU_ACCELERATION)["plan"])
         assert not detected, "Schema should NOT catch CPU+acceleration contradiction"
 
     def test_valid_plan_passes(self):
         corpus = generate_mutation_corpus()
-        valid = [c for c in corpus if c["category"] == ErrorCategory.VALID][0]
-        detected, _ = run_schema_validation(valid["plan"])
+        detected, _ = run_schema_validation(_pick(corpus, ErrorCategory.VALID)["plan"])
         assert not detected, "Valid plan should pass schema validation"
 
 
@@ -97,27 +98,23 @@ class TestPolicyValidation:
 
     def test_detects_zero_priority(self):
         corpus = generate_mutation_corpus()
-        zero_prio = [c for c in corpus if c["category"] == ErrorCategory.ZERO_PRIORITY][0]
-        detected, _ = run_policy_validation(zero_prio["plan"])
+        detected, _ = run_policy_validation(_pick(corpus, ErrorCategory.ZERO_PRIORITY)["plan"])
         assert detected
 
     def test_detects_cpu_acceleration(self):
         corpus = generate_mutation_corpus()
-        cpu_accel = [c for c in corpus if c["category"] == ErrorCategory.CPU_ACCELERATION][0]
-        detected, _ = run_policy_validation(cpu_accel["plan"])
+        detected, _ = run_policy_validation(_pick(corpus, ErrorCategory.CPU_ACCELERATION)["plan"])
         assert detected
 
     def test_misses_acq_without_instrument(self):
         """Policy has no rule requiring instrument on acquisition events."""
         corpus = generate_mutation_corpus()
-        no_inst = [c for c in corpus if c["category"] == ErrorCategory.ACQ_NO_INSTRUMENT][0]
-        detected, _ = run_policy_validation(no_inst["plan"])
+        detected, _ = run_policy_validation(_pick(corpus, ErrorCategory.ACQ_NO_INSTRUMENT)["plan"])
         assert not detected, "Policy should NOT catch missing instrument"
 
     def test_valid_plan_passes(self):
         corpus = generate_mutation_corpus()
-        valid = [c for c in corpus if c["category"] == ErrorCategory.VALID][0]
-        detected, _ = run_policy_validation(valid["plan"])
+        detected, _ = run_policy_validation(_pick(corpus, ErrorCategory.VALID)["plan"])
         assert not detected, "Valid plan should pass policy validation"
 
 
