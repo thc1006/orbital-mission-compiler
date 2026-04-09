@@ -2,7 +2,7 @@
   {
     "service_id": "coastal-ship-detection",
     "priority": 80,
-    "workflow_name": "mission-ocean-land-mixed-coastal-ship-detection-2029-11-05t14-2",
+    "workflow_name": "mission-ocean-land-mixed-coastal-ship-detection-2029-1-c1f566d1",
     "steps": [
       {
         "name": "preprocess-maritime",
@@ -29,7 +29,7 @@
   {
     "service_id": "coastal-fire-detection",
     "priority": 85,
-    "workflow_name": "mission-ocean-land-mixed-coastal-fire-detection-2029-11-05t14-2",
+    "workflow_name": "mission-ocean-land-mixed-coastal-fire-detection-2029-1-56c4593e",
     "steps": [
       {
         "name": "preprocess-land",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 try:
     from fastmcp import FastMCP
@@ -11,6 +11,7 @@ except ImportError:
     FastMCP = None  # type: ignore[assignment,misc]
 
 from orbital_mission_compiler.compiler import (
+    analyze_timeline_conflicts,
     load_mission_plan,
     compile_plan_to_intents,
     write_individual_workflows,
@@ -127,49 +128,8 @@ def build_server() -> Any:
     @server.tool
     def check_timeline_conflicts(path: str) -> dict[str, Any]:
         """Detect overlapping acquisition windows in a mission plan."""
-        from datetime import datetime, timezone
-
         plan = load_mission_plan(_validate_plan_path(path))
-        acq_events = []
-        skipped = []
-        for ev in plan.events:
-            if ev.event_type.value != "acquisition":
-                continue
-            try:
-                ts = datetime.fromisoformat(ev.timestamp.replace("Z", "+00:00"))
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-            except ValueError:
-                skipped.append(ev.timestamp)
-                continue
-            if ev.duration_seconds is None:
-                skipped.append(ev.timestamp)
-                continue
-            duration = ev.duration_seconds
-            acq_events.append({
-                "timestamp": ev.timestamp,
-                "start": ts.timestamp(),
-                "end": ts.timestamp() + duration,
-            })
-
-        conflicts = []
-        for i in range(len(acq_events)):
-            for j in range(i + 1, len(acq_events)):
-                a, b = acq_events[i], acq_events[j]
-                max_start = max(cast(float, a["start"]), cast(float, b["start"]))
-                min_end = min(cast(float, a["end"]), cast(float, b["end"]))
-                if max_start < min_end:
-                    conflicts.append({
-                        "event_a": a["timestamp"],
-                        "event_b": b["timestamp"],
-                        "overlap_seconds": round(min_end - max_start, 2),
-                    })
-
-        return {
-            "conflicts": conflicts,
-            "conflict_count": len(conflicts),
-            "skipped_timestamps": skipped,
-        }
+        return analyze_timeline_conflicts(plan)
 
     return server
 

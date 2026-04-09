@@ -70,10 +70,10 @@ ORCHIDE **已實作**「Mission Plan to Argo Workflow translation」:
 | **執行環境** | 星載 (onboard satellite) | 地面端 (ground-side development) |
 | **定位** | 完整星載 PaaS 平台 | 獨立的任務計劃編譯器 |
 | **任務計劃→Argo 翻譯** | 有 (嵌入式 glue code) | 有 (獨立 CLI + library) |
-| **Policy 驗證** | 無 | OPA/Rego (4 條 deny rules, 可擴充) |
+| **Policy 驗證** | 無 | OPA/Rego (10 條 deny rules, 可擴充) |
 | **Admission 語義** | 無 (custom priority queue) | Kueue (ResourceFlavor, ClusterQueue) |
-| **MCP / Agent 介面** | 無 | FastMCP (4 tools) |
-| **Golden 測試** | 不明 | 有 (eval_runner + 2 cases) |
+| **MCP / Agent 介面** | 無 | FastMCP (6 tools) |
+| **Golden 測試** | 不明 | 有 (eval_runner + 13 cases) |
 | **獨立可用性** | 需要完整 ORCHIDE 平台 | `pip install` + CLI 即可使用 |
 | **監控** | Vector + OpenSearch + Prometheus | 設計目標: OTel (尚未實作) |
 | **開源狀態** | 即將開源 (KubeCon 宣布) | 已開源 |

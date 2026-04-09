@@ -2,7 +2,7 @@
   {
     "service_id": "emergency-detection",
     "priority": 95,
-    "workflow_name": "mission-high-priority-gpu-emergency-detection-2029-11-07t18-45",
+    "workflow_name": "mission-high-priority-gpu-emergency-detection-2029-11-d8dd5520",
     "steps": [
       {
         "name": "preprocess-imagery",

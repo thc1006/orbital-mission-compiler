@@ -5,7 +5,7 @@ import rego.v1
 default allow := false
 
 deny contains msg if {
-  input.mission_id == ""
+  trim_space(input.mission_id) == ""
   msg := "mission_id must not be empty"
 }
 
