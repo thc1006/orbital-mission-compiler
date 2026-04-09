@@ -40,6 +40,7 @@ See `docs/13_market_positioning.md` for competitive analysis.
 - `make fmt` — Ruff format
 - `make compile-sample` — compile sample mission plan
 - `make eval` — run golden translation checks
+- `make k8s-smoke` — optional live cluster E2E validation
 - `make print-tree` — show repo tree
 
 ## Done criteria
@@ -88,6 +89,10 @@ Write or update a plan document before coding if you are:
 2. `make test`
 3. `make eval`
 4. update docs if behavior or interfaces changed
+
+If touching live validation / admission scripts:
+5. run `make k8s-smoke` when a cluster is available, and record environment-coupled failures in `docs/08_risks_and_unknowns.md`.
+6. prefer dedicated service accounts + least-privilege RBAC (do not rely on namespace `default` service account for workflow execution).
 
 ## Recommended subagents
 See `.claude/agents/`:

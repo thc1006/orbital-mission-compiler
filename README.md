@@ -41,6 +41,33 @@ make opa-smoke   # OPA policy evaluation (requires opa CLI)
 make argo-smoke  # Argo manifest lint (requires argo CLI)
 ```
 
+## Live cluster validation (optional)
+
+For end-to-end validation against a real cluster:
+
+```bash
+bash scripts/install_argo.sh
+bash scripts/install_kueue.sh
+bash scripts/kueue_demo_apply.sh
+make k8s-smoke
+```
+
+`k8s-smoke` uses a dedicated Argo runtime service account (`orbital-workflow-runner`) and checks Kueue admission via workload labels bound to the submitted Job UID.
+
+Useful runtime overrides:
+
+```bash
+NAMESPACE=orbital-demo \
+QUEUE=orbital-demo-local \
+ARGO_SERVICE_ACCOUNT=orbital-workflow-runner \
+ARGO_TIMEOUT_SECONDS=120 \
+KUEUE_ADMISSION_TIMEOUT_SECONDS=60 \
+KUEUE_COMPLETION_TIMEOUT_SECONDS=120 \
+make k8s-smoke
+```
+
+Note: live-cluster checks are environment-coupled and can fail on shared or CPU-constrained single-node clusters even when compiler logic is correct.
+
 ## Local development with Docker Compose
 
 ```bash

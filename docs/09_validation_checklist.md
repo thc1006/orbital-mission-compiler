@@ -88,15 +88,16 @@ make eval                       # golden translation checks
 - [x] 15 platform contract tests, all pass. No real adapters.
 
 ### Optional Phase X — Agent workflow hardening (continued)
-- [ ] MCP tools tested (tests/test_mcp.py)
+- [x] MCP tools tested (tests/test_mcp.py)
 - [ ] Compiler emits structured logs
-- [ ] All existing tests still pass
+- [x] All existing tests still pass
 
 ## Cluster integration checks (require live cluster)
 - [x] K3s / K8s cluster accessible
 - [x] Argo Workflows installed and pods Running
 - [x] Kueue installed and pods Running
 - [x] Kueue demo queues applied (ClusterQueue, LocalQueue, ResourceFlavors)
+- [x] Argo executor RBAC applied for `orbital-demo/orbital-workflow-runner` runtime SA
 - [x] OPA CLI installed and policy eval works
 - [x] Argo CLI installed and lint passes
 - [ ] GPU execution path tested on a real accelerator node

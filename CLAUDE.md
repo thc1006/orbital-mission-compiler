@@ -53,6 +53,8 @@ It intentionally does **not** build:
 - Golden evals live in `evals/golden/`.
 - Bootstrap and install flows live in `scripts/`.
 - MCP entry point is `src/orbital_mission_compiler/mcp/server.py`.
+- Live cluster RBAC for Argo executor is in `manifests/k8s/argo/00-workflow-executor-rbac.yaml`.
+- `scripts/validate_live_cluster.sh` submits Argo workflows with dedicated SA (`orbital-workflow-runner`) and resolves Kueue workloads via `kueue.x-k8s.io/job-uid`.
 
 ## Preferred workflow
 - inspect docs
@@ -60,6 +62,11 @@ It intentionally does **not** build:
 - run tests/evals
 - make smallest coherent change
 - rerun `make verify`
+
+For live validation changes:
+- keep script logic portable (avoid GNU-specific assumptions),
+- prefer least-privilege service accounts over namespace `default`,
+- treat `make k8s-smoke` as environment-coupled validation, not deterministic CI.
 
 ## If asked to extend the system
 Prefer one of these directions:

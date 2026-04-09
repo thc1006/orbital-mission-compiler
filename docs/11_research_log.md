@@ -59,9 +59,14 @@ Whenever a dependency or version changes, add:
 ## Phase 2 demo sources
 - OPA CLI reference for `opa eval --stdin-input --data ...`: https://openpolicyagent.org/docs/cli
 - OPA docs front page examples for command-line evaluation: https://openpolicyagent.org/docs
+- OPA binary checksum verification (`.sha256` sidecar files): https://openpolicyagent.org/docs
+- GitHub release integrity verification (`gh release verify` / immutable releases): https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/verifying-the-integrity-of-a-release
 - Argo installation docs: https://argo-workflows.readthedocs.io/en/latest/installation/
+- Argo workflow RBAC guidance (`workflowtaskresults` + service account binding): https://argo-workflows.readthedocs.io/en/latest/workflow-rbac/
 - Argo `argo lint` CLI docs: https://argo-workflows.readthedocs.io/en/latest/cli/argo_lint/
 - Kueue install docs: https://kueue.sigs.k8s.io/docs/installation/
+- Kueue job troubleshooting (identify workload by `kueue.x-k8s.io/job-uid`): https://kueue.sigs.k8s.io/docs/tasks/troubleshooting/troubleshooting_jobs/
+- Kubernetes service accounts (dedicated identity per workload): https://kubernetes.io/docs/concepts/security/service-accounts/
 - Kueue concepts for `ClusterQueue`, `LocalQueue`, `ResourceFlavor`: https://kueue.sigs.k8s.io/docs/concepts/
 - Kueue job submission docs for `kueue.x-k8s.io/queue-name`: https://kueue.sigs.k8s.io/docs/tasks/run/jobs/
 - OpenTelemetry Collector Kubernetes install example: https://opentelemetry.io/docs/collector/install/kubernetes/
