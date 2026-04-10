@@ -60,13 +60,29 @@ jobs:
         if: steps.opa-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
           mkdir -p "$HOME/.local/bin"
-          curl -fSL -o "$HOME/.local/bin/opa" \
-            "https://github.com/open-policy-agent/opa/releases/download/${OPA_VERSION}/opa_linux_amd64_static"
+          OPA_BASE_URL="https://openpolicyagent.org/downloads/${OPA_VERSION}"
+          curl -fSL -o "$TMP_DIR/opa_linux_amd64_static" \
+            "${OPA_BASE_URL}/opa_linux_amd64_static"
+          curl -fSL -o "$TMP_DIR/opa_linux_amd64_static.sha256" \
+            "${OPA_BASE_URL}/opa_linux_amd64_static.sha256"
+          (
+            cd "$TMP_DIR"
+            sha256sum -c "opa_linux_amd64_static.sha256"
+          )
+          install -m 0755 "$TMP_DIR/opa_linux_amd64_static" "$HOME/.local/bin/opa"
           chmod +x "$HOME/.local/bin/opa"
-          # Note: OPA v1.15.1 does not publish checksums.txt.
-          # Download integrity relies on HTTPS + GitHub CDN only.
-          # Cache provides speed, not integrity verification.
+
+      - name: Verify OPA checksum
+        run: |
+          set -euo pipefail
+          OPA_BASE_URL="https://openpolicyagent.org/downloads/${OPA_VERSION}"
+          EXPECTED_SHA="$(curl -fsSL "${OPA_BASE_URL}/opa_linux_amd64_static.sha256" | awk '{print $1}')"
+          ACTUAL_SHA="$(sha256sum "$HOME/.local/bin/opa" | awk '{print $1}')"
+          test -n "$EXPECTED_SHA"
+          test "$EXPECTED_SHA" = "$ACTUAL_SHA"
 
       - name: Add OPA to PATH and verify
         run: |

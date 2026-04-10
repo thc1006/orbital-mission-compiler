@@ -6,8 +6,12 @@ set -uo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 MISSION_FILE="configs/mission_plans/validation_live_cluster.yaml"
-NAMESPACE="orbital-demo"
-QUEUE="orbital-demo-local"
+NAMESPACE="${NAMESPACE:-orbital-demo}"
+QUEUE="${QUEUE:-orbital-demo-local}"
+ARGO_SERVICE_ACCOUNT="${ARGO_SERVICE_ACCOUNT:-orbital-workflow-runner}"
+ARGO_TIMEOUT_SECONDS="${ARGO_TIMEOUT_SECONDS:-120}"
+KUEUE_ADMISSION_TIMEOUT_SECONDS="${KUEUE_ADMISSION_TIMEOUT_SECONDS:-60}"
+KUEUE_COMPLETION_TIMEOUT_SECONDS="${KUEUE_COMPLETION_TIMEOUT_SECONDS:-120}"
 OUT_DIR="out/live-validation"
 ARGO_OUT="${OUT_DIR}/argo"
 KUEUE_OUT="${OUT_DIR}/kueue"
@@ -26,6 +30,21 @@ report() {
     FAIL=$((FAIL + 1))
   fi
 }
+
+_require_non_negative_integer() {
+  local name="$1"
+  local value="$2"
+  case "${value}" in
+    ''|*[!0-9]*)
+      echo "[FAIL] ${name} must be a non-negative integer (seconds), got: ${value}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+_require_non_negative_integer "ARGO_TIMEOUT_SECONDS" "${ARGO_TIMEOUT_SECONDS}"
+_require_non_negative_integer "KUEUE_ADMISSION_TIMEOUT_SECONDS" "${KUEUE_ADMISSION_TIMEOUT_SECONDS}"
+_require_non_negative_integer "KUEUE_COMPLETION_TIMEOUT_SECONDS" "${KUEUE_COMPLETION_TIMEOUT_SECONDS}"
 
 # ── Step 1: Check prerequisites ────────────────────────────────────────
 
@@ -133,25 +152,53 @@ fi
 ARGO_FILE=$(find "${ARGO_OUT}" -name '*.yaml' -print -quit 2>/dev/null)
 if [ -n "${ARGO_FILE}" ] && command -v argo >/dev/null 2>&1; then
   echo "Submitting Argo Workflow to cluster ..."
-  if WF_NAME=$(argo submit "${ARGO_FILE}" -n "${NAMESPACE}" -o name 2>/dev/null); then
+  if WF_NAME=$(argo submit "${ARGO_FILE}" -n "${NAMESPACE}" --serviceaccount "${ARGO_SERVICE_ACCOUNT}" -o name 2>/dev/null); then
+    WF_RAW_NAME="${WF_NAME#*/}"
     report PASS "Argo Workflow submitted: ${WF_NAME}"
 
-    echo "Waiting for Argo Workflow completion (up to 120s) ..."
-    if argo wait "${WF_NAME}" -n "${NAMESPACE}" --timeout 120s >/dev/null 2>&1; then
-      WF_STATUS=$(argo get "${WF_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null | ${PYTHON_BIN} -c "import sys,json; print(json.load(sys.stdin).get('status',{}).get('phase','Unknown'))" 2>/dev/null || echo "Unknown")
+    echo "Waiting for Argo Workflow completion (up to ${ARGO_TIMEOUT_SECONDS}s) ..."
+    deadline=$((SECONDS + ARGO_TIMEOUT_SECONDS))
+    WF_STATUS="Unknown"
+    ARGO_TIMED_OUT="true"
+    while [ "${SECONDS}" -lt "${deadline}" ]; do
+      WF_STATUS="$(
+        argo get "${WF_NAME}" -n "${NAMESPACE}" -o json 2>/dev/null \
+          | ${PYTHON_BIN} -c "import sys,json; print(json.load(sys.stdin).get('status',{}).get('phase','Unknown'))" \
+          2>/dev/null || echo "Unknown"
+      )"
       if [ "${WF_STATUS}" = "Succeeded" ]; then
         report PASS "Argo Workflow completed: ${WF_STATUS}"
-      else
-        report FAIL "Argo Workflow status: ${WF_STATUS}"
+        ARGO_TIMED_OUT="false"
+        break
       fi
-    else
-      report FAIL "Argo Workflow did not complete within timeout"
+      if [ "${WF_STATUS}" = "Failed" ] || [ "${WF_STATUS}" = "Error" ]; then
+        report FAIL "Argo Workflow status: ${WF_STATUS}"
+        ARGO_TIMED_OUT="false"
+        break
+      fi
+      sleep 2
+    done
+    if [ "${ARGO_TIMED_OUT}" = "true" ]; then
+      report FAIL "Argo Workflow did not complete within timeout (${ARGO_TIMEOUT_SECONDS}s)"
+      POD_NAME="$(
+        kubectl get pods \
+          -n "${NAMESPACE}" \
+          -l "workflows.argoproj.io/workflow=${WF_RAW_NAME}" \
+          -o jsonpath='{.items[0].metadata.name}' \
+          2>/dev/null || true
+      )"
+      argo get "${WF_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 && \
+        argo get "${WF_NAME}" -n "${NAMESPACE}" || true
+      if [ -n "${POD_NAME}" ]; then
+        kubectl describe "pod/${POD_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 && \
+          kubectl describe "pod/${POD_NAME}" -n "${NAMESPACE}" | tail -30 || true
+      fi
     fi
 
     # Cleanup
     argo delete "${WF_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 || true
   else
-    report FAIL "Argo Workflow submission failed"
+    report FAIL "Argo Workflow submission failed (serviceaccount=${ARGO_SERVICE_ACCOUNT})"
   fi
 else
   echo "Skipping Argo submission (no rendered file or argo CLI unavailable)"
@@ -187,28 +234,64 @@ if [ -n "${JOB_FILE}" ] && command -v kubectl >/dev/null 2>&1; then
   if JOB_NAME=$(kubectl create -f "${JOB_FILE}" -o jsonpath='{.metadata.name}' 2>/dev/null); then
     report PASS "Kueue Job submitted: ${JOB_NAME}"
 
-    echo "Checking Kueue admission (up to 60s) ..."
+    echo "Checking Kueue admission (up to ${KUEUE_ADMISSION_TIMEOUT_SECONDS}s) ..."
     ADMITTED="false"
-    for _ in $(seq 1 12); do
-      ADMITTED_STATUS=$(kubectl get workloads -l "job-name=${JOB_NAME}" -n "${NAMESPACE}" -o jsonpath='{.items[*].status.conditions[?(@.type=="Admitted")].status}' 2>/dev/null || true)
-      if echo "${ADMITTED_STATUS}" | grep -q "True"; then
-        ADMITTED="true"
-        break
-      fi
-      sleep 5
-    done
-
-    if [ "${ADMITTED}" = "true" ]; then
-      report PASS "Kueue admission confirmed"
+    WORKLOAD_NAME=""
+    deadline=$((SECONDS + KUEUE_ADMISSION_TIMEOUT_SECONDS))
+    JOB_UID="$(kubectl get job "${JOB_NAME}" -n "${NAMESPACE}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+    if [ -z "${JOB_UID}" ]; then
+      report FAIL "Unable to read Job UID for ${JOB_NAME}; skipping Kueue admission lookup"
+      kubectl get "job/${JOB_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 && \
+        kubectl get "job/${JOB_NAME}" -n "${NAMESPACE}" -o yaml | tail -30 || true
+      kubectl auth can-i get jobs.batch -n "${NAMESPACE}" >/dev/null 2>&1 && \
+        kubectl auth can-i get jobs.batch -n "${NAMESPACE}" || true
     else
-      report FAIL "Kueue admission not confirmed within timeout"
+      while [ "${SECONDS}" -lt "${deadline}" ]; do
+        if [ -n "${WORKLOAD_NAME}" ]; then
+          ADMITTED_STATUS="$(kubectl get workload "${WORKLOAD_NAME}" -n "${NAMESPACE}" -o jsonpath='{.status.conditions[?(@.type=="Admitted")].status}' 2>/dev/null || true)"
+        else
+          WORKLOAD_NAME="$(
+            kubectl get workloads.kueue.x-k8s.io \
+              -n "${NAMESPACE}" \
+              -l "kueue.x-k8s.io/job-uid=${JOB_UID}" \
+              -o jsonpath='{.items[0].metadata.name}' \
+              2>/dev/null || true
+          )"
+          ADMITTED_STATUS=""
+        fi
+        if echo "${ADMITTED_STATUS}" | grep -q "True"; then
+          ADMITTED="true"
+          break
+        fi
+        sleep 5
+      done
+
+      if [ "${ADMITTED}" = "true" ]; then
+        report PASS "Kueue admission confirmed"
+      else
+        report FAIL "Kueue admission not confirmed within timeout"
+        kubectl get workloads.kueue.x-k8s.io \
+          -n "${NAMESPACE}" \
+          -l "kueue.x-k8s.io/job-uid=${JOB_UID}" \
+          >/dev/null 2>&1 && \
+          kubectl get workloads.kueue.x-k8s.io \
+            -n "${NAMESPACE}" \
+            -l "kueue.x-k8s.io/job-uid=${JOB_UID}" || true
+      fi
     fi
 
-    echo "Waiting for Job completion (up to 120s) ..."
-    if kubectl wait --for=condition=complete "job/${JOB_NAME}" -n "${NAMESPACE}" --timeout=120s >/dev/null 2>&1; then
+    echo "Waiting for Job completion (up to ${KUEUE_COMPLETION_TIMEOUT_SECONDS}s) ..."
+    if kubectl wait --for=condition=complete "job/${JOB_NAME}" -n "${NAMESPACE}" --timeout="${KUEUE_COMPLETION_TIMEOUT_SECONDS}s" >/dev/null 2>&1; then
       report PASS "Kueue Job completed"
     else
       report FAIL "Kueue Job did not complete within timeout"
+      POD_NAME="$(kubectl get pods -n "${NAMESPACE}" -l "job-name=${JOB_NAME}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+      kubectl describe "job/${JOB_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 && \
+        kubectl describe "job/${JOB_NAME}" -n "${NAMESPACE}" | tail -30 || true
+      if [ -n "${POD_NAME}" ]; then
+        kubectl describe "pod/${POD_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 && \
+          kubectl describe "pod/${POD_NAME}" -n "${NAMESPACE}" | tail -30 || true
+      fi
     fi
 
     # Cleanup

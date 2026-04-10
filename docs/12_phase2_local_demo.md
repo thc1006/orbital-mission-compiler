@@ -31,6 +31,7 @@ bash scripts/install_argo.sh
 bash scripts/install_kueue.sh
 bash scripts/kueue_demo_apply.sh
 ```
+`scripts/kueue_demo_apply.sh` already applies `manifests/k8s/argo/00-workflow-executor-rbac.yaml`.
 
 ## GPU/CPU fallback interpretation
 This demo implements **soft fallback**, not hard device-plugin failover:
@@ -45,6 +46,7 @@ This matches the transcript’s statement that applications are configured accor
 - `configs/mission_plans/sample_gpu_cpu_fallback.yaml`
 - `manifests/examples/argo-gpu-cpu-fallback.yaml`
 - `manifests/k8s/kueue/*.yaml`
+- `manifests/k8s/argo/00-workflow-executor-rbac.yaml`
 - `scripts/opa_smoke.sh`
 - `scripts/argo_smoke.sh`
 - `scripts/kueue_demo_apply.sh`
@@ -86,6 +88,16 @@ This script:
 2. Submits the Job to the cluster with `kubectl create`.
 3. Verifies the Workload is created and admitted by Kueue's ClusterQueue.
 4. Cleans up the Job on exit.
+
+## Naming and timeline hardening (2026-04)
+- Workflow object names use collision-resistant sanitization: when names exceed Kubernetes limits, a stable hash suffix is appended instead of silent truncation.
+- Argo DAG task names are generated from indexed template names to avoid duplicate-task collisions when step labels sanitize to the same value.
+- Timeline overlap checking is centralized in `compiler.py` and reused by MCP `check_timeline_conflicts` to avoid drift between CLI/library and MCP behavior.
+
+## Live validation portability hardening (2026-04)
+- `scripts/validate_live_cluster.sh` now waits on Argo workflow completion via internal polling with `ARGO_TIMEOUT_SECONDS`, avoiding dependency on GNU `timeout` behavior differences across environments.
+- Argo submission uses a dedicated runtime service account (`orbital-workflow-runner`) instead of the namespace `default` service account.
+- Kueue admission checks resolve the workload by Job UID label (`kueue.x-k8s.io/job-uid`), following Kueue troubleshooting guidance and avoiding namespace-wide false positives.
 
 ## Verification boundaries
 These files are scaffolded and syntax-checked, but not all external tools were executed in this environment. The repository should still be treated as a **research-backed local demo scaffold**, not as a finished deployment kit.
