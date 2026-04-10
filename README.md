@@ -53,6 +53,7 @@ make k8s-smoke
 ```
 
 `k8s-smoke` uses a dedicated Argo runtime service account (`orbital-workflow-runner`) and checks Kueue admission via workload labels bound to the submitted Job UID.
+`NAMESPACE` override requires equivalent runtime RBAC (including `orbital-workflow-runner` ServiceAccount + RoleBinding for `workflowtaskresults`) applied in that same namespace.
 
 Useful runtime overrides:
 

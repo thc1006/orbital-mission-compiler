@@ -31,6 +31,21 @@ report() {
   fi
 }
 
+_require_non_negative_integer() {
+  local name="$1"
+  local value="$2"
+  case "${value}" in
+    ''|*[!0-9]*)
+      echo "[FAIL] ${name} must be a non-negative integer (seconds), got: ${value}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+_require_non_negative_integer "ARGO_TIMEOUT_SECONDS" "${ARGO_TIMEOUT_SECONDS}"
+_require_non_negative_integer "KUEUE_ADMISSION_TIMEOUT_SECONDS" "${KUEUE_ADMISSION_TIMEOUT_SECONDS}"
+_require_non_negative_integer "KUEUE_COMPLETION_TIMEOUT_SECONDS" "${KUEUE_COMPLETION_TIMEOUT_SECONDS}"
+
 # ── Step 1: Check prerequisites ────────────────────────────────────────
 
 echo "=== Checking prerequisites ==="
@@ -224,31 +239,37 @@ if [ -n "${JOB_FILE}" ] && command -v kubectl >/dev/null 2>&1; then
     WORKLOAD_NAME=""
     deadline=$((SECONDS + KUEUE_ADMISSION_TIMEOUT_SECONDS))
     JOB_UID="$(kubectl get job "${JOB_NAME}" -n "${NAMESPACE}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
-    while [ "${SECONDS}" -lt "${deadline}" ]; do
-      if [ -n "${WORKLOAD_NAME}" ]; then
-        ADMITTED_STATUS="$(kubectl get workload "${WORKLOAD_NAME}" -n "${NAMESPACE}" -o jsonpath='{.status.conditions[?(@.type=="Admitted")].status}' 2>/dev/null || true)"
-      else
-        WORKLOAD_NAME="$(
-          kubectl get workloads.kueue.x-k8s.io \
-            -n "${NAMESPACE}" \
-            -l "kueue.x-k8s.io/job-uid=${JOB_UID}" \
-            -o jsonpath='{.items[0].metadata.name}' \
-            2>/dev/null || true
-        )"
-        ADMITTED_STATUS=""
-      fi
-      if echo "${ADMITTED_STATUS}" | grep -q "True"; then
-        ADMITTED="true"
-        break
-      fi
-      sleep 5
-    done
-
-    if [ "${ADMITTED}" = "true" ]; then
-      report PASS "Kueue admission confirmed"
+    if [ -z "${JOB_UID}" ]; then
+      report FAIL "Unable to read Job UID for ${JOB_NAME}; skipping Kueue admission lookup"
+      kubectl get "job/${JOB_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 && \
+        kubectl get "job/${JOB_NAME}" -n "${NAMESPACE}" -o yaml | tail -30 || true
+      kubectl auth can-i get jobs.batch -n "${NAMESPACE}" >/dev/null 2>&1 && \
+        kubectl auth can-i get jobs.batch -n "${NAMESPACE}" || true
     else
-      report FAIL "Kueue admission not confirmed within timeout"
-      if [ -n "${JOB_UID}" ]; then
+      while [ "${SECONDS}" -lt "${deadline}" ]; do
+        if [ -n "${WORKLOAD_NAME}" ]; then
+          ADMITTED_STATUS="$(kubectl get workload "${WORKLOAD_NAME}" -n "${NAMESPACE}" -o jsonpath='{.status.conditions[?(@.type=="Admitted")].status}' 2>/dev/null || true)"
+        else
+          WORKLOAD_NAME="$(
+            kubectl get workloads.kueue.x-k8s.io \
+              -n "${NAMESPACE}" \
+              -l "kueue.x-k8s.io/job-uid=${JOB_UID}" \
+              -o jsonpath='{.items[0].metadata.name}' \
+              2>/dev/null || true
+          )"
+          ADMITTED_STATUS=""
+        fi
+        if echo "${ADMITTED_STATUS}" | grep -q "True"; then
+          ADMITTED="true"
+          break
+        fi
+        sleep 5
+      done
+
+      if [ "${ADMITTED}" = "true" ]; then
+        report PASS "Kueue admission confirmed"
+      else
+        report FAIL "Kueue admission not confirmed within timeout"
         kubectl get workloads.kueue.x-k8s.io \
           -n "${NAMESPACE}" \
           -l "kueue.x-k8s.io/job-uid=${JOB_UID}" \

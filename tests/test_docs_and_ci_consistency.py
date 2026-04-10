@@ -50,15 +50,42 @@ def test_live_validation_script_uses_internal_polling_timeout_for_argo_wait():
     assert "timeout 120s argo wait" not in text
 
 
+def test_live_validation_script_validates_timeout_overrides_as_integers():
+    """Timeout env overrides should be validated before arithmetic expansion."""
+    text = (_REPO_ROOT / "scripts" / "validate_live_cluster.sh").read_text(encoding="utf-8")
+    assert "_require_non_negative_integer" in text
+    assert "_require_non_negative_integer \"ARGO_TIMEOUT_SECONDS\"" in text
+    assert "_require_non_negative_integer \"KUEUE_ADMISSION_TIMEOUT_SECONDS\"" in text
+    assert "_require_non_negative_integer \"KUEUE_COMPLETION_TIMEOUT_SECONDS\"" in text
+
+
+def test_live_validation_script_fails_fast_when_job_uid_missing():
+    """Kueue admission diagnosis should fail fast when JOB_UID cannot be resolved."""
+    text = (_REPO_ROOT / "scripts" / "validate_live_cluster.sh").read_text(encoding="utf-8")
+    assert "Unable to read Job UID for" in text
+    assert "kubectl auth can-i get jobs.batch" in text
+
+
+def test_readme_k8s_smoke_namespace_override_documents_rbac_requirement():
+    """README should explain namespace override requires matching runtime RBAC in that namespace."""
+    text = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "override requires equivalent runtime RBAC" in text
+    assert "orbital-workflow-runner" in text
+
+
 def test_argo_executor_rbac_manifest_exists_with_workflowtaskresults_permissions():
     """Runtime SA must be dedicated and allowed to create/patch workflowtaskresults."""
     manifest = _REPO_ROOT / "manifests" / "k8s" / "argo" / "00-workflow-executor-rbac.yaml"
     assert manifest.exists(), "Expected Argo executor RBAC manifest to exist"
 
     docs = [d for d in yaml.safe_load_all(manifest.read_text(encoding="utf-8")) if d]
-    service_account = next(d for d in docs if d.get("kind") == "ServiceAccount")
-    role = next(d for d in docs if d.get("kind") == "Role")
-    role_binding = next(d for d in docs if d.get("kind") == "RoleBinding")
+    service_account = next((d for d in docs if d.get("kind") == "ServiceAccount"), None)
+    role = next((d for d in docs if d.get("kind") == "Role"), None)
+    role_binding = next((d for d in docs if d.get("kind") == "RoleBinding"), None)
+
+    assert service_account is not None, "RBAC manifest must include a ServiceAccount document"
+    assert role is not None, "RBAC manifest must include a Role document"
+    assert role_binding is not None, "RBAC manifest must include a RoleBinding document"
 
     assert service_account["metadata"]["name"] == "orbital-workflow-runner"
     assert role["metadata"]["namespace"] == "orbital-demo"
