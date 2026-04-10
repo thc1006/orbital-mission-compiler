@@ -53,6 +53,17 @@ def test_reject_invalid_timestamp_format():
         )
 
 
+def test_reject_timezone_naive_timestamp():
+    """MissionEvent timestamp must include timezone info (AwareDatetime)."""
+    with pytest.raises(ValidationError):
+        MissionEvent(
+            timestamp="2029-01-01T00:00:00",
+            event_type=MissionEventType.ACQUISITION,
+            instrument="INST_1",
+            services=[_service()],
+        )
+
+
 # ── 2. Priority out of bounds ─────────────────────────────────────────
 
 
