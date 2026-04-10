@@ -167,3 +167,75 @@ def test_detect_timeline_conflicts_missing_duration():
     )
     conflicts = detect_timeline_conflicts(plan)
     assert conflicts == []
+
+
+def test_compile_plan_workflow_names_are_unique_when_prefixes_truncate():
+    """Long mission/service IDs should not collapse different events into the same workflow name."""
+    mission_id = "mission-" + ("x" * 44)
+    service_id = "service-" + ("y" * 36)
+    step = WorkflowStep(name="s1", image="img:1")
+
+    plan = MissionPlan(
+        mission_id=mission_id,
+        events=[
+            MissionEvent(
+                timestamp="2026-04-15T10:00:00Z",
+                event_type=MissionEventType.ACQUISITION,
+                instrument="cam",
+                duration_seconds=60,
+                services=[AIService(service_id=service_id, priority=50, steps=[step])],
+            ),
+            MissionEvent(
+                timestamp="2026-04-15T10:00:01Z",
+                event_type=MissionEventType.ACQUISITION,
+                instrument="cam",
+                duration_seconds=60,
+                services=[AIService(service_id=service_id, priority=50, steps=[step])],
+            ),
+        ],
+    )
+    intents = compile_plan_to_intents(plan)
+    names = [i.workflow_name for i in intents]
+    assert len(set(names)) == 2
+    assert all(len(n) <= 63 for n in names)
+
+
+def test_render_argo_workflow_disambiguates_duplicate_step_task_names():
+    """DAG task names must be unique even when step names sanitize to the same value."""
+    intent = WorkflowIntent(
+        mission_id="mission-a",
+        service_id="svc-a",
+        priority=50,
+        workflow_name="wf-a",
+        steps=[
+            WorkflowStep(name="Detect Ships", image="busybox:1.36"),
+            WorkflowStep(name="detect_ships", image="busybox:1.36"),
+        ],
+        resource_hints={"execution_mode": "sequential"},
+    )
+    wf = render_argo_workflow(intent)
+    tasks = wf["spec"]["templates"][0]["dag"]["tasks"]
+    task_names = [t["name"] for t in tasks]
+    assert len(task_names) == 2
+    assert len(set(task_names)) == 2
+
+
+def test_render_argo_workflow_limits_template_and_task_name_length():
+    """Template/task names should remain valid when step names are very long."""
+    long_name = "step-" + ("x" * 300)
+    intent = WorkflowIntent(
+        mission_id="mission-a",
+        service_id="svc-a",
+        priority=50,
+        workflow_name="wf-a",
+        steps=[WorkflowStep(name=long_name, image="busybox:1.36")],
+        resource_hints={"execution_mode": "sequential"},
+    )
+
+    wf = render_argo_workflow(intent)
+    template = wf["spec"]["templates"][1]
+    task = wf["spec"]["templates"][0]["dag"]["tasks"][0]
+
+    assert len(template["name"]) <= 63
+    assert len(task["name"]) <= 63
+    assert task["template"] == template["name"]

@@ -5,7 +5,14 @@ import rego.v1
 default allow := false
 
 deny contains msg if {
-  input.mission_id == ""
+  object.get(input, "mission_id", null) == null
+  msg := "mission_id must not be empty"
+}
+
+deny contains msg if {
+  mission_id := object.get(input, "mission_id", "")
+  is_string(mission_id)
+  trim_space(mission_id) == ""
   msg := "mission_id must not be empty"
 }
 

@@ -30,10 +30,14 @@
 
 4. **Policy overreach**
    It is easy to encode policy that blocks experimentation; keep policy packs modular and testable.
-   Current policy pack: 10 deny rules covering mission_id, events, services, GPU fallback, priority, acceleration/resource coherence, download constraints, step completeness, and landscape type.
+   Current policy pack: 10 deny rules covering mission_id (including missing/null/whitespace-only values), events, services, GPU fallback, priority, acceleration/resource coherence, download constraints, step completeness, and landscape type.
 
 5. **False confidence**
    A local lab passing tests is not evidence of flight readiness.
 
 6. **Monitoring stack divergence**
    ORCHIDE uses Vector + OpenSearch + Prometheus + Grafana. This repo targets OpenTelemetry. Both are valid but different choices; document the rationale.
+
+7. **Live-cluster validation sensitivity**
+   `make k8s-smoke` can fail on shared single-node clusters due to unrelated CPU pressure or pending workloads, even when compiler/rendering logic is correct.
+   Mitigation: treat `k8s-smoke` as environment-coupled validation; keep `make verify && make test && make eval` as deterministic core gates.

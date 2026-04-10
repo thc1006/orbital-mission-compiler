@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
@@ -19,6 +21,30 @@ def sanitize_k8s_name(name: str, max_len: int = 63) -> str:
     s = re.sub(r"-+", "-", s)
     s = s.strip("-")
     return s[:max_len].rstrip("-") or "step"
+
+
+def _collision_resistant_k8s_name(name: str, max_len: int = 63, hash_len: int = 8) -> str:
+    """Sanitize and preserve uniqueness when truncation is required."""
+    if max_len < hash_len + 2:
+        raise ValueError(f"max_len={max_len} too small for hash_len={hash_len}")
+    normalized = sanitize_k8s_name(name, max_len=253)
+    if len(normalized) <= max_len:
+        return normalized
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:hash_len]
+    head = normalized[: max_len - hash_len - 1].rstrip("-")
+    if not head:
+        head = "step"
+    return f"{head}-{digest}"
+
+
+def _to_rfc3339_z(ts: datetime) -> str:
+    """Serialize a datetime to RFC3339 using Z for UTC when possible."""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    text = ts.isoformat()
+    if text.endswith("+00:00"):
+        return text[:-6] + "Z"
+    return text
 
 
 def scale_priority_orchide(priority: int) -> int:
@@ -46,32 +72,27 @@ def load_mission_plan(path: str | Path) -> MissionPlan:
     return MissionPlan.model_validate(raw)
 
 
-def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
-    """Detect overlapping acquisition windows in a mission plan.
+def analyze_timeline_conflicts(plan: MissionPlan) -> dict[str, Any]:
+    """Detect overlapping acquisition windows and report skipped timestamps.
 
     Pairwise comparison is O(n^2) in acquisition events. For plans with
     hundreds of events, consider sorting by start time first (future optimization).
     """
-    from datetime import datetime, timezone
-
     acq_events = []
+    skipped = []
 
     for ev in plan.events:
         if ev.event_type.value != "acquisition":
             continue
-        try:
-            ts = datetime.fromisoformat(ev.timestamp.replace("Z", "+00:00"))
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-        except ValueError:
-            logger.warning("Skipping event with unparseable timestamp: %s (plan: %s)", ev.timestamp, plan.mission_id)
-            continue
         if ev.duration_seconds is None:
-            logger.debug("Skipping event without duration_seconds: %s (plan: %s)", ev.timestamp, plan.mission_id)
+            ts_text = _to_rfc3339_z(ev.timestamp)
+            logger.debug("Skipping event without duration_seconds: %s (plan: %s)", ts_text, plan.mission_id)
+            skipped.append(ts_text)
             continue
-        start = ts.timestamp()
+        start = ev.timestamp.timestamp()
+        ts_text = _to_rfc3339_z(ev.timestamp)
         acq_events.append({
-            "timestamp": ev.timestamp,
+            "timestamp": ts_text,
             "start": start,
             "end": start + ev.duration_seconds,
         })
@@ -88,7 +109,16 @@ def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
                     "event_b": b["timestamp"],
                     "overlap_seconds": round(min_end - max_start, 2),
                 })
-    return conflicts
+    return {
+        "conflicts": conflicts,
+        "conflict_count": len(conflicts),
+        "skipped_timestamps": skipped,
+    }
+
+
+def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
+    """Detect overlapping acquisition windows in a mission plan."""
+    return cast(list[dict[str, Any]], analyze_timeline_conflicts(plan)["conflicts"])
 
 
 def compile_plan_to_intents(
@@ -119,8 +149,9 @@ def compile_plan_to_intents(
             gpu_steps = [s for s in svc.steps if s.resource_class == ResourceClass.GPU]
             fpga_steps = [s for s in svc.steps if s.resource_class == ResourceClass.FPGA]
             fallback_steps = [s for s in svc.steps if s.fallback_resource_class is not None]
+            event_timestamp = _to_rfc3339_z(event.timestamp)
             hints = {
-                "event_timestamp": event.timestamp,
+                "event_timestamp": event_timestamp,
                 "ground_visibility": event.ground_visibility,
                 "region_type": event.region_type,
                 "orbit": event.orbit,
@@ -136,7 +167,9 @@ def compile_plan_to_intents(
                     mission_id=plan.mission_id,
                     service_id=svc.service_id,
                     priority=svc.priority,
-                    workflow_name=sanitize_k8s_name(f"{plan.mission_id}-{svc.service_id}-{event.timestamp}"),
+                    workflow_name=_collision_resistant_k8s_name(
+                        f"{plan.mission_id}-{svc.service_id}-{event_timestamp}"
+                    ),
                     steps=svc.steps,
                     resource_hints=hints,
                 )
@@ -173,7 +206,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> dict[str, Any]:
     templates = []
     dag_tasks = []
     for idx, step in enumerate(intent.steps):
-        template_name = f"step-{idx}-{sanitize_k8s_name(step.name)}"
+        template_name = _collision_resistant_k8s_name(f"step-{idx}-{step.name}")
         annotations: dict[str, str] = {
             "resource-class": step.resource_class.value,
             "needs-acceleration": str(step.needs_acceleration).lower(),
@@ -212,8 +245,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> dict[str, Any]:
             template["affinity"] = affinity
         templates.append(template)
 
-        safe_name = sanitize_k8s_name(step.name)
-        dag_task: dict[str, Any] = {"name": safe_name, "template": template_name}
+        dag_task: dict[str, Any] = {"name": template_name, "template": template_name}
         dag_tasks.append(dag_task)
 
     # Apply DAG dependencies based on execution_mode.

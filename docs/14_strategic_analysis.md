@@ -19,7 +19,7 @@
 支持 portfolio piece 的證據：
 - 沒有真實使用者
 - 沒有真實任務計劃資料
-- execution_mode: parallel 宣稱支援但 renderer 完全沒做
+- execution_mode: parallel 已在 Argo DAG renderer 實作（以無 depends 任務提交），但 Kueue 仍採單 Job 主步驟語義
 - 核心邏輯 ~670 行，contracts 是純 type stub
 
 ## 靜態 YAML 編譯器是否正確

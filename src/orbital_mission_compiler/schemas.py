@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Any
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
 
 
 class ResourceClass(str, Enum):
@@ -61,7 +61,7 @@ class AIService(BaseModel):
 
 
 class MissionEvent(BaseModel):
-    timestamp: str
+    timestamp: AwareDatetime
     event_type: MissionEventType
     orbit: int | None = Field(default=None, ge=0)
     duration_seconds: float | None = Field(default=None, ge=0)

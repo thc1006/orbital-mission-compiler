@@ -32,6 +32,35 @@ def test_deny_empty_mission_id():
     assert any("mission_id must not be empty" in m for m in result["deny"])
 
 
+def test_deny_whitespace_mission_id():
+    payload = {
+        "mission_id": "   ",
+        "events": [{"timestamp": "t", "event_type": "download"}],
+    }
+    result = _eval(payload)
+    assert result["allow"] is False
+    assert any("mission_id must not be empty" in m for m in result["deny"])
+
+
+def test_deny_missing_mission_id():
+    payload = {
+        "events": [{"timestamp": "t", "event_type": "download"}],
+    }
+    result = _eval(payload)
+    assert result["allow"] is False
+    assert any("mission_id must not be empty" in m for m in result["deny"])
+
+
+def test_deny_null_mission_id():
+    payload = {
+        "mission_id": None,
+        "events": [{"timestamp": "t", "event_type": "download"}],
+    }
+    result = _eval(payload)
+    assert result["allow"] is False
+    assert any("mission_id must not be empty" in m for m in result["deny"])
+
+
 # ── Deny rule 2: must contain at least one event ───────────────────────
 
 

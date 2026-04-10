@@ -104,6 +104,22 @@ def test_check_timeline_detects_overlap(server):
         overlap_file.unlink(missing_ok=True)
 
 
+def test_check_timeline_conflicts_uses_compiler_analysis(server, monkeypatch):
+    """MCP tool should delegate timeline analysis to the compiler module helper."""
+    calls = {"count": 0}
+
+    def fake_analyze(_plan):
+        calls["count"] += 1
+        return {"conflicts": [], "conflict_count": 0, "skipped_timestamps": ["stubbed"]}
+
+    monkeypatch.setattr("orbital_mission_compiler.mcp.server.analyze_timeline_conflicts", fake_analyze)
+    result = _call(server, "check_timeline_conflicts", {
+        "path": "sample_maritime_surveillance.yaml",
+    })
+    assert calls["count"] == 1
+    assert result["skipped_timestamps"] == ["stubbed"]
+
+
 # ── tool registration ─────────────────────────────────────────────────
 
 

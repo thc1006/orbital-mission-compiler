@@ -22,7 +22,7 @@ Note: this repo produces **rendered YAML artifacts**. It does not deploy to or c
 
 | Source file | ORCHIDE concept | Slide / D3.1 ref | Notes |
 |---|---|---|---|
-| `schemas.py`: `MissionPlan`, `MissionEvent` | Structured mission plan | Slide 9 (plan table) | Fields: timestamp, orbit, duration_seconds, instrument, event_type, ground_visibility |
+| `schemas.py`: `MissionPlan`, `MissionEvent` | Structured mission plan | Slide 9 (plan table) | Fields: timestamp (timezone-aware RFC3339), orbit, duration_seconds, instrument, event_type, ground_visibility |
 | `schemas.py`: `AIService` | AI Service (per-detector workflow) | Slide 9 (WORKFLOW_D1-D4), slide 10 | service_id, priority, landscape_type, steps |
 | `schemas.py`: `StepPhase` | Pre / AI / Post phase annotation | Slide 10 (pipeline) | Enum: preprocessing, ai, postprocessing |
 | `schemas.py`: `ExecutionMode` | Sequential or parallel execution | Slide 10 ("sequential or in parallel") | Enum: sequential, parallel |
@@ -31,6 +31,7 @@ Note: this repo produces **rendered YAML artifacts**. It does not deploy to or c
 | `schemas.py`: `WorkflowIntent` | Translation output (IR) | Slide 23 (Custom Translation Layer output) | Serves as the IR consumed by both Argo and Kueue renderers |
 | `compiler.py`: `load_mission_plan` | Mission plan ingestion | D3.1 §3.2.1.1 (Mission Manager receives plan) | Ground-side equivalent |
 | `compiler.py`: `compile_plan_to_intents` | Custom Translation Layer | Slide 23 (Priority Queue → Translation → API-wrapper) | Filters ACQ events, builds WorkflowIntent |
+| `compiler.py`: `analyze_timeline_conflicts` | Timeline safety check | — | Shared overlap detector used by compiler and MCP |
 | `compiler.py`: `render_argo_workflow` | API-wrapper → Argo Workflows API | Slide 23 (right side of translation layer) | Produces Argo Workflow YAML |
 | `compiler.py`: `render_kueue_job` | — (not in ORCHIDE) | — | Ground-side addition: Kueue admission semantics |
 | `policy.py` + `configs/policies/*.rego` | — (not in ORCHIDE) | — | Ground-side addition: 10 deny rules, OPA/Rego |
@@ -44,9 +45,11 @@ Schema validation (Pydantic) and policy validation (OPA/Rego) intentionally over
 
 | Constraint | Schema (schemas.py) | Policy (mission_plan.rego) |
 |---|---|---|
+| timestamp must be parseable + timezone-aware | `MissionEvent.timestamp: AwareDatetime` | — |
 | ACQ must have instrument | `model_validator` raises ValueError | — |
 | DOWNLOAD must not have services | `model_validator` raises ValueError | Rule 7 denies |
 | DOWNLOAD must have visibility | `model_validator` raises ValueError | Rule 8 denies |
+| mission_id must not be missing/null/blank | `field_validator` rejects blank via `strip()` check (no normalization) | Rule 1 denies missing/null and trims with `trim_space` |
 | Priority must not be 0 | `Field(ge=0)` allows it | Rule 5 denies it |
 | GPU+acceleration needs fallback | — | Rule 4 denies |
 | CPU+acceleration is contradictory | — | Rule 6 denies |

@@ -39,6 +39,31 @@ def test_reject_invalid_event_type():
         MissionEvent(timestamp="2029-01-01T00:00:00Z", event_type="launch")
 
 
+# ── 1b. Timestamp format ────────────────────────────────────────────────
+
+
+def test_reject_invalid_timestamp_format():
+    """MissionEvent timestamp must be a valid RFC3339/ISO datetime with timezone."""
+    with pytest.raises(ValidationError):
+        MissionEvent(
+            timestamp="not-a-datetime",
+            event_type=MissionEventType.ACQUISITION,
+            instrument="INST_1",
+            services=[_service()],
+        )
+
+
+def test_reject_timezone_naive_timestamp():
+    """MissionEvent timestamp must include timezone info (AwareDatetime)."""
+    with pytest.raises(ValidationError):
+        MissionEvent(
+            timestamp="2029-01-01T00:00:00",
+            event_type=MissionEventType.ACQUISITION,
+            instrument="INST_1",
+            services=[_service()],
+        )
+
+
 # ── 2. Priority out of bounds ─────────────────────────────────────────
 
 
