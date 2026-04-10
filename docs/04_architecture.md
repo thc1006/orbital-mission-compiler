@@ -49,7 +49,7 @@ Schema validation (Pydantic) and policy validation (OPA/Rego) intentionally over
 | ACQ must have instrument | `model_validator` raises ValueError | — |
 | DOWNLOAD must not have services | `model_validator` raises ValueError | Rule 7 denies |
 | DOWNLOAD must have visibility | `model_validator` raises ValueError | Rule 8 denies |
-| mission_id must not be blank/whitespace | `field_validator` trims and rejects empty | Rule 1 trims with `trim_space` and denies |
+| mission_id must not be missing/null/blank | `field_validator` trims and rejects empty | Rule 1 denies missing/null and trims with `trim_space` |
 | Priority must not be 0 | `Field(ge=0)` allows it | Rule 5 denies it |
 | GPU+acceleration needs fallback | — | Rule 4 denies |
 | CPU+acceleration is contradictory | — | Rule 6 denies |

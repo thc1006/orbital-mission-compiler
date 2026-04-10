@@ -218,3 +218,24 @@ def test_render_argo_workflow_disambiguates_duplicate_step_task_names():
     task_names = [t["name"] for t in tasks]
     assert len(task_names) == 2
     assert len(set(task_names)) == 2
+
+
+def test_render_argo_workflow_limits_template_and_task_name_length():
+    """Template/task names should remain valid when step names are very long."""
+    long_name = "step-" + ("x" * 300)
+    intent = WorkflowIntent(
+        mission_id="mission-a",
+        service_id="svc-a",
+        priority=50,
+        workflow_name="wf-a",
+        steps=[WorkflowStep(name=long_name, image="busybox:1.36")],
+        resource_hints={"execution_mode": "sequential"},
+    )
+
+    wf = render_argo_workflow(intent)
+    template = wf["spec"]["templates"][1]
+    task = wf["spec"]["templates"][0]["dag"]["tasks"][0]
+
+    assert len(template["name"]) <= 63
+    assert len(task["name"]) <= 63
+    assert task["template"] == template["name"]

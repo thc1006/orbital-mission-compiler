@@ -30,7 +30,7 @@
 
 4. **Policy overreach**
    It is easy to encode policy that blocks experimentation; keep policy packs modular and testable.
-   Current policy pack: 10 deny rules covering mission_id (including whitespace-only values), events, services, GPU fallback, priority, acceleration/resource coherence, download constraints, step completeness, and landscape type.
+   Current policy pack: 10 deny rules covering mission_id (including missing/null/whitespace-only values), events, services, GPU fallback, priority, acceleration/resource coherence, download constraints, step completeness, and landscape type.
 
 5. **False confidence**
    A local lab passing tests is not evidence of flight readiness.

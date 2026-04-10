@@ -30,7 +30,7 @@ def _collision_resistant_k8s_name(name: str, max_len: int = 63, hash_len: int = 
     normalized = sanitize_k8s_name(name, max_len=253)
     if len(normalized) <= max_len:
         return normalized
-    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:hash_len]
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:hash_len]
     head = normalized[: max_len - hash_len - 1].rstrip("-")
     if not head:
         head = "step"
@@ -206,7 +206,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> dict[str, Any]:
     templates = []
     dag_tasks = []
     for idx, step in enumerate(intent.steps):
-        template_name = f"step-{idx}-{sanitize_k8s_name(step.name)}"
+        template_name = _collision_resistant_k8s_name(f"step-{idx}-{step.name}")
         annotations: dict[str, str] = {
             "resource-class": step.resource_class.value,
             "needs-acceleration": str(step.needs_acceleration).lower(),
@@ -245,8 +245,7 @@ def render_argo_workflow(intent: WorkflowIntent) -> dict[str, Any]:
             template["affinity"] = affinity
         templates.append(template)
 
-        safe_name = sanitize_k8s_name(template_name)
-        dag_task: dict[str, Any] = {"name": safe_name, "template": template_name}
+        dag_task: dict[str, Any] = {"name": template_name, "template": template_name}
         dag_tasks.append(dag_task)
 
     # Apply DAG dependencies based on execution_mode.
