@@ -138,6 +138,7 @@ ARGO_FILE=$(find "${ARGO_OUT}" -name '*.yaml' -print -quit 2>/dev/null)
 if [ -n "${ARGO_FILE}" ] && command -v argo >/dev/null 2>&1; then
   echo "Submitting Argo Workflow to cluster ..."
   if WF_NAME=$(argo submit "${ARGO_FILE}" -n "${NAMESPACE}" --serviceaccount "${ARGO_SERVICE_ACCOUNT}" -o name 2>/dev/null); then
+    WF_RAW_NAME="${WF_NAME#*/}"
     report PASS "Argo Workflow submitted: ${WF_NAME}"
 
     echo "Waiting for Argo Workflow completion (up to ${ARGO_TIMEOUT_SECONDS}s) ..."
@@ -164,7 +165,13 @@ if [ -n "${ARGO_FILE}" ] && command -v argo >/dev/null 2>&1; then
     done
     if [ "${ARGO_TIMED_OUT}" = "true" ]; then
       report FAIL "Argo Workflow did not complete within timeout (${ARGO_TIMEOUT_SECONDS}s)"
-      POD_NAME="$(kubectl get pods -n "${NAMESPACE}" -l "workflows.argoproj.io/workflow=${WF_NAME}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+      POD_NAME="$(
+        kubectl get pods \
+          -n "${NAMESPACE}" \
+          -l "workflows.argoproj.io/workflow=${WF_RAW_NAME}" \
+          -o jsonpath='{.items[0].metadata.name}' \
+          2>/dev/null || true
+      )"
       argo get "${WF_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1 && \
         argo get "${WF_NAME}" -n "${NAMESPACE}" || true
       if [ -n "${POD_NAME}" ]; then

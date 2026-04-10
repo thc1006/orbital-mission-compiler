@@ -30,8 +30,8 @@ bash scripts/install_k3s.sh
 bash scripts/install_argo.sh
 bash scripts/install_kueue.sh
 bash scripts/kueue_demo_apply.sh
-kubectl apply -f manifests/k8s/argo/00-workflow-executor-rbac.yaml
 ```
+`scripts/kueue_demo_apply.sh` already applies `manifests/k8s/argo/00-workflow-executor-rbac.yaml`.
 
 ## GPU/CPU fallback interpretation
 This demo implements **soft fallback**, not hard device-plugin failover:

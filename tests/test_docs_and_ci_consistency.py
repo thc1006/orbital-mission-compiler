@@ -35,14 +35,14 @@ def test_ci_verifies_opa_sha256():
     assert "sha256sum -c" in text or "shasum -a 256 -c" in text
 
 
-def test_live_validation_script_resolves_workload_from_job_annotation():
+def test_live_validation_script_resolves_workload_from_job_uid_label():
     """Kueue admission check should resolve Workload by job UID label (official guidance)."""
     text = (_REPO_ROOT / "scripts" / "validate_live_cluster.sh").read_text(encoding="utf-8")
     assert "kueue.x-k8s.io/job-uid" in text
     assert "JOB_UID=" in text
 
 
-def test_live_validation_script_uses_shell_timeout_for_argo_wait():
+def test_live_validation_script_uses_internal_polling_timeout_for_argo_wait():
     """Argo wait should use internal polling timeout (no GNU timeout dependency)."""
     text = (_REPO_ROOT / "scripts" / "validate_live_cluster.sh").read_text(encoding="utf-8")
     assert "ARGO_TIMEOUT_SECONDS" in text

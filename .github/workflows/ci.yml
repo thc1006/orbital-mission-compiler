@@ -74,7 +74,15 @@ jobs:
           )
           install -m 0755 "$TMP_DIR/opa_linux_amd64_static" "$HOME/.local/bin/opa"
           chmod +x "$HOME/.local/bin/opa"
-          # Integrity is verified via the official .sha256 sidecar file.
+
+      - name: Verify OPA checksum
+        run: |
+          set -euo pipefail
+          OPA_BASE_URL="https://openpolicyagent.org/downloads/${OPA_VERSION}"
+          EXPECTED_SHA="$(curl -fsSL "${OPA_BASE_URL}/opa_linux_amd64_static.sha256" | awk '{print $1}')"
+          ACTUAL_SHA="$(sha256sum "$HOME/.local/bin/opa" | awk '{print $1}')"
+          test -n "$EXPECTED_SHA"
+          test "$EXPECTED_SHA" = "$ACTUAL_SHA"
 
       - name: Add OPA to PATH and verify
         run: |
