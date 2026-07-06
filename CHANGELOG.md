@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.4.2 (2026-07-07)
+
+Camera-ready correctness + adversarial-review pass for the IEEE SMC-IT/SCC
+2026 paper. Fixes two latent policy bugs found by review and adds the
+experiments the camera-ready describes.
+
+### Fixed
+- **OPA Rule 4** (accelerator fallback): now fires on any `gpu`/`fpga` step
+  that lacks a `fallback_resource_class`, independent of the optional
+  `needs_acceleration` flag. Previously a GPU step that omitted the flag (it
+  defaults to `false`) silently bypassed the check, and FPGA steps were not
+  covered at all.
+- **OPA Rule 10** (landscape_type): guards on `is_string()`, so a
+  Pydantic-normalized `null`/absent value is permitted (the field is
+  optional); previously Rego null-truthiness denied every plan that omitted
+  it, including three shipped samples. A second clause rejects a present
+  non-string value on the raw-JSON bypass path (defense-in-depth).
+- **benchmark_scaling.py**: the `parse` phase now measures the real
+  `yaml.safe_load` + `model_validate` load path, matching the paper's
+  "parse (YAML + Pydantic)" figure.
+
+### Added
+- `baseline_validator.py` + tests: an in-process Python re-implementation of
+  the ten deny rules, proven to reproduce OPA's accept/reject decision on the
+  ablation corpus. The §V-B performance baseline.
+- `scripts/mcp_agent_demo.py` + two demo plans + golden fixtures: an
+  end-to-end demonstration of the MCP tool surface (§IV).
+- `docs/experiments/2026-07-07-*.md`: OPA-vs-baseline, MCP demo, and
+  30-iteration performance-scaling backing data (Table V).
+
 ## v0.4.1 (2026-06-16)
 
 Camera-ready metadata sync. Same code surface as v0.4.0, but
