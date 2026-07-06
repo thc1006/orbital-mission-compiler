@@ -108,8 +108,8 @@ chmod +x .venv-verify/bin/opa
 ### Canonical commands
 
 ```bash
-# Run pytest (expect: ~415 passed, ~31 skipped on fresh env;
-# ~419 passed, ~3 skipped with full local tooling per paper L452)
+# Run pytest (expect: ~424 passed, ~51 skipped on fresh env;
+# 475 passed, 0 skipped with full local tooling (opa on PATH + live cluster))
 .venv-verify/bin/python -m pytest -q
 
 # Live cluster validation against host kubeadm cluster (expect 13/13 PASS)

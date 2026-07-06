@@ -11,9 +11,9 @@ A ground-side, cloud-native mission plan compiler for satellite operations. Vali
 
 ## Why this exists
 
-The [ORCHIDE](https://orchide-project.eu/) project (EU Horizon, ending May 2026) builds an onboard platform for satellite edge computing. Its D3.1 architecture document explicitly limits scope to the on-satellite "Deferred Phase" -- it receives and executes mission plans but does not generate, validate, or compile them.
+The [ORCHIDE](https://orchide-project.eu/) project (EU Horizon, ending May 2026) builds an onboard platform for satellite edge computing. Its D3.1 architecture document scopes the on-satellite orchestrator to the "Deferred Phase" -- it executes mission plans but does not itself generate, validate, or compile them.
 
-This project fills that gap. It provides the ground-side toolchain that produces validated, policy-checked, admission-ready workflow artifacts from structured satellite mission plans.
+This project fills that gap on the open-source side: it provides a ground-side toolchain that produces validated, policy-checked, admission-ready workflow artifacts from structured satellite mission plans -- an open-source complement to the consortium's own (closed-source) ground SDK and simulator, which publish no mission-plan schema or policy layer.
 
 ## What it does
 
