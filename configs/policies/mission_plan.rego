@@ -29,13 +29,21 @@ deny contains msg if {
   msg := sprintf("acquisition event %v must declare at least one service", [i])
 }
 
+# Rule 4: any accelerator-bound step (GPU or FPGA) must declare a CPU
+# fallback so the Deferred Phase can reschedule if the accelerator is
+# unavailable. The trigger is the resource_class alone; it deliberately
+# does NOT depend on needs_acceleration, which is optional and defaults
+# to false, so relying on it would let a GPU/FPGA step silently bypass
+# this safety check by simply omitting the flag.
+_accelerator_bound(step) if step.resource_class == "gpu"
+_accelerator_bound(step) if step.resource_class == "fpga"
+
 deny contains msg if {
   some i, j, k
   step := input.events[i].services[j].steps[k]
-  step.resource_class == "gpu"
-  step.needs_acceleration == true
+  _accelerator_bound(step)
   _missing_fallback(step)
-  msg := sprintf("GPU step %q with needs_acceleration should declare fallback_resource_class", [step.name])
+  msg := sprintf("accelerator step %q (resource_class %q) must declare fallback_resource_class", [step.name, step.resource_class])
 }
 
 # Handle both undefined (raw input) and null (schema-normalized input).
@@ -85,15 +93,38 @@ deny contains msg if {
   msg := sprintf("service %q has no steps and cannot produce a workflow", [svc.service_id])
 }
 
-# Rule 10: landscape_type must be a recognized value (slide 9: O=ocean, L=land)
+# Rule 10: landscape_type, when present, must be a recognized value
+# (slide 9: O=ocean, L=land). The field is optional, so a null or absent
+# value is permitted; only a PRESENT unrecognized value denies.
+#
+# Two deny clauses give complete, layered coverage of "present unrecognized":
+#   (a) a present non-{ocean,land} STRING (e.g. "desert"); and
+#   (b) a present NON-string (e.g. a number) -- only reachable on the
+#       raw-JSON schema-bypass path, since Pydantic rejects non-strings at
+#       Stage 1, but included so the policy layer stays a complete redundant
+#       checker for landscape validity on that path (defense-in-depth).
+# We guard on is_string()/!=null rather than a bare `svc.landscape_type`,
+# because Pydantic serializes an omitted Optional field to JSON null and, in
+# Rego, null is truthy -- a bare guard would treat a normalized null as
+# "present" and wrongly reject every plan that omits the field.
 valid_landscape_types := {"ocean", "land"}
 
+# (a) present, string, but not a recognized value
 deny contains msg if {
   some i, j
   svc := input.events[i].services[j]
-  svc.landscape_type
+  is_string(svc.landscape_type)
   not svc.landscape_type in valid_landscape_types
   msg := sprintf("service %q has unrecognized landscape_type %q (expected: ocean, land)", [svc.service_id, svc.landscape_type])
+}
+
+# (b) present, but not a string (raw-JSON-bypass defense-in-depth)
+deny contains msg if {
+  some i, j
+  svc := input.events[i].services[j]
+  svc.landscape_type != null
+  not is_string(svc.landscape_type)
+  msg := sprintf("service %q has a non-string landscape_type (expected a string: ocean or land)", [svc.service_id])
 }
 
 allow if count(deny) == 0

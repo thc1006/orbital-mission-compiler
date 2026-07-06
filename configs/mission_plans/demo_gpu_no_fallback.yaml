@@ -1,0 +1,30 @@
+# M9 MCP demo -- NEGATIVE case.
+# A GPU step WITHOUT fallback_resource_class: passes the Pydantic schema
+# (fallback is optional) but violates OPA Rule 4. Used by
+# scripts/mcp_agent_demo.py to show an AI agent diagnosing a policy
+# violation via the explain_policy MCP tool. The corrected counterpart is
+# demo_gpu_fallback_fixed.yaml.
+mission_id: demo-gpu-no-fallback
+client_id: mcp-demo
+events:
+  - timestamp: "2026-04-15T10:30:00Z"
+    event_type: acquisition
+    orbit: 1
+    instrument: optical-camera
+    region_type: ocean
+    services:
+      - service_id: ship-detection
+        priority: 90
+        landscape_type: ocean
+        steps:
+          - name: preprocess
+            image: ghcr.io/example/preprocess:0.1.0
+            resource_class: cpu
+          - name: detect-ships
+            image: ghcr.io/example/ship-detector:0.1.0
+            resource_class: gpu
+            needs_acceleration: true
+            # fallback_resource_class intentionally omitted -> Rule 4 fires
+          - name: postprocess
+            image: ghcr.io/example/postprocess:0.1.0
+            resource_class: cpu

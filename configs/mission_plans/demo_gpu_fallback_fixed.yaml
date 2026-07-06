@@ -1,0 +1,28 @@
+# M9 MCP demo -- FIXED case.
+# Identical to demo_gpu_no_fallback.yaml except the GPU step now declares
+# fallback_resource_class: cpu, so it passes OPA Rule 4. Represents the fix
+# an agent applies after explain_policy flags the missing fallback.
+mission_id: demo-gpu-fallback-fixed
+client_id: mcp-demo
+events:
+  - timestamp: "2026-04-15T10:30:00Z"
+    event_type: acquisition
+    orbit: 1
+    instrument: optical-camera
+    region_type: ocean
+    services:
+      - service_id: ship-detection
+        priority: 90
+        landscape_type: ocean
+        steps:
+          - name: preprocess
+            image: ghcr.io/example/preprocess:0.1.0
+            resource_class: cpu
+          - name: detect-ships
+            image: ghcr.io/example/ship-detector:0.1.0
+            resource_class: gpu
+            needs_acceleration: true
+            fallback_resource_class: cpu
+          - name: postprocess
+            image: ghcr.io/example/postprocess:0.1.0
+            resource_class: cpu

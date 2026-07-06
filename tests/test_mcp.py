@@ -87,3 +87,28 @@ def test_build_server_registers_all_tools(server):
         "diff_plans", "check_timeline_conflicts",
     }
     assert expected == tool_names
+
+
+# ── M9 end-to-end demo workflow (deny -> fix -> allow) ─────────────────
+
+
+def test_mcp_demo_workflow(server):
+    """M9 demo: the no-fallback plan is denied by policy via explain_policy and
+    its fixed counterpart is allowed -- the deny->fix->verify loop the MCP tools
+    enable for an agent (scripts/mcp_agent_demo.py)."""
+    import json
+
+    from orbital_mission_compiler.policy import opa_available
+
+    if not opa_available():
+        pytest.skip("OPA CLI not installed")
+
+    bad = _call(server, "explain_policy", {"path": "demo_gpu_no_fallback.yaml"})
+    bad_val = json.loads(bad["raw"])["result"][0]["expressions"][0]["value"]
+    assert bad_val["allow"] is False
+    assert any("fallback_resource_class" in d for d in bad_val["deny"])
+
+    fixed = _call(server, "explain_policy", {"path": "demo_gpu_fallback_fixed.yaml"})
+    fixed_val = json.loads(fixed["raw"])["result"][0]["expressions"][0]["value"]
+    assert fixed_val["allow"] is True
+    assert fixed_val["deny"] == []

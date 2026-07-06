@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from orbital_mission_compiler.benchmark import generate_synthetic_plan
 from orbital_mission_compiler.compiler import (
     compile_plan_to_intents,
@@ -38,10 +40,16 @@ PLAN_SIZES = [10, 50, 100, 500, 1000]
 ITERATIONS = 10
 
 
-def _time_parse(plan_dict: dict[str, Any]) -> tuple[MissionPlan, float]:
-    """Time Pydantic schema parsing. Returns (plan, elapsed_seconds)."""
+def _time_parse(plan_yaml: str) -> tuple[MissionPlan, float]:
+    """Time the real parse path: YAML load + Pydantic validation.
+
+    Mirrors compiler.load_mission_plan (yaml.safe_load + model_validate) so the
+    measured "parse" cost matches the paper's "parse (YAML + Pydantic)" figure
+    rather than Pydantic validation of a pre-built dict alone. For large plans
+    the pure-Python YAML load dominates this phase. Returns (plan, elapsed_seconds).
+    """
     start = time.perf_counter()
-    plan = MissionPlan.model_validate(plan_dict)
+    plan = MissionPlan.model_validate(yaml.safe_load(plan_yaml))
     elapsed = time.perf_counter() - start
     return plan, elapsed
 
@@ -112,6 +120,10 @@ def run_benchmark(
     results = []
     for n in sizes:
         plan_dict = generate_synthetic_plan(n)
+        # Serialize to YAML once, outside the timing loop: the parse phase
+        # times YAML load + Pydantic validation (the real load_mission_plan
+        # path), not the cost of producing the YAML text.
+        plan_yaml = yaml.safe_dump(plan_dict, sort_keys=False)
 
         parse_times = []
         policy_times = []
@@ -120,7 +132,7 @@ def run_benchmark(
         kueue_times = []
 
         for _ in range(iterations):
-            plan, t_parse = _time_parse(plan_dict)
+            plan, t_parse = _time_parse(plan_yaml)
             parse_times.append(t_parse)
 
             if not skip_policy:
