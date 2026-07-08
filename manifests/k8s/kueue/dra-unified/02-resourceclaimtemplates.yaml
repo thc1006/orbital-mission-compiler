@@ -1,0 +1,42 @@
+# =========================================================================
+# ResourceClaimTemplates for the unified set — TWO shapes
+# =========================================================================
+# 1. accel-first-available: a `firstAvailable` request (prefer GPU, else CPU).
+#    This is the same request structure the compiler emits for a
+#    GPU-primary/CPU-fallback step under `render-kueue --dra-fallback` (see the
+#    compiler's DRA_DEVICE_CLASS map; count defaults to 1 when omitted). It is a
+#    SCHEDULER-level construct — Kueue does NOT
+#    quota-count firstAvailable — so it is consumed by plain Pods in 04, and 05
+#    documents what Kueue does with it under a queue.
+# 2. single-cpu: an `exactly` dra.cpu request — the Kueue-quota-countable CPU
+#    claim used by the cascade demo in 03 (mirrors dra-paper-test's single-gpu).
+# =========================================================================
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: accel-first-available
+  namespace: dra-unified
+spec:
+  spec:
+    devices:
+      requests:
+      - name: compute
+        firstAvailable:
+        - name: gpu
+          deviceClassName: gpu.nvidia.com
+        - name: cpu
+          deviceClassName: dra.cpu
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: single-cpu
+  namespace: dra-unified
+spec:
+  spec:
+    devices:
+      requests:
+      - name: cpu
+        exactly:
+          deviceClassName: dra.cpu
+          count: 1

@@ -1,0 +1,89 @@
+# =========================================================================
+# Kueue Configuration patch — UNIFIED GPU + CPU DRA deviceClassMappings
+# =========================================================================
+#
+# Extends the §V-E single-class mapping (manifests/k8s/kueue/dra-paper-test/)
+# to count BOTH accelerator classes against ClusterQueue quota:
+#   * gpu.nvidia.com  (NVIDIA DRA driver)      -> logical resource dra.gpu.nvidia.com
+#   * dra.cpu         (kubernetes-sigs/dra-driver-cpu) -> logical resource dra.cpu
+#
+# Verified end-to-end on 2026-07-09 against:
+#   * Kueue v0.17.3 (https://github.com/kubernetes-sigs/kueue/releases/tag/v0.17.3)
+#   * K8s v1.36.1 (kubeadm), NVIDIA DRA driver + Quadro K2200, dra-driver-cpu v0.2.0
+#
+# SCOPE NOTE (important): Kueue quota counting supports only `exactly` device
+# requests. A `firstAvailable` claim (see 02, 04, 05) is a SCHEDULER-level
+# construct and is NOT counted here — this ConfigMap makes `exactly` gpu AND
+# `exactly` cpu claims quota-countable, which is the unification Kueue supports
+# today. See README.md "Two mechanisms, one boundary".
+#
+# Apply order:
+#   1. THIS FILE — then restart the controller:
+#        kubectl rollout restart deployment/kueue-controller-manager -n kueue-system
+#      and ensure the deployment args carry BOTH feature gates:
+#        --feature-gates=DRAExtendedResources=true,DynamicResourceAllocation=true
+#      (set via deployment patch; NOT in this ConfigMap, or Kueue refuses to start
+#       with "feature gates for CLI and configuration cannot both specified").
+#   2. 01-namespace-and-queue.yaml
+#   3. 02-resourceclaimtemplates.yaml
+#   4. one demo at a time: 03 (CPU quota cascade) | 04 (scheduler fallback) | 05 (limitation)
+#
+# This ConfigMap REPLACES kueue-manager-config. Back it up first:
+#   kubectl get cm -n kueue-system kueue-manager-config -o yaml > ~/kueue-config-backup.yaml
+# (a restore-point snapshot also lives at
+#  manifests/k8s/kueue/dra-paper-test/00-original-kueue-manager-config-backup.yaml)
+# =========================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kueue-manager-config
+  namespace: kueue-system
+data:
+  controller_manager_config.yaml: |
+    apiVersion: config.kueue.x-k8s.io/v1beta2
+    kind: Configuration
+    health:
+      healthProbeBindAddress: :8081
+    metrics:
+      bindAddress: :8443
+    webhook:
+      port: 9443
+    leaderElection:
+      leaderElect: true
+      resourceName: c1f6bfd2.kueue.x-k8s.io
+    controller:
+      groupKindConcurrency:
+        Job.batch: 5
+        Pod: 5
+        Workload.kueue.x-k8s.io: 5
+        LocalQueue.kueue.x-k8s.io: 1
+        Cohort.kueue.x-k8s.io: 1
+        ClusterQueue.kueue.x-k8s.io: 1
+        ResourceFlavor.kueue.x-k8s.io: 1
+    clientConnection:
+      qps: 50
+      burst: 100
+    integrations:
+      frameworks:
+      - "batch/job"
+      - "kubeflow.org/mpijob"
+      - "ray.io/rayjob"
+      - "ray.io/raycluster"
+      - "ray.io/rayservice"
+      - "jobset.x-k8s.io/jobset"
+      - "kubeflow.org/paddlejob"
+      - "kubeflow.org/pytorchjob"
+      - "kubeflow.org/tfjob"
+      - "kubeflow.org/xgboostjob"
+      - "kubeflow.org/jaxjob"
+      - "workload.codeflare.dev/appwrapper"
+      - "trainer.kubeflow.org/trainjob"
+    # Two DRA DeviceClasses, each bound to its own logical ClusterQueue resource.
+    resources:
+      deviceClassMappings:
+      - name: dra.gpu.nvidia.com
+        deviceClassNames:
+        - gpu.nvidia.com
+      - name: dra.cpu
+        deviceClassNames:
+        - dra.cpu

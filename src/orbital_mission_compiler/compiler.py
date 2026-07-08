@@ -14,6 +14,18 @@ from .schemas import MissionPlan, WorkflowIntent, ResourceClass, WorkflowStep
 logger = logging.getLogger(__name__)
 
 
+# DRA DeviceClass name for each compute class, used when rendering DRA
+# ResourceClaimTemplates. Only classes with a registered DRA driver appear here:
+# GPU via the NVIDIA DRA driver (gpu.nvidia.com) and CPU via
+# kubernetes-sigs/dra-driver-cpu (dra.cpu). FPGA is deliberately absent -- no FPGA
+# DRA driver exists -- so FPGA steps keep the legacy static-request path instead of
+# emitting a claim against a nonexistent device class.
+DRA_DEVICE_CLASS: dict[ResourceClass, str] = {
+    ResourceClass.GPU: "gpu.nvidia.com",
+    ResourceClass.CPU: "dra.cpu",
+}
+
+
 def sanitize_k8s_name(name: str, max_len: int = 63) -> str:
     """Sanitize a string to be a valid RFC 1123 DNS label (K8s container/resource name)."""
     s = name.lower()
@@ -292,17 +304,83 @@ def _rct_name_for_intent(intent: WorkflowIntent, device: str) -> str:
     return sanitize_k8s_name(f"{intent.workflow_name}-{device}-claim", max_len=62)
 
 
+def _dra_fallback_step(intent: WorkflowIntent) -> WorkflowStep | None:
+    """First step expressing a driver-backed accelerator-with-fallback preference.
+
+    Returns the step whose ``resource_class`` and ``fallback_resource_class`` are
+    BOTH mapped in ``DRA_DEVICE_CLASS`` (and distinct) -- i.e. one renderable as a
+    DRA ``firstAvailable`` request. A step whose primary or fallback class has no
+    DRA driver (FPGA) does not qualify and keeps the legacy path.
+    """
+    for step in intent.steps:
+        primary = step.resource_class
+        fallback = step.fallback_resource_class
+        if (
+            fallback is not None
+            and primary in DRA_DEVICE_CLASS
+            and fallback in DRA_DEVICE_CLASS
+            and primary != fallback
+        ):
+            return step
+    return None
+
+
 def render_resource_claim_templates(
     intent: WorkflowIntent,
     namespace: str = "orbital-demo",
+    dra_fallback: bool = False,
 ) -> list[dict[str, Any]]:
     """Render DRA ResourceClaimTemplates for accelerator steps.
 
-    GPU steps produce a ResourceClaimTemplate with deviceClassName gpu.nvidia.com.
-    FPGA steps produce nothing (no DRA driver available as of 2026-04).
-    CPU steps produce nothing.
+    Default: a GPU step produces one ResourceClaimTemplate with an ``exactly``
+    request for deviceClassName gpu.nvidia.com. FPGA and CPU steps produce nothing
+    (no FPGA DRA driver; CPU keeps standard requests for portability).
+
+    Opt-in ``dra_fallback``: when a step declares both a driver-backed
+    ``resource_class`` and a driver-backed ``fallback_resource_class`` (see
+    ``DRA_DEVICE_CLASS``), emit a single ``firstAvailable`` request instead -- the
+    scheduler allocates the primary device if one is free, else the fallback. This
+    renders the step's fallback as a scheduler-level decision rather than the
+    runtime env-var switch emitted by ``render_argo_workflow``. Note: Kueue quota
+    counting supports only ``exactly`` requests, so a ``firstAvailable`` claim is a
+    scheduler-level construct and is not counted against a ClusterQueue.
     """
     templates: list[dict[str, Any]] = []
+    if dra_fallback:
+        step = _dra_fallback_step(intent)
+        if step is not None:
+            primary = step.resource_class
+            fallback = cast(ResourceClass, step.fallback_resource_class)
+            templates.append({
+                "apiVersion": "resource.k8s.io/v1",
+                "kind": "ResourceClaimTemplate",
+                "metadata": {
+                    "name": _rct_name_for_intent(intent, "accel"),
+                    "namespace": namespace,
+                },
+                "spec": {
+                    "spec": {
+                        "devices": {
+                            "requests": [
+                                {
+                                    "name": "compute",
+                                    "firstAvailable": [
+                                        {
+                                            "name": primary.value,
+                                            "deviceClassName": DRA_DEVICE_CLASS[primary],
+                                        },
+                                        {
+                                            "name": fallback.value,
+                                            "deviceClassName": DRA_DEVICE_CLASS[fallback],
+                                        },
+                                    ],
+                                }
+                            ],
+                        },
+                    },
+                },
+            })
+            return templates
     requires_gpu = intent.resource_hints.get("requires_gpu", False)
     if requires_gpu:
         templates.append({
@@ -337,6 +415,7 @@ def render_kueue_job(
     cpu_request: str = "1",
     memory_request: str = "256Mi",
     dra_enabled: bool = True,
+    dra_fallback: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(cpu_request, str) or not cpu_request.strip():
         raise ValueError("cpu_request must not be empty")
@@ -374,7 +453,17 @@ def render_kueue_job(
     }
 
     # ── GPU handling ──────────────────────────────────────────────────
-    if requires_gpu and dra_enabled:
+    fallback_step = _dra_fallback_step(intent) if dra_fallback else None
+    if fallback_step is not None and dra_enabled:
+        # DRA firstAvailable path: one claim; the scheduler picks the primary
+        # device if free, else the fallback. Kueue does not quota-count
+        # firstAvailable claims, so this Job is admitted on its cpu/memory only.
+        rct_name = _rct_name_for_intent(intent, "accel")
+        pod_spec["resourceClaims"] = [
+            {"name": "compute", "resourceClaimTemplateName": rct_name},
+        ]
+        container["resources"]["claims"] = [{"name": "compute"}]
+    elif requires_gpu and dra_enabled:
         # DRA path: ResourceClaim reference instead of static resource request.
         rct_name = _rct_name_for_intent(intent, "gpu")
         pod_spec["resourceClaims"] = [

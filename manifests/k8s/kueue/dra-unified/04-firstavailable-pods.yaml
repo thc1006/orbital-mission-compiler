@@ -1,0 +1,55 @@
+# =========================================================================
+# Demo 2 — scheduler-level GPU->CPU fallback (firstAvailable, no Kueue)
+# =========================================================================
+# Two identical Pods, each with the SAME `accel-first-available` claim
+# (firstAvailable [gpu.nvidia.com, dra.cpu]). Apply standalone with both a free
+# GPU and a free CPU device:
+#   * Pod 1 gets the GPU (first choice).
+#   * Pod 2 finds the GPU taken and the scheduler falls back to the CPU device.
+# Same spec, the scheduler chooses — the declarative replacement for the paper's
+# §V-D runtime env-var switch (ORBITAL_FALLBACK_RESOURCE_CLASS).
+#
+# These are PLAIN Pods on purpose: Kueue does not quota-count firstAvailable
+# claims (see 05), so the fallback lives at the scheduler layer. Verified
+# 2026-07-09 on K2200: demo-1 -> gpu-0, demo-2 -> cpudevnuma000.
+#
+# Inspect:  kubectl get resourceclaim -n dra-unified -o \
+#   'custom-columns=NAME:.metadata.name,STATE:.status.allocation.devices.results[*].device'
+# =========================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: accel-demo-1
+  namespace: dra-unified
+  labels: {demo: accel-fallback}
+spec:
+  restartPolicy: Never
+  containers:
+  - name: c
+    image: registry.k8s.io/e2e-test-images/agnhost:2.53
+    command: ["sleep", "600"]
+    resources:
+      claims:
+      - name: compute
+  resourceClaims:
+  - name: compute
+    resourceClaimTemplateName: accel-first-available
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: accel-demo-2
+  namespace: dra-unified
+  labels: {demo: accel-fallback}
+spec:
+  restartPolicy: Never
+  containers:
+  - name: c
+    image: registry.k8s.io/e2e-test-images/agnhost:2.53
+    command: ["sleep", "600"]
+    resources:
+      claims:
+      - name: compute
+  resourceClaims:
+  - name: compute
+    resourceClaimTemplateName: accel-first-available

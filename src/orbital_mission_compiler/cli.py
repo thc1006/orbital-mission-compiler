@@ -41,6 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     kueue_p.add_argument("--output-dir", required=True)
     kueue_p.add_argument("--queue", default="orbital-demo-local")
     kueue_p.add_argument("--namespace", default="orbital-demo")
+    kueue_p.add_argument(
+        "--dra-fallback",
+        action="store_true",
+        help="Render a DRA firstAvailable claim (scheduler-level accelerator->CPU "
+        "fallback) for steps that declare a driver-backed fallback_resource_class, "
+        "instead of the runtime env-var switch. Requires the CPU DRA driver; the "
+        "resulting claim is not Kueue quota-counted (only 'exactly' claims are).",
+    )
     kueue_p.set_defaults(func=cmd_render_kueue)
 
     policy_p = sub.add_parser("policy", help="Evaluate policy pack with OPA if available")
@@ -76,8 +84,15 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
     for intent in intents:
-        templates = render_resource_claim_templates(intent, namespace=args.namespace)
-        job = render_kueue_job(intent, queue_name=args.queue, namespace=args.namespace)
+        templates = render_resource_claim_templates(
+            intent, namespace=args.namespace, dra_fallback=args.dra_fallback
+        )
+        job = render_kueue_job(
+            intent,
+            queue_name=args.queue,
+            namespace=args.namespace,
+            dra_fallback=args.dra_fallback,
+        )
         docs = templates + [job]
         safe_name = sanitize_k8s_name(intent.workflow_name)
         out = out_dir / f"{safe_name}-kueue.yaml"

@@ -1,0 +1,49 @@
+# =========================================================================
+# Namespace + ResourceFlavor + ClusterQueue + LocalQueue — unified GPU+CPU DRA
+# =========================================================================
+# One ClusterQueue covers cpu, memory, AND both DRA logical resources
+# (dra.gpu.nvidia.com + dra.cpu) bound by 00's deviceClassMappings.
+# Verified 2026-07-09 with Kueue v0.17.3 + K2200 + dra-driver-cpu v0.2.0.
+# =========================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dra-unified
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: dra-unified-flavor
+---
+# IMPORTANT: coveredResources MUST include cpu+memory or Workload admission
+# fails with "resource cpu unavailable in ClusterQueue" — even for a Job whose
+# compute is a DRA claim. Each DRA logical resource gets nominalQuota "1"
+# because this single node publishes exactly one gpu device and one (grouped,
+# per-NUMA) cpu device, so two claimants contend and cascade.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: dra-unified-cq
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: ["cpu", "memory", "dra.gpu.nvidia.com", "dra.cpu"]
+    flavors:
+    - name: dra-unified-flavor
+      resources:
+      - name: cpu
+        nominalQuota: "4"
+      - name: memory
+        nominalQuota: "4Gi"
+      - name: dra.gpu.nvidia.com
+        nominalQuota: "1"
+      - name: dra.cpu
+        nominalQuota: "1"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: dra-unified-lq
+  namespace: dra-unified
+spec:
+  clusterQueue: dra-unified-cq

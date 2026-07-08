@@ -326,3 +326,81 @@ class TestJobTemplateLink:
         assert template_name in referenced_names, (
             f"Job must reference template {template_name!r}, got {referenced_names}"
         )
+
+
+# ── firstAvailable DRA fallback (opt-in) ─────────────────────────────────
+
+
+class TestFirstAvailable:
+    """Opt-in dra_fallback renders a scheduler-level firstAvailable claim.
+
+    The default (flag off) path is unchanged; these tests pin the opt-in shape
+    and its guard conditions (driver-backed classes only, FPGA excluded).
+    """
+
+    def _req(self, intent, **kw):
+        templates = render_resource_claim_templates(intent, namespace="test-ns", **kw)
+        assert len(templates) == 1
+        return templates[0]["spec"]["spec"]["devices"]["requests"][0]
+
+    def test_fallback_produces_first_available_not_exactly(self):
+        req = self._req(_gpu_intent(), dra_fallback=True)
+        assert "firstAvailable" in req
+        assert "exactly" not in req
+
+    def test_fallback_prefers_gpu_then_cpu(self):
+        req = self._req(_gpu_intent(), dra_fallback=True)
+        classes = [s["deviceClassName"] for s in req["firstAvailable"]]
+        assert classes == ["gpu.nvidia.com", "dra.cpu"]
+
+    def test_fallback_subrequest_names_present_and_distinct(self):
+        req = self._req(_gpu_intent(), dra_fallback=True)
+        names = [s["name"] for s in req["firstAvailable"]]
+        assert all(names)
+        assert len(set(names)) == len(names)
+
+    def test_fallback_template_api_and_kind(self):
+        templates = render_resource_claim_templates(
+            _gpu_intent(), namespace="test-ns", dra_fallback=True
+        )
+        assert templates[0]["apiVersion"] == "resource.k8s.io/v1"
+        assert templates[0]["kind"] == "ResourceClaimTemplate"
+
+    def test_default_off_keeps_exactly(self):
+        """Regression guard: flag defaults off -> unchanged exactly GPU claim."""
+        req = self._req(_gpu_intent())
+        assert req["exactly"]["deviceClassName"] == "gpu.nvidia.com"
+        assert "firstAvailable" not in req
+
+    def test_gpu_without_fallback_falls_back_to_exactly(self):
+        """dra_fallback on, but the accelerator step declares no fallback."""
+        intent = _gpu_intent()
+        intent.steps[1].fallback_resource_class = None
+        req = self._req(intent, dra_fallback=True)
+        assert "exactly" in req
+        assert "firstAvailable" not in req
+
+    def test_fpga_fallback_fabricates_no_claim(self):
+        """FPGA has no DRA driver: dra_fallback must not invent a claim for it."""
+        intent = _fpga_intent()
+        intent.steps[0].fallback_resource_class = ResourceClass.CPU
+        templates = render_resource_claim_templates(
+            intent, namespace="test-ns", dra_fallback=True
+        )
+        assert templates == []
+
+    def test_job_references_first_available_template(self):
+        intent = _gpu_intent()
+        templates = render_resource_claim_templates(
+            intent, namespace="test-ns", dra_fallback=True
+        )
+        job = render_kueue_job(intent, dra_fallback=True)
+        template_name = templates[0]["metadata"]["name"]
+        pod_claims = job["spec"]["template"]["spec"]["resourceClaims"]
+        assert template_name in [c["resourceClaimTemplateName"] for c in pod_claims]
+        # the container references the pod-level claim by name
+        container_claims = [
+            c["name"]
+            for c in job["spec"]["template"]["spec"]["containers"][0]["resources"]["claims"]
+        ]
+        assert set(container_claims) == {c["name"] for c in pod_claims}

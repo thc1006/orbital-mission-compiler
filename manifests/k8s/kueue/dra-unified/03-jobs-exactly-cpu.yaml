@@ -1,0 +1,71 @@
+# =========================================================================
+# Demo 1 — CPU DRA under Kueue quota (exactly claim, cascade)
+# =========================================================================
+# Two Jobs each claim one dra.cpu device via the `single-cpu` (exactly) template.
+# ClusterQueue dra.cpu nominalQuota=1 → Kueue admits one, suspends the other,
+# then cascade-admits on completion — the §V-E cascade, now for CPU, proving the
+# `dra.cpu` deviceClassMappings entry is quota-counted.
+#
+# Verified 2026-07-09 (Kueue v0.17.3, K8s v1.36.1, dra-driver-cpu v0.2.0).
+# Apply standalone (no other dra.cpu claimant), then:
+#   kubectl -n dra-unified get jobs,pods; kubectl get resourceclaim -n dra-unified
+# =========================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dra-unified-cpu-job-1
+  namespace: dra-unified
+  labels:
+    kueue.x-k8s.io/queue-name: dra-unified-lq
+spec:
+  parallelism: 1
+  completions: 1
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: cpu
+        image: registry.k8s.io/e2e-test-images/agnhost:2.53
+        command: ["/bin/sh", "-c"]
+        args:
+          - 'echo "cpu-job-1 starting at $(date)"; sleep 30; echo "cpu-job-1 done at $(date)"'
+        resources:
+          claims:
+          - name: cpu
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+      resourceClaims:
+      - name: cpu
+        resourceClaimTemplateName: single-cpu
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dra-unified-cpu-job-2
+  namespace: dra-unified
+  labels:
+    kueue.x-k8s.io/queue-name: dra-unified-lq
+spec:
+  parallelism: 1
+  completions: 1
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: cpu
+        image: registry.k8s.io/e2e-test-images/agnhost:2.53
+        command: ["/bin/sh", "-c"]
+        args:
+          - 'echo "cpu-job-2 starting at $(date)"; sleep 30; echo "cpu-job-2 done at $(date)"'
+        resources:
+          claims:
+          - name: cpu
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+      resourceClaims:
+      - name: cpu
+        resourceClaimTemplateName: single-cpu

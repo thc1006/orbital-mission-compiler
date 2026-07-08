@@ -1,0 +1,45 @@
+# =========================================================================
+# Demo 3 — the boundary: a firstAvailable claim UNDER a Kueue queue
+# =========================================================================
+# The same accel-first-available (firstAvailable) claim, but as a Kueue Job
+# (queue label present). This exists to DOCUMENT the limitation empirically
+# rather than assert it: Kueue's DRA quota counting supports only `exactly`
+# device requests — `firstAvailable` and `All` are unsupported
+# (https://kueue.sigs.k8s.io/docs/tasks/run/dra/).
+#
+# Expected: Kueue does not count the accelerator device; the Job is gated on its
+# cpu/memory request only (the DRA fallback is not admission-aware). Capture the
+# actual Workload status when applying:
+#   kubectl -n dra-unified get workloads -o wide
+#   kubectl -n dra-unified describe job dra-unified-firstavailable-job | tail -30
+# Record the observed behavior in README.md rather than trusting this comment.
+# =========================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dra-unified-firstavailable-job
+  namespace: dra-unified
+  labels:
+    kueue.x-k8s.io/queue-name: dra-unified-lq
+spec:
+  parallelism: 1
+  completions: 1
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: compute
+        image: registry.k8s.io/e2e-test-images/agnhost:2.53
+        command: ["/bin/sh", "-c"]
+        args:
+          - 'echo "firstAvailable job at $(date)"; sleep 20; echo done'
+        resources:
+          claims:
+          - name: compute
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+      resourceClaims:
+      - name: compute
+        resourceClaimTemplateName: accel-first-available
