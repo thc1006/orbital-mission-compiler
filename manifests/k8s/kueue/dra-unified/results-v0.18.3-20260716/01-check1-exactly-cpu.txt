@@ -1,0 +1,17 @@
+=== CHECK 1 (settled): exactly dra.cpu cascade under Kueue v0.18.3 ===
+NAME                    STATUS      COMPLETIONS   DURATION   AGE
+dra-unified-cpu-job-1   Running     0/1           26s        26s
+dra-unified-cpu-job-2   Suspended   0/1                      26s
+--- workloads (job-1 admitted, job-2 gated on dra.cpu quota) ---
+NAME                              QUEUE            RESERVED IN      ADMITTED   FINISHED   AGE
+job-dra-unified-cpu-job-1-9013f   dra-unified-lq   dra-unified-cq   True                  26s
+job-dra-unified-cpu-job-2-a7468   dra-unified-lq                                          26s
+--- dra-unified-cq usage (expect dra.cpu total=1) ---
+"name":"dra.cpu"
+"total":"1"}
+--
+"name":"dra.gpu.nvidia.com"
+"total":"0"}
+
+--- job-2 workload: why not admitted ---
+Pending: couldn't assign flavors to pod set main: insufficient unused quota for dra.cpu in flavor dra-unified-flavor, 1 more needed

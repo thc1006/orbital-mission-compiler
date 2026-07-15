@@ -13,9 +13,11 @@
 #
 # SCOPE NOTE (important): Kueue quota counting supports only `exactly` device
 # requests. A `firstAvailable` claim (see 02, 04, 05) is a SCHEDULER-level
-# construct and is NOT counted here — this ConfigMap makes `exactly` gpu AND
-# `exactly` cpu claims quota-countable, which is the unification Kueue supports
-# today. See README.md "Two mechanisms, one boundary".
+# construct that Kueue REJECTS as Inadmissible ("FirstAvailable device selection
+# is not supported", observed on v0.17.3 and v0.18.3) — so it is neither counted
+# nor admitted here. This ConfigMap makes `exactly` gpu AND `exactly` cpu claims
+# quota-countable, which is the unification Kueue supports today. See README.md
+# "Two mechanisms, one boundary".
 #
 # Apply order:
 #   1. THIS FILE — then restart the controller:

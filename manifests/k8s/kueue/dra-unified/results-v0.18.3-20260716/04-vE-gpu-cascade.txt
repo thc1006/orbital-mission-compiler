@@ -1,0 +1,15 @@
+=== §V-E FRESH re-run: exactly gpu.nvidia.com cascade under Kueue v0.18.3 ===
+NAME              STATUS      COMPLETIONS   DURATION   AGE
+dra-paper-job-1   Running     0/1           1s         1s
+dra-paper-job-2   Suspended   0/1                      1s
+--- workloads ---
+NAME                        QUEUE          RESERVED IN    ADMITTED   FINISHED   AGE
+job-dra-paper-job-1-312cd   dra-paper-lq   dra-paper-cq   True                  1s
+job-dra-paper-job-2-27efa   dra-paper-lq                                        1s
+--- dra-paper-cq usage (expect dra.gpu.nvidia.com=1) ---
+"name":"dra.gpu.nvidia.com"
+"total":"1"}
+
+--- job-2 gated reason ---
+job-dra-paper-job-1-312cd admitted=True | Quota reserved in ClusterQueue dra-paper-cq
+job-dra-paper-job-2-27efa admitted= | couldn't assign flavors to pod set main: insufficient unused quota for dra.gpu.nvidia.com in flavor dra-paper-flavor, 1 more needed

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from orbital_mission_compiler.cli import (
     build_parser,
@@ -83,6 +84,40 @@ def test_cmd_render_kueue(tmp_path, capsys):
     assert len(data["files"]) >= 1
     for f in data["files"]:
         assert Path(f).exists()
+
+
+def test_cmd_render_kueue_dra_fallback_job_uses_exactly_not_first_available(tmp_path, capsys):
+    """End-to-end: render-kueue --dra-fallback emits the scheduler-route
+    firstAvailable RCT, but the Kueue Job references the exactly RCT. Kueue rejects
+    firstAvailable as Inadmissible, so the Job must never reference it."""
+    args = build_parser().parse_args([
+        "render-kueue",
+        "--input", "configs/mission_plans/sample_gpu_cpu_fallback.yaml",
+        "--output-dir", str(tmp_path),
+        "--dra-fallback",
+    ])
+    cmd_render_kueue(args)
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "ok" and data["files"]
+    docs = list(yaml.safe_load_all(Path(data["files"][0]).read_text()))
+    rcts = [d for d in docs if d and d.get("kind") == "ResourceClaimTemplate"]
+    jobs = [d for d in docs if d and d.get("kind") == "Job"]
+    assert jobs, "expected a Kueue Job"
+
+    def _has_fa(rct):
+        return "firstAvailable" in rct["spec"]["spec"]["devices"]["requests"][0]
+
+    fa_names = {r["metadata"]["name"] for r in rcts if _has_fa(r)}
+    ex_names = {r["metadata"]["name"] for r in rcts if not _has_fa(r)}
+    assert fa_names, "expected a scheduler-route firstAvailable RCT"
+    assert ex_names, "expected a Kueue-route exactly RCT"
+    for job in jobs:
+        refs = {
+            c["resourceClaimTemplateName"]
+            for c in job["spec"]["template"]["spec"].get("resourceClaims", [])
+        }
+        assert refs & ex_names, "Kueue Job must reference the exactly RCT"
+        assert not (refs & fa_names), "Kueue Job must NOT reference a firstAvailable RCT"
 
 
 def test_cmd_policy(capsys):

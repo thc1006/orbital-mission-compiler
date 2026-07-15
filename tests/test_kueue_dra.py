@@ -340,7 +340,13 @@ class TestFirstAvailable:
 
     def _req(self, intent, **kw):
         templates = render_resource_claim_templates(intent, namespace="test-ns", **kw)
-        assert len(templates) == 1
+        # dra_fallback on a GPU step yields TWO templates: the scheduler-route
+        # firstAvailable claim and the Kueue-route exactly claim. Return the
+        # firstAvailable request when present, else the sole template's request.
+        for t in templates:
+            req = t["spec"]["spec"]["devices"]["requests"][0]
+            if "firstAvailable" in req:
+                return req
         return templates[0]["spec"]["spec"]["devices"]["requests"][0]
 
     def test_fallback_produces_first_available_not_exactly(self):
@@ -389,15 +395,33 @@ class TestFirstAvailable:
         )
         assert templates == []
 
-    def test_job_references_first_available_template(self):
+    def test_fallback_emits_both_scheduler_and_kueue_templates(self):
+        """A GPU step under dra_fallback yields TWO RCTs: the scheduler-route
+        firstAvailable claim and the Kueue-route exactly claim."""
+        templates = render_resource_claim_templates(
+            _gpu_intent(), namespace="test-ns", dra_fallback=True
+        )
+        reqs = [t["spec"]["spec"]["devices"]["requests"][0] for t in templates]
+        assert sum("firstAvailable" in r for r in reqs) == 1
+        assert sum("exactly" in r for r in reqs) == 1
+
+    def test_kueue_job_uses_exactly_not_first_available(self):
+        """Kueue admission rejects firstAvailable (Inadmissible); the Kueue Job
+        must reference the exactly GPU RCT and never the firstAvailable one."""
         intent = _gpu_intent()
         templates = render_resource_claim_templates(
             intent, namespace="test-ns", dra_fallback=True
         )
+        fa = [t for t in templates
+              if "firstAvailable" in t["spec"]["spec"]["devices"]["requests"][0]]
+        ex = [t for t in templates
+              if "exactly" in t["spec"]["spec"]["devices"]["requests"][0]]
+        assert len(fa) == 1 and len(ex) == 1
         job = render_kueue_job(intent, dra_fallback=True)
-        template_name = templates[0]["metadata"]["name"]
         pod_claims = job["spec"]["template"]["spec"]["resourceClaims"]
-        assert template_name in [c["resourceClaimTemplateName"] for c in pod_claims]
+        referenced = [c["resourceClaimTemplateName"] for c in pod_claims]
+        assert ex[0]["metadata"]["name"] in referenced
+        assert fa[0]["metadata"]["name"] not in referenced
         # the container references the pod-level claim by name
         container_claims = [
             c["name"]

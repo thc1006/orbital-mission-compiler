@@ -1,0 +1,6 @@
+captured 2026-07-16 on thc1006-D630MT
+Server Version: v1.36.1
+kueue: registry.k8s.io/kueue/kueue:v0.18.3
+drivers:
+dra.cpu
+gpu.nvidia.com

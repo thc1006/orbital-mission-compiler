@@ -9,8 +9,8 @@
 # Same spec, the scheduler chooses — the declarative replacement for the paper's
 # §V-D runtime env-var switch (ORBITAL_FALLBACK_RESOURCE_CLASS).
 #
-# These are PLAIN Pods on purpose: Kueue does not quota-count firstAvailable
-# claims (see 05), so the fallback lives at the scheduler layer. Verified
+# These are PLAIN Pods on purpose: Kueue REJECTS a firstAvailable claim as
+# Inadmissible (see 05), so the fallback lives at the scheduler layer. Verified
 # 2026-07-09 on K2200: demo-1 -> gpu-0, demo-2 -> cpudevnuma000.
 #
 # Inspect:  kubectl get resourceclaim -n dra-unified -o \

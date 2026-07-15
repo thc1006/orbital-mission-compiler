@@ -338,12 +338,20 @@ def render_resource_claim_templates(
 
     Opt-in ``dra_fallback``: when a step declares both a driver-backed
     ``resource_class`` and a driver-backed ``fallback_resource_class`` (see
-    ``DRA_DEVICE_CLASS``), emit a single ``firstAvailable`` request instead -- the
-    scheduler allocates the primary device if one is free, else the fallback. This
-    renders the step's fallback as a scheduler-level decision rather than the
-    runtime env-var switch emitted by ``render_argo_workflow``. Note: Kueue quota
-    counting supports only ``exactly`` requests, so a ``firstAvailable`` claim is a
-    scheduler-level construct and is not counted against a ClusterQueue.
+    ``DRA_DEVICE_CLASS``), emit a ``firstAvailable`` request -- the scheduler
+    allocates the primary device if one is free, else the fallback -- rendering the
+    step's fallback as a scheduler-level decision rather than the runtime env-var
+    switch emitted by ``render_argo_workflow``.
+
+    Kueue admission does NOT accept a ``firstAvailable`` claim: it rejects such a
+    workload as Inadmissible ("FirstAvailable device selection is not supported",
+    verified live on Kueue v0.17.3 and v0.18.3) and quota-counts only ``exactly``
+    requests. The firstAvailable RCT is therefore a SCHEDULER-route artifact (a
+    plain Pod / non-Kueue consumer references it). So that ``render_kueue_job`` has
+    a Kueue-admissible template to reference, this function ALSO emits the
+    ``exactly`` GPU RCT for an accelerator step. A GPU accelerator step thus yields
+    TWO templates under ``dra_fallback``: the scheduler-route ``firstAvailable``
+    claim and the Kueue-route ``exactly`` claim.
     """
     templates: list[dict[str, Any]] = []
     if dra_fallback:
@@ -380,7 +388,7 @@ def render_resource_claim_templates(
                     },
                 },
             })
-            return templates
+            # Fall through: also emit the exactly GPU RCT below (Kueue route).
     requires_gpu = intent.resource_hints.get("requires_gpu", False)
     if requires_gpu:
         templates.append({
@@ -453,18 +461,21 @@ def render_kueue_job(
     }
 
     # ── GPU handling ──────────────────────────────────────────────────
-    fallback_step = _dra_fallback_step(intent) if dra_fallback else None
-    if fallback_step is not None and dra_enabled:
-        # DRA firstAvailable path: one claim; the scheduler picks the primary
-        # device if free, else the fallback. Kueue does not quota-count
-        # firstAvailable claims, so this Job is admitted on its cpu/memory only.
-        rct_name = _rct_name_for_intent(intent, "accel")
-        pod_spec["resourceClaims"] = [
-            {"name": "compute", "resourceClaimTemplateName": rct_name},
-        ]
-        container["resources"]["claims"] = [{"name": "compute"}]
-    elif requires_gpu and dra_enabled:
-        # DRA path: ResourceClaim reference instead of static resource request.
+    # Kueue admission rejects `firstAvailable` device selection as Inadmissible
+    # ("FirstAvailable device selection is not supported", verified live on Kueue
+    # v0.17.3 and v0.18.3) and quota-counts only `exactly` requests. A Kueue Job for
+    # a DRA accelerator step therefore ALWAYS uses the `exactly` gpu.nvidia.com claim
+    # (which Kueue quota-counts). The scheduler-level firstAvailable GPU->CPU fallback
+    # is available only off the Kueue admission path: a plain Pod / scheduler route
+    # consumes the firstAvailable RCT that render_resource_claim_templates emits.
+    if dra_fallback and dra_enabled and requires_gpu and _dra_fallback_step(intent) is not None:
+        logger.warning(
+            "DRA firstAvailable fallback is not admissible under Kueue; the Kueue "
+            "Job uses an exactly gpu.nvidia.com claim. Use the scheduler route "
+            "(plain Pod / Argo) for the firstAvailable GPU->CPU fallback."
+        )
+    if requires_gpu and dra_enabled:
+        # DRA path: exactly gpu.nvidia.com ResourceClaim (Kueue quota-counts this).
         rct_name = _rct_name_for_intent(intent, "gpu")
         pod_spec["resourceClaims"] = [
             {"name": "gpu", "resourceClaimTemplateName": rct_name},

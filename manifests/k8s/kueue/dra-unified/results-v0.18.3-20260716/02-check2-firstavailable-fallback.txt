@@ -1,0 +1,7 @@
+=== CHECK 2: firstAvailable scheduler-level GPU->CPU fallback (no Kueue), v0.18.3 ===
+NAME           READY   STATUS    RESTARTS   AGE   IP             NODE             NOMINATED NODE   READINESS GATES
+accel-demo-1   1/1     Running   0          12s   10.244.0.233   thc1006-d630mt   <none>           <none>
+accel-demo-2   1/1     Running   0          12s   10.244.0.77    thc1006-d630mt   <none>           <none>
+--- ResourceClaim allocations (which device each pod bound) ---
+accel-demo-1-compute-ftlqf  ->  device=gpu-0  driver=gpu.nvidia.com
+accel-demo-2-compute-h7cfp  ->  device=cpudevnuma000  driver=dra.cpu

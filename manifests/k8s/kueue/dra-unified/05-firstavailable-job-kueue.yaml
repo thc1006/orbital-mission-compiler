@@ -7,12 +7,15 @@
 # device requests — `firstAvailable` and `All` are unsupported
 # (https://kueue.sigs.k8s.io/docs/tasks/run/dra/).
 #
-# Expected: Kueue does not count the accelerator device; the Job is gated on its
-# cpu/memory request only (the DRA fallback is not admission-aware). Capture the
-# actual Workload status when applying:
+# OBSERVED (Kueue v0.17.3 on 2026-07-09 AND v0.18.3 on 2026-07-16, same result):
+# Kueue REJECTS this Job as Inadmissible — Workload condition QuotaReserved=False
+# reason=Inadmissible, message "ResourceClaimTemplate accel-first-available:
+# FirstAvailable device selection is not supported"; the Job stays Suspended and
+# nothing is quota-counted. (Earlier drafts predicted a soft "admit on cpu/memory
+# only" — that prediction never held on either version.) Re-capture with:
 #   kubectl -n dra-unified get workloads -o wide
 #   kubectl -n dra-unified describe job dra-unified-firstavailable-job | tail -30
-# Record the observed behavior in README.md rather than trusting this comment.
+# Captured: results-v0.18.3-20260716/03-check3-firstavailable-under-kueue.txt
 # =========================================================================
 apiVersion: batch/v1
 kind: Job

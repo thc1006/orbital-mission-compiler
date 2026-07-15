@@ -1,0 +1,26 @@
+=== CHECK 3: firstAvailable UNDER a Kueue queue, v0.18.3 (observe reject/ignore/miscount) ===
+--- job + pods ---
+NAME                                       STATUS      COMPLETIONS   DURATION   AGE
+job.batch/dra-unified-firstavailable-job   Suspended   0/1                      1s
+--- workload ---
+NAME                                       QUEUE            RESERVED IN   ADMITTED   FINISHED   AGE
+job-dra-unified-firstavailable-job-01368   dra-unified-lq                                       1s
+--- workload conditions (workload.kueue.x-k8s.io/job-dra-unified-firstavailable-job-01368) ---
+QuotaReserved=False  reason=Inadmissible  msg=spec.podSets[0].template.spec.resourceClaims[0].devices.requests[0]: Invalid value: null: ResourceClaimTemplate accel-first-available: FirstAvailable device selection is not supported
+Requeued=False  reason=Inadmissible  msg=spec.podSets[0].template.spec.resourceClaims[0].devices.requests[0]: Invalid value: null: ResourceClaimTemplate accel-first-available: FirstAvailable device selection is not supported
+--- CQ usage after (did accelerator get counted?) ---
+"name":"dra.cpu"
+"total":"0"}
+--
+"name":"dra.gpu.nvidia.com"
+"total":"0"}
+
+--- recent events ---
+83s         Normal    Started            pod/accel-demo-1                           Container started
+73s         Normal    Scheduled          pod/accel-demo-2                           Successfully assigned dra-unified/accel-demo-2 to thc1006-d630mt
+72s         Normal    Started            pod/accel-demo-2                           Container started
+72s         Normal    Pulled             pod/accel-demo-2                           Container image "registry.k8s.io/e2e-test-images/agnhost:2.53" already present on machine and can be accessed by the pod
+72s         Normal    Created            pod/accel-demo-2                           Container created
+32s         Normal    Killing            pod/accel-demo-1                           Stopping container c
+32s         Normal    Killing            pod/accel-demo-2                           Stopping container c
+1s          Normal    Suspended          job/dra-unified-firstavailable-job         Job suspended

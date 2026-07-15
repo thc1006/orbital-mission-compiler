@@ -1,0 +1,6 @@
+=== Phase A live validation: FIXED compiler output is Kueue-ADMITTED (v0.18.3) ===
+Rendered: cli render-kueue --dra-fallback on sample_gpu_cpu_fallback.yaml
+Job (generateName mission-beta-...) references the EXACTLY gpu RCT (...-gpu-claim), not firstAvailable.
+Applied live -> Workload mission-beta-wildfire-detection-2026-04-16t09-15-00z-npzrn-* : QuotaReserved=True/QuotaReserved, Admitted=True (NOT Inadmissible).
+dra-unified-cq dra.gpu.nvidia.com usage = 1 (exactly claim quota-counted).
+Contrast: the pre-fix firstAvailable Job was Inadmissible (03-check3). Fix proven end-to-end.
