@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.5.0 (2026-07-29)
+
+Unified GPU+CPU DRA and a scheduler-level accelerator fallback, re-validated on
+Kueue v0.18.3, plus a reproducibility matrix binding the paper's DRA experiments to
+exact versions and commits. This is the public release that reproduces the extended
+arXiv version (the unified-DRA + scheduler-level-fallback section).
+
+### Added
+- `manifests/k8s/kueue/dra-unified/`: the unified GPU+CPU Kueue Configuration
+  (`deviceClassMappings` for `gpu.nvidia.com` + `dra.cpu`), ResourceClaimTemplates
+  (`firstAvailable` + `exactly`), the three demonstrations (CPU quota cascade,
+  `firstAvailable` scheduler fallback, `firstAvailable`-under-Kueue rejection), and a
+  dra-driver-cpu install script carrying the kubelet-root-dir workaround.
+- `results-v0.18.3-20260716/`: captured live-cluster output for every DRA claim
+  (K8s v1.36.1, Kueue v0.18.3, Quadro K2200).
+- Compiler `--dra-fallback`: renders a scheduler-route `firstAvailable` RCT and a
+  Kueue-route `exactly` RCT; unit + end-to-end CLI guard tests.
+- `docs/17_reproducibility.md`: version/commit matrix + paper-claim-to-artifact map.
+
+### Changed
+- `render_kueue_job` never emits a `firstAvailable` claim (Kueue rejects it as
+  Inadmissible); it uses the `exactly` `gpu.nvidia.com` claim, which Kueue
+  quota-counts. Stale manifest/comment predictions corrected to the observed rejection.
+
 ## v0.4.2 (2026-07-07)
 
 Camera-ready correctness + adversarial-review pass for the IEEE SMC-IT/SCC
