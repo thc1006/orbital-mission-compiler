@@ -56,7 +56,8 @@ Captured environment: `manifests/k8s/kueue/dra-unified/results-v0.18.3-20260716/
 - **firstAvailable + Kueue boundary**: Kueue quota-counts only `exactly` device
   requests; a `firstAvailable` claim submitted as a Kueue Job is rejected
   Inadmissible ("FirstAvailable device selection is not supported"), observed
-  identically on Kueue v0.17.3, v0.18.3, and v0.19.0/main. The scheduler-level
+  identically on Kueue v0.17.3 and v0.18.3 (captured here); the same rejection
+  persists on Kueue v0.19.0 and main per upstream source inspection. The scheduler-level
   fallback (firstAvailable, plain Pod / Argo route) and Kueue quota (exactly) are
   therefore disjoint capabilities today; the compiler renders the `exactly` claim
   for the Kueue route.
