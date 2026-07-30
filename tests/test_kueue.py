@@ -105,17 +105,38 @@ def test_kueue_default_resources_unchanged():
     assert container["resources"]["requests"]["memory"] == "256Mi"
 
 
-def test_kueue_empty_resource_request_raises():
-    """Empty cpu_request or memory_request should raise ValueError."""
+def test_kueue_rejects_values_the_api_server_would_reject():
+    """Operator-supplied names and quantities are copied into the manifest
+    verbatim, so an invalid one has to be caught here.
+
+    Rendering it anyway defers the failure to `kubectl apply`, which is past the
+    point this compiler exists to check, and an operator reading a rendered
+    manifest has no reason to doubt it.
+    """
     intent = WorkflowIntent(
         mission_id="test", service_id="svc", priority=50,
         workflow_name="test-wf",
         steps=[WorkflowStep(name="s1", image="busybox:1.36")],
     )
-    with pytest.raises(ValueError, match="cpu_request must not be empty"):
-        render_kueue_job(intent, cpu_request="")
-    with pytest.raises(ValueError, match="memory_request must not be empty"):
-        render_kueue_job(intent, memory_request="  ")
+    for kwargs, field in (
+        ({"cpu_request": ""}, "cpu_request"),
+        ({"memory_request": "  "}, "memory_request"),
+        ({"cpu_request": "one"}, "cpu_request"),
+        ({"memory_request": "256 Mi"}, "memory_request"),
+        ({"namespace": "Orbital_Demo"}, "namespace"),
+        ({"namespace": "-leading-dash"}, "namespace"),
+        ({"queue_name": "queue name"}, "queue_name"),
+        ({"namespace": "n" * 64}, "namespace"),
+    ):
+        with pytest.raises(ValueError, match=field):
+            render_kueue_job(intent, **kwargs)
+
+    # The shapes an operator actually uses stay accepted.
+    for kwargs in (
+        {"cpu_request": "500m"}, {"memory_request": "1Gi"}, {"cpu_request": "2"},
+        {"namespace": "dra-unified"}, {"queue_name": "orbital-demo-local"},
+    ):
+        render_kueue_job(intent, **kwargs)
 
 
 def test_render_kueue_job_labels():

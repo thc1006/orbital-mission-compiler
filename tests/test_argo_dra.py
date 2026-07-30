@@ -19,6 +19,7 @@ from orbital_mission_compiler.compiler import (
     compile_plan_to_intents,
     load_mission_plan,
     render_argo_workflow,
+    render_workflows_for_file,
     write_individual_workflows,
 )
 
@@ -292,3 +293,25 @@ def test_duplicate_yaml_keys_are_rejected(tmp_path):
     )
     with _pytest.raises(Exception, match="duplicate key"):
         load_mission_plan(bad)
+
+
+def test_render_workflows_for_file_returns_the_claim_before_the_workflow():
+    """Under dra_fallback this returns a mixed list, not workflows only.
+
+    A caller that treats every element as a Workflow reads spec.templates off a
+    ResourceClaimTemplate, so the shape is part of the contract. So is the order:
+    a consumer applying the list in sequence needs the template to exist before
+    the Workflow that references it.
+    """
+    objects = render_workflows_for_file(
+        GPU_FALLBACK, enforce_policy=False, dra_fallback=True, namespace="ns"
+    )
+    assert [o["kind"] for o in objects] == ["ResourceClaimTemplate", "Workflow"], objects
+    rct, wf = objects
+    patches = [t["podSpecPatch"] for t in _step_templates(wf) if "podSpecPatch" in t]
+    assert patches, "no template consumes the claim"
+    assert all(rct["metadata"]["name"] in p for p in patches)
+
+    # Off by default the return is workflows only, so the flag is what changes it.
+    plain = render_workflows_for_file(GPU_FALLBACK, enforce_policy=False)
+    assert {o["kind"] for o in plain} == {"Workflow"}

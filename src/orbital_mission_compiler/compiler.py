@@ -36,6 +36,38 @@ def sanitize_k8s_name(name: str, max_len: int = 63) -> str:
     return s[:max_len].rstrip("-") or "step"
 
 
+# An RFC 1123 DNS label, which is what a namespace, a LocalQueue name and a
+# ServiceAccount name each have to be. Names the compiler derives from a plan are
+# sanitized; these arrive from the operator and are copied into the manifest
+# verbatim, so they are checked instead.
+_RFC1123_LABEL_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+# resource.Quantity, per the Kubernetes API reference's serialization format:
+# https://kubernetes.io/docs/reference/kubernetes-api/common-definitions/quantity/
+_QUANTITY_RE = re.compile(r"^[+-]?[0-9.]+([eEinumkKMGTP]*[-+]?[0-9]*)$")
+
+
+def _require_k8s_label(value: str, field: str) -> str:
+    """Reject an operator-supplied name the API server would reject on apply.
+
+    Rendering it anyway moves the failure to `kubectl apply`, which is after the
+    point this compiler exists to check.
+    """
+    if not isinstance(value, str) or not _RFC1123_LABEL_RE.match(value) or len(value) > 63:
+        raise ValueError(
+            f"{field} must be an RFC 1123 DNS label (lowercase alphanumeric or '-', "
+            f"starting and ending alphanumeric, at most 63 characters), got {value!r}"
+        )
+    return value
+
+
+def _require_quantity(value: str, field: str) -> str:
+    """Reject a resource request the API server would not parse as a quantity."""
+    if not isinstance(value, str) or not _QUANTITY_RE.match(value.strip()) or not value.strip():
+        raise ValueError(f"{field} must be a Kubernetes quantity (e.g. '1', '500m', '256Mi'), got {value!r}")
+    return value.strip()
+
+
 def _collision_resistant_k8s_name(name: str, max_len: int = 63, hash_len: int = 8) -> str:
     """Sanitize and preserve uniqueness when truncation is required."""
     if max_len < hash_len + 2:
@@ -388,8 +420,9 @@ def render_argo_workflow(
         },
     }
     if namespace is not None:
-        workflow["metadata"]["namespace"] = namespace  # type: ignore[index]
+        workflow["metadata"]["namespace"] = _require_k8s_label(namespace, "namespace")  # type: ignore[index]
     if service_account is not None:
+        _require_k8s_label(service_account, "service_account")
         # `argo submit --serviceaccount` cannot be used on the multi-document
         # bundle, because argo submit drops the ResourceClaimTemplate. Applying
         # the bundle with kubectl therefore needs the account in the manifest, or
@@ -538,6 +571,7 @@ def render_resource_claim_templates(
     TWO templates under ``dra_fallback``: the scheduler-route ``firstAvailable``
     claim and the Kueue-route ``exactly`` claim.
     """
+    _require_k8s_label(namespace, "namespace")
     templates: list[dict[str, Any]] = []
     if dra_fallback:
         rct = _first_available_rct(intent, namespace)
@@ -643,10 +677,10 @@ def render_kueue_job(
     priority_class: bool = False,
     priority_class_prefix: str = ORCHIDE_PRIORITY_CLASS_PREFIX,
 ) -> dict[str, Any]:
-    if not isinstance(cpu_request, str) or not cpu_request.strip():
-        raise ValueError("cpu_request must not be empty")
-    if not isinstance(memory_request, str) or not memory_request.strip():
-        raise ValueError("memory_request must not be empty")
+    cpu_request = _require_quantity(cpu_request, "cpu_request")
+    memory_request = _require_quantity(memory_request, "memory_request")
+    _require_k8s_label(namespace, "namespace")
+    _require_k8s_label(queue_name, "queue_name")
     requires_gpu = intent.resource_hints.get("requires_gpu", False)
     requires_fpga = intent.resource_hints.get("requires_fpga", False)
 

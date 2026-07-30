@@ -14,6 +14,10 @@
   previously produced one object name and one file, losing all but one service.
 - A mission plan with a duplicate YAML mapping key is rejected rather than resolved
   to the last value.
+- Operator-supplied `--namespace`, `--queue`, `--service-account` and the Kueue
+  cpu/memory requests are validated against the RFC 1123 label and `resource.Quantity`
+  formats before rendering, instead of being copied into the manifest and failing at
+  `kubectl apply`.
 
 ### Added
 - `render-argo --service-account`, for the kubectl-apply path: `argo submit
