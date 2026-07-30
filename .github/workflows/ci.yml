@@ -3,8 +3,12 @@ name: CI
 "on":
   push:
     branches: [main]
+  # No base-branch filter: `branches:` matches the PR's BASE, so a stacked pull
+  # request whose base is another feature branch would get no CI at all. The
+  # checkout for a pull_request run is the head merged into its own base, which
+  # is exactly what a stacked PR should be tested as. `push` stays pinned to
+  # main so a branch with an open PR is not built twice.
   pull_request:
-    branches: [main]
 
 env:
   PYTHONPATH: src:.
