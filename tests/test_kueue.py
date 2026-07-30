@@ -212,12 +212,14 @@ def test_service_account_may_be_a_dns_subdomain():
         mission_id="test", service_id="svc", priority=50, workflow_name="test-wf",
         steps=[WorkflowStep(name="s1", image="busybox:1.36")],
     )
-    for account in ("workflow.runner", "team-a.runtime", "a" * 100):
+    for account in ("workflow.runner", "team-a.runtime", "a" * 253):
         wf = render_argo_workflow(intent, namespace="ns", service_account=account)
         assert wf["spec"]["serviceAccountName"] == account
     for bad in ("Workflow.Runner", "-leading", "a..b", "a" * 254):
         with pytest.raises(ValueError, match="service_account"):
             render_argo_workflow(intent, namespace="ns", service_account=bad)
+    # Pinned at the boundary, not merely bracketed: accepting 100 and rejecting
+    # 254 is true of any cap between them, so it cannot tell 253 from a guess.
 
 
 def test_queue_name_may_contain_dots_but_not_exceed_a_label_value():
@@ -229,5 +231,8 @@ def test_queue_name_may_contain_dots_but_not_exceed_a_label_value():
     )
     job = render_kueue_job(intent, queue_name="team-a.local")
     assert job["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "team-a.local"
+    # The boundary itself: a label value stops at 63, so 63 has to be accepted
+    # and 64 rejected. Bracketing them loosely would pass for any cap between.
+    render_kueue_job(intent, queue_name="q" * 63)
     with pytest.raises(ValueError, match="queue_name"):
         render_kueue_job(intent, queue_name="q" * 64)

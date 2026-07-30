@@ -155,6 +155,29 @@ def test_every_tool_fails_closed_when_the_engine_cannot_decide(server, monkeypat
         assert "intent_count" not in result and "manifests" not in result, tool
 
 
+def test_a_selected_engine_that_cannot_run_also_fails_closed(server, monkeypatch):
+    """A misconfigured engine *name* and an engine that cannot run are different
+    paths through the same guarantee.
+
+    The name check short-circuits before the engine is ever invoked, so testing
+    only that leaves the branch that converts a real PolicyEngineUnavailableError
+    untested -- and that is the one an operator hits when opa is not installed.
+    """
+    from orbital_mission_compiler.mcp import server as server_module
+
+    import orbital_mission_compiler.policy as policy_mod
+
+    monkeypatch.setattr(server_module, "MCP_POLICY_ENGINE", "opa")
+    # The condition an operator actually hits: the engine is selected and its
+    # binary is not installed.
+    monkeypatch.setattr(policy_mod, "opa_available", lambda: False)
+    for tool in ("validate_plan", "compile_plan", "render_argo"):
+        result = _call(server, tool, {"path": SAMPLE_PLAN})
+        assert result["status"] == "error", (tool, result)
+        assert result["reason"] == "policy_engine_unavailable", (tool, result)
+        assert "intent_count" not in result and "manifests" not in result, tool
+
+
 # ── explain_policy tool ──────────────────────────────────────────────
 
 

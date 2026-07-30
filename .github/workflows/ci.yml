@@ -225,17 +225,32 @@ jobs:
           for deny in "${DENY_FIXTURES[@]}"; do
             echo "Asserting render-argo refuses the deny fixture: $deny"
             out="$(mktemp -d)"
+            # Assert the reason, not just a non-zero exit. A corrupted fixture, a
+            # renamed subcommand or any crash also exits non-zero, so "it failed"
+            # is not evidence that the policy gate is what refused it.
+            err="$(mktemp)"
             if python3 -m orbital_mission_compiler.cli render-argo \
-                 --input "configs/mission_plans/$deny" --output-dir "$out"; then
+                 --input "configs/mission_plans/$deny" --output-dir "$out" 2>"$err"; then
               echo "FAIL: render-argo produced artifacts for denied plan $deny" >&2
               exit 1
             fi
+            python3 - "$err" "$deny" <<'PYDENY'
+          import json, sys
+          raw = open(sys.argv[1], encoding="utf-8").read().strip()
+          try:
+              data = json.loads(raw)
+          except json.JSONDecodeError:
+              sys.exit(f"FAIL: {sys.argv[2]} did not fail through the policy gate; got:\n{raw[:800]}")
+          assert data.get("status") == "denied", data
+          assert data.get("violations"), data
+          rules = sorted({v["rule_id"] for v in data["violations"]})
+          print(f"OK: {sys.argv[2]} was denied by {', '.join(rules)}")
+          PYDENY
             if [ -n "$(ls -A "$out")" ]; then
               echo "FAIL: $deny was denied but left artifacts behind in $out" >&2
               exit 1
             fi
-            echo "OK: $deny was refused and produced no artifact"
-            rm -rf "$out"
+            rm -rf "$out" "$err"
           done
 
   # The MCP surface is a required check of its own. FastMCP lives in a separate
@@ -257,9 +272,10 @@ jobs:
       - name: Install with the MCP extra
         run: pip install -e ".[dev,mcp]"
 
-      # The MCP tools default to the opa engine, so without the binary this job
-      # would exercise a path no operator runs -- and skip the tests that check
-      # the typed violations, which is the failure this job exists to prevent.
+      # The MCP server selects its engine from ORBITAL_MCP_POLICY_ENGINE and
+      # defaults to the in-process baseline, so the tests below run once per
+      # engine: checking the fail-closed gate against the mirror alone would say
+      # nothing about the Rego bundle an operator actually enforces with.
       - name: Set up OPA
         uses: ./.github/actions/setup-opa
         with:
@@ -268,16 +284,20 @@ jobs:
       - name: Confirm FastMCP is importable
         run: python3 -c "import fastmcp; print(fastmcp.__version__)"
 
-      - name: MCP tests (a skip here is a failure)
+      - name: MCP tests on both policy engines (a skip here is a failure)
         run: |
           set -euo pipefail
-          python3 -m pytest -q -rs tests/test_mcp.py tests/test_mcp_expansion.py \
-            | tee /tmp/mcp.log
-          if grep -qE '[0-9]+ skipped' /tmp/mcp.log; then
-            echo "FAIL: an MCP test skipped; the MCP surface must be exercised here" >&2
-            grep -E '^SKIPPED' /tmp/mcp.log >&2 || true
-            exit 1
-          fi
+          for engine in baseline opa; do
+            echo "== MCP tests with ORBITAL_MCP_POLICY_ENGINE=$engine =="
+            ORBITAL_MCP_POLICY_ENGINE="$engine" \
+              python3 -m pytest -q -rs tests/test_mcp.py tests/test_mcp_expansion.py \
+              | tee "/tmp/mcp-$engine.log"
+            if grep -qE '[0-9]+ (skipped|xfailed)' "/tmp/mcp-$engine.log"; then
+              echo "FAIL: an MCP test did not run under $engine" >&2
+              grep -E '^(SKIPPED|XFAIL)' "/tmp/mcp-$engine.log" >&2 || true
+              exit 1
+            fi
+          done
 
       # The packaged path this PR exists to support: an installed wheel resolving
       # its own policy bundle, with the plan root pointed somewhere real.

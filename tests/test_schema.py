@@ -146,8 +146,24 @@ def test_a_misspelled_field_is_rejected_rather_than_dropped():
         WorkflowStep(name="a", image="i", fallback_resource_clas="cpu")
     with _pytest.raises(ValidationError, match="commandd"):
         WorkflowStep(name="a", image="i", commandd=["sh"])
-    with _pytest.raises(ValidationError, match="mission_i"):
-        MissionPlan(mission_i="m", events=[])
+    # Every required field present, so the only reason to reject is the unknown
+    # one. Spelling it `mission_i` instead would drop `mission_id` and raise for
+    # a missing required field whether or not extra fields are forbidden.
+    good_event = {
+        "timestamp": "2026-08-01T00:00:00Z", "event_type": "acquisition",
+        "instrument": "cam", "duration_seconds": 60,
+        "services": [{"service_id": "s", "priority": 50,
+                      "steps": [{"name": "a", "image": "i"}]}],
+    }
+    MissionPlan.model_validate({"mission_id": "m", "events": [good_event]})  # baseline
+    with _pytest.raises(ValidationError, match="extra_forbidden|Extra inputs"):
+        MissionPlan.model_validate(
+            {"mission_id": "m", "events": [good_event], "mision_notes": "typo"}
+        )
+    with _pytest.raises(ValidationError, match="extra_forbidden|Extra inputs"):
+        MissionPlan.model_validate(
+            {"mission_id": "m", "events": [{**good_event, "instrumnet": "cam"}]}
+        )
 
 
 def test_priority_true_is_not_priority_one():

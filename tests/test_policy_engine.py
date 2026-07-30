@@ -204,16 +204,48 @@ def test_installed_wheel_carries_the_policy_bundle(tmp_path):
     default path unusable anywhere outside a checkout. Resolving from the source
     tree hides that, which is why this inspects the built artifact.
     """
+    import importlib.util
     import subprocess
     import zipfile
 
+    # Two different situations that a single skip used to blur together. The
+    # tool being absent is environmental and worth skipping for; the build
+    # running and failing is the packaging regression this test exists to catch,
+    # and skipping on that disarms it on exactly the run that should go red.
+    # `build.__main__`, not `build`: a stray build/ directory in the checkout is a
+    # namespace package that satisfies the plain name and then fails to execute.
+    # find_spec raises rather than returning None when the parent is absent.
+    try:
+        runnable = importlib.util.find_spec("build.__main__") is not None
+    except (ImportError, ValueError):
+        runnable = False
+    if not runnable:
+        pytest.skip("the `build` package is not installed (it is pinned in the dev extra)")
+
+    # Build from an isolated copy of the packaging inputs. Building the checkout
+    # in place reuses setuptools' build/ scratch directory, and a wheel assembled
+    # from that cache still contains a file the source no longer provides -- so
+    # the test passed even with the bundle moved out of the tree.
+    import shutil
+
     repo = Path(__file__).resolve().parents[1]
+    workdir = tmp_path / "src-copy"
+    workdir.mkdir()
+    shutil.copytree(repo / "src", workdir / "src")
+    for name in ("pyproject.toml", "README.md", "LICENSE"):
+        if (repo / name).exists():
+            shutil.copy2(repo / name, workdir / name)
+    for stale in workdir.rglob("*.egg-info"):
+        shutil.rmtree(stale, ignore_errors=True)
+
     proc = subprocess.run(
-        [sys.executable, "-m", "build", "--wheel", "--outdir", str(tmp_path), str(repo)],
+        [sys.executable, "-m", "build", "--wheel", "--outdir", str(tmp_path), str(workdir)],
         capture_output=True, text=True,
     )
-    if proc.returncode != 0:
-        pytest.skip(f"wheel build unavailable in this environment: {proc.stderr[-200:]}")
+    # `build` is pinned in the dev extra, so a failure here is a packaging
+    # problem, which is the thing this test exists to catch. Skipping on it would
+    # disarm the test on exactly the run that should go red.
+    assert proc.returncode == 0, f"wheel build failed:\n{proc.stderr[-1500:]}"
     wheels = list(tmp_path.glob("*.whl"))
     assert wheels, "no wheel produced"
     entries = zipfile.ZipFile(wheels[0]).namelist()
