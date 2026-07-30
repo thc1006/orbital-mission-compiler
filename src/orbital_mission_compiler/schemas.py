@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import re
 from enum import Enum
 from typing import Any
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+# Label syntax, per the Kubernetes object-labels reference: a key is an optional
+# DNS-subdomain prefix and a name segment, and a value is alphanumeric with
+# dashes, underscores and dots inside.
+_DNS_LABEL_RE = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?\Z")
+_LABEL_NAME_RE = re.compile(r"[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?\Z")
+_LABEL_VALUE_RE = re.compile(r"[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?\Z")
 
 
 class ResourceClass(str, Enum):
@@ -58,6 +67,40 @@ class WorkflowStep(StrictModel):
     args: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     preferred_node_selector: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("name", "image")
+    @classmethod
+    def _not_blank(cls, value: str, info: Any) -> str:
+        """A step with no image is not something that can run.
+
+        Blank rather than merely empty: a name of spaces sanitizes to a
+        placeholder and an image of spaces reaches the API server as-is.
+        """
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value
+
+    @field_validator("preferred_node_selector")
+    @classmethod
+    def _valid_label_selector(cls, value: dict[str, str]) -> dict[str, str]:
+        """Node-selector keys and values are copied into a label selector.
+
+        Validated here rather than at apply time, which is the whole point of
+        this compiler: a malformed qualified key or an over-long value renders
+        cleanly and is refused by the API server.
+        """
+        for key, val in value.items():
+            prefix, _, name = key.rpartition("/")
+            if not _LABEL_NAME_RE.fullmatch(name or "") or len(name) > 63:
+                raise ValueError(f"node selector key {key!r} has an invalid name segment")
+            if prefix and (
+                len(prefix) > 253
+                or not all(_DNS_LABEL_RE.fullmatch(part) for part in prefix.split("."))
+            ):
+                raise ValueError(f"node selector key {key!r} has an invalid prefix")
+            if val and (len(val) > 63 or not _LABEL_VALUE_RE.fullmatch(val)):
+                raise ValueError(f"node selector value {val!r} for {key!r} is not a label value")
+        return value
 
 
 class AIService(StrictModel):

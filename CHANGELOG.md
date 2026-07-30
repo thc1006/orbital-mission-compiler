@@ -8,6 +8,22 @@
   `fallback_resource_clas: cpu` left an accelerator step with no fallback, and the
   plan was still reported schema-valid. `priority` also rejects a boolean, since
   YAML reads `yes`/`on` as one and Python reads it as 1, the lowest ORCHIDE tier.
+- The Kueue Job is labelled `standalone-primary-step`, not `admission-proxy`. It
+  is a workload of its own: it reserves quota for itself, does not gate the Argo
+  Workflow, and applying both artifacts runs the primary step twice. Kueue's own
+  Argo integration works the other way round, admitting each Pod Argo creates via
+  a queue-name label, and is per-Pod rather than whole-workflow atomic.
+- `--prune` deletes only artifacts belonging to the missions the current render
+  wrote, identified by a `managed-by` label this tool stamps rather than by the
+  `orbital/` prefix an operator may also use. Another mission's output in the
+  same directory, the cluster-scoped priority classes, and a hand-written file
+  are all out of scope.
+- `render-argo --namespace` is stamped on the Workflow in every mode. It was
+  applied only when a DRA claim template was also emitted, so a plain render
+  accepted the flag and produced a namespace-less manifest.
+- A resource request may not be negative, a ServiceAccount name is validated
+  label by label, and step images, names and node-selector keys and values are
+  checked when the plan loads.
 - The Kueue Job records the step it runs and the steps it does not. A Kueue Job
   carries one container, so a multi-step service is admitted as its primary step;
   that projection is now on the object (`orbital/executed-step`,

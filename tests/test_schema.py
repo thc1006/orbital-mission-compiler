@@ -176,3 +176,49 @@ def test_priority_true_is_not_priority_one():
 
     with _pytest.raises(ValidationError, match="boolean"):
         AIService(service_id="s", priority=True, steps=[WorkflowStep(name="a", image="i")])
+
+
+def test_a_step_without_an_image_is_not_a_step():
+    """Blank, not merely empty: a name of spaces sanitizes to a placeholder and
+    an image of spaces reaches the API server as written."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from orbital_mission_compiler.schemas import WorkflowStep
+
+    for kwargs in ({"name": "a", "image": ""}, {"name": "a", "image": "   "},
+                   {"name": "", "image": "i:1"}, {"name": "  ", "image": "i:1"}):
+        with _pytest.raises(ValidationError, match="must not be blank"):
+            WorkflowStep(**kwargs)
+    WorkflowStep(name="a", image="busybox:1.36")
+
+
+def test_node_selector_keys_and_values_are_checked_here_not_at_apply():
+    """`preferred_node_selector` is copied into a node affinity selector, so a
+    malformed key or an over-long value renders cleanly and is refused by the
+    API server -- which is the failure this compiler exists to move earlier."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from orbital_mission_compiler.schemas import WorkflowStep
+
+    bad = [
+        {"bad//prefix/key": "v"},
+        {"UPPER/prefix": "v"},
+        {"k": "v" * 64},
+        {"-leading": "v"},
+        {"trailing-": "v"},
+        {"k": "not a label value"},
+        {"a" * 64: "v"},
+    ]
+    for selector in bad:
+        with _pytest.raises(ValidationError):
+            WorkflowStep(name="a", image="i:1", preferred_node_selector=selector)
+
+    for selector in (
+        {"accelerator": "nvidia"},
+        {"kubernetes.io/arch": "amd64"},
+        {"node.example.com/pool": "gpu-a100"},
+        {"k": ""},  # an empty value is a legal label value
+    ):
+        WorkflowStep(name="a", image="i:1", preferred_node_selector=selector)

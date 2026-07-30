@@ -189,7 +189,7 @@ def test_a_multi_step_service_says_which_steps_are_not_in_the_job():
     ann = job["metadata"]["annotations"]
     assert ann["orbital/executed-step"] == "preprocess"
     assert ann["orbital/steps-not-in-this-job"] == "detect,postprocess"
-    assert ann["orbital/kueue-artifact-role"] == "admission-proxy"
+    assert ann["orbital/kueue-artifact-role"] == "standalone-primary-step"
 
 
 def test_a_single_step_service_reports_nothing_dropped():
@@ -236,3 +236,70 @@ def test_queue_name_may_contain_dots_but_not_exceed_a_label_value():
     render_kueue_job(intent, queue_name="q" * 63)
     with pytest.raises(ValueError, match="queue_name"):
         render_kueue_job(intent, queue_name="q" * 64)
+
+
+# ── sixth round: values the API server rejects, and prune scope ───────
+
+
+def test_a_resource_request_may_not_be_negative():
+    """`-1` and `-500m` are well-formed quantities the API server refuses for a
+    request ("must be greater than or equal to 0", checked against a live
+    server). Parsing is not the whole contract.
+
+    Sub-milli CPU is deliberately still accepted: that same server takes `0.5m`
+    and `100n`, so rejecting them would be stricter than Kubernetes.
+    """
+    intent = WorkflowIntent(
+        mission_id="test", service_id="svc", priority=50, workflow_name="test-wf",
+        steps=[WorkflowStep(name="s1", image="busybox:1.36")],
+    )
+    for bad in ("-1", "-500m", "-0.5"):
+        with pytest.raises(ValueError, match="negative"):
+            render_kueue_job(intent, cpu_request=bad)
+    with pytest.raises(ValueError, match="negative"):
+        render_kueue_job(intent, memory_request="-1Gi")
+    for ok in ("0", "1m", "0.5m", "100n", "500m", "2"):
+        render_kueue_job(intent, cpu_request=ok)
+
+
+def test_a_service_account_name_is_valid_label_by_label():
+    """A subdomain is dot-separated DNS labels, each valid on its own. Checking
+    only the first and last character of the whole string accepts `a.-b`."""
+    from orbital_mission_compiler.compiler import render_argo_workflow
+
+    intent = WorkflowIntent(
+        mission_id="test", service_id="svc", priority=50, workflow_name="test-wf",
+        steps=[WorkflowStep(name="s1", image="busybox:1.36")],
+    )
+    for bad in ("a.-b", "a-.b", "a.-.b", "a..b", ".a", "a."):
+        with pytest.raises(ValueError, match="service_account"):
+            render_argo_workflow(intent, namespace="ns", service_account=bad)
+    for ok in ("workflow.runner", "team-a.runtime", "a"):
+        render_argo_workflow(intent, namespace="ns", service_account=ok)
+
+
+def test_a_duplicate_step_name_still_reports_the_dropped_step():
+    """The projection is computed by identity, once, in the renderer.
+
+    Two steps sharing a name made a caller that recomputed it by name find
+    nothing dropped -- silencing the warning for exactly the plan where a step
+    goes missing without a distinguishing name to notice it by.
+    """
+    from orbital_mission_compiler.compiler import kueue_step_projection
+
+    intent = WorkflowIntent(
+        mission_id="dup", service_id="svc", priority=50, workflow_name="dup-wf",
+        steps=[
+            WorkflowStep(name="analyse", image="a:1"),
+            WorkflowStep(name="analyse", image="b:1"),
+        ],
+    )
+    projection = kueue_step_projection(intent)
+    assert projection == {
+        "service_id": "svc", "executed_step": "analyse", "steps_not_in_job": ["analyse"],
+    }
+    single = WorkflowIntent(
+        mission_id="one", service_id="svc", priority=50, workflow_name="one-wf",
+        steps=[WorkflowStep(name="only", image="a:1")],
+    )
+    assert kueue_step_projection(single) is None

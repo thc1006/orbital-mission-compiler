@@ -258,3 +258,32 @@ def test_render_kueue_reports_its_own_leftovers(tmp_path, capsys):
     ]))
     result = json.loads(capsys.readouterr().out)
     assert len(result["stale"]) == 1, result
+
+
+def test_prune_does_not_reach_into_another_mission(tmp_path, capsys):
+    """Ownership is not enough to delete by.
+
+    Another mission's manifests in the same directory carry the same
+    managed-by label and are equally this tool's output, but they are not this
+    render's to remove -- and neither are the cluster-scoped priority classes the
+    other renderer writes, which belong to no mission at all.
+    """
+    out = tmp_path / "shared"
+    cmd_render_kueue(build_parser().parse_args([
+        "render-kueue", "--input", "configs/mission_plans/sample_gpu_cpu_fallback.yaml",
+        "--output-dir", str(out), "--emit-priority-classes",
+    ]))
+    capsys.readouterr()
+    other = sorted(p.name for p in out.glob("*.yaml"))
+    assert any("wildfire" in n for n in other), other
+    assert "workload-priority-classes.yaml" in other
+
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", str(_shrink_plan(tmp_path, ["a"])),
+        "--output-dir", str(out), "--prune",
+    ]))
+    result = json.loads(capsys.readouterr().out)
+    assert "pruned" not in result, result
+    remaining = sorted(p.name for p in out.glob("*.yaml"))
+    for name in other:
+        assert name in remaining, f"{name} was pruned by another mission's render"

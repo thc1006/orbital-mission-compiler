@@ -73,10 +73,12 @@ class PolicyUndecidable(Exception):
 def _server_policy_violations(plan: Any) -> list[dict[str, Any]]:
     """Evaluate a plan with the server's configured engine.
 
-    Every policy-facing tool goes through here. Reading the verdict from a
-    different engine per tool would let validate_plan report allowed while
-    compile_plan denies the same plan, which is two authorities in a system
-    whose whole claim is one fail-closed gate.
+    Every tool that *gates* on policy goes through here -- validate_plan,
+    compile_plan and render_argo. Reading the verdict from a different engine per
+    tool would let validate_plan report allowed while compile_plan denies the
+    same plan, which is two authorities in a system whose whole claim is one
+    fail-closed gate. explain_policy is deliberately not one of them: it reports
+    what the Rego bundle says and therefore always runs OPA.
     """
     if MCP_POLICY_ENGINE not in ("opa", "baseline"):
         raise PolicyUndecidable(
@@ -234,9 +236,29 @@ def build_server() -> Any:
     def explain_policy(
         path: str, bundle: str = DEFAULT_POLICY_BUNDLE, decision: str = DEFAULT_POLICY_DECISION
     ) -> dict[str, Any]:
+        """Run the Rego bundle and return what it said, verbatim and typed.
+
+        This tool always executes OPA, whatever ORBITAL_MCP_POLICY_ENGINE is set
+        to, because what it exists to hand back is the authoritative bundle's own
+        output -- the in-process mirror has none. So on a server configured for
+        the baseline engine this is the one tool that needs opa installed, and it
+        says so rather than failing opaquely. The gate the other tools enforce is
+        the configured engine; this is a window onto the Rego, not a second gate.
+        """
+        from ..policy import opa_available
+
         safe_path = _validate_plan_path(path)
         safe_bundle = _validate_bundle_path(bundle)
         plan = load_mission_plan(safe_path)
+        if not opa_available():
+            return _undecidable(
+                PolicyUndecidable(
+                    "explain_policy runs the Rego bundle directly and the opa CLI is not "
+                    "installed; the other tools are unaffected and use "
+                    f"ORBITAL_MCP_POLICY_ENGINE={MCP_POLICY_ENGINE!r}"
+                ),
+                tool="explain_policy",
+            )
         rc, out = eval_policy(str(safe_bundle), plan.model_dump(mode="json"), decision)
         result: dict[str, Any] = {"exit_code": rc, "raw": out}
         # Surface the typed violations so an agent can reason over the rule id,

@@ -19,6 +19,7 @@ from .compiler import (
     render_kueue_job,
     render_resource_claim_templates,
     DRA_ROUTE_LABEL,
+    kueue_step_projection,
     preflight_unique,
     stale_rendered_artifacts,
     render_workload_priority_classes,
@@ -229,14 +230,13 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
             priority_class=args.priority_class,
             priority_class_prefix=args.priority_class_prefix,
         )
-        dropped = [s.name for s in intent.steps if s.name != job["metadata"]["annotations"]["orbital/executed-step"]]
-        if dropped:
-            dropped_total += len(dropped)
-            projections.append({
-                "service_id": intent.service_id,
-                "executed_step": job["metadata"]["annotations"]["orbital/executed-step"],
-                "steps_not_in_job": dropped,
-            })
+        # From the renderer, which selected the step, rather than recomputed by
+        # name here: two steps may share a name, and this would then report
+        # nothing dropped while one of them is silently absent from the Job.
+        projection = kueue_step_projection(intent)
+        if projection is not None:
+            dropped_total += len(projection["steps_not_in_job"])
+            projections.append(projection)
         safe_name = sanitize_k8s_name(intent.workflow_name)
         # Kueue admission rejects a firstAvailable claim, so the Job is admitted on
         # the exactly claim and never references the firstAvailable one. Keeping
@@ -271,9 +271,11 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         # reading as "the service was rendered whole".
         result["step_projection"] = projections
         print(
-            f"warning: the Kueue Job is an admission artifact and runs one container, so "
-            f"{dropped_total} step(s) across {len(projections)} service(s) are not in it; the Argo "
-            f"Workflow render executes the full sequence. See 'step_projection'.",
+            f"warning: the Kueue Job is a standalone workload that runs one container, so "
+            f"{dropped_total} step(s) across {len(projections)} service(s) are not in it. It "
+            f"demonstrates Kueue admission for the primary step; it does not admit or gate the "
+            f"Argo Workflow, which is what runs the full sequence -- applying both artifacts "
+            f"runs that step twice. See 'step_projection'.",
             file=sys.stderr,
         )
     _report_stale(result, args.output_dir, written, args.prune)

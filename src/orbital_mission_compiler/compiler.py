@@ -41,7 +41,7 @@ def sanitize_k8s_name(name: str, max_len: int = 63) -> str:
 # are not -- see _RFC1123_SUBDOMAIN_RE below. Names the compiler derives from a
 # plan are sanitized; these arrive from the operator and are copied into the
 # manifest verbatim, so they are checked instead.
-_RFC1123_LABEL_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+_RFC1123_LABEL_RE = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?\Z")
 
 # resource.Quantity, transcribed from the grammar in the Kubernetes API
 # reference rather than approximated:
@@ -58,8 +58,14 @@ _RFC1123_LABEL_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 # "1.2.3" and "1K", none of which resource.ParseQuantity accepts. Note the
 # asymmetry in the SI suffixes -- decimal kilo is a lowercase "k", while the
 # binary prefixes capitalise.
+#
+# [0-9] rather than \d: Python's \d is the whole Unicode Nd category, so the
+# shorthand accepts Arabic-Indic and fullwidth digits that ParseQuantity rejects.
+# The exponent is bounded because it is otherwise unbounded in the grammar, and
+# ParseQuantity takes minutes and hundreds of MB on something like 1e2147483648 --
+# which the API server would then run on admission.
 _QUANTITY_RE = re.compile(
-    r"^[+-]?(\d+(\.\d*)?|\.\d+)((Ki|Mi|Gi|Ti|Pi|Ei)|[munkMGTPE]|([eE][+-]?\d+))?$"
+    r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)((Ki|Mi|Gi|Ti|Pi|Ei)|[munkMGTPE]|([eE][+-]?[0-9]{1,4}))?\Z"
 )
 
 
@@ -68,17 +74,22 @@ _QUANTITY_RE = re.compile(
 # of these, so `workflow.runner` is a legal account name. Verified against a live
 # API server: `kubectl create serviceaccount workflow.runner --dry-run=server`
 # is accepted, while a Namespace with a dot is rejected.
-_RFC1123_SUBDOMAIN_RE = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
+_RFC1123_SUBDOMAIN_RE = re.compile(r"[a-z0-9]([-a-z0-9.]*[a-z0-9])?\Z")
 
 
 def _require_k8s_subdomain(value: str, field: str, max_len: int = 253) -> str:
-    """Reject a name the API server would reject, for objects named as subdomains."""
-    if (
-        not isinstance(value, str)
-        or not _RFC1123_SUBDOMAIN_RE.match(value)
-        or len(value) > max_len
-        or ".." in value
-    ):
+    """Reject a name the API server would reject, for objects named as subdomains.
+
+    A subdomain is dot-separated DNS labels, each valid on its own -- checking
+    only the first and last character of the whole string accepts ``a.-b`` and
+    ``a-.b``, which the API server does not.
+    """
+    ok = (
+        isinstance(value, str)
+        and 0 < len(value) <= max_len
+        and all(_RFC1123_LABEL_RE.fullmatch(part) for part in value.split("."))
+    )
+    if not ok:
         raise ValueError(
             f"{field} must be an RFC 1123 DNS subdomain (lowercase alphanumeric, '-' or '.', "
             f"starting and ending alphanumeric, at most {max_len} characters), got {value!r}"
@@ -92,7 +103,7 @@ def _require_k8s_label(value: str, field: str) -> str:
     Rendering it anyway moves the failure to `kubectl apply`, which is after the
     point this compiler exists to check.
     """
-    if not isinstance(value, str) or not _RFC1123_LABEL_RE.match(value) or len(value) > 63:
+    if not isinstance(value, str) or not _RFC1123_LABEL_RE.fullmatch(value) or len(value) > 63:
         raise ValueError(
             f"{field} must be an RFC 1123 DNS label (lowercase alphanumeric or '-', "
             f"starting and ending alphanumeric, at most 63 characters), got {value!r}"
@@ -111,10 +122,17 @@ def _require_quantity(value: str, field: str) -> str:
     request anyone means to write.
     """
     text = value.strip() if isinstance(value, str) else value
-    if not isinstance(text, str) or not text or not _QUANTITY_RE.match(text):
+    if not isinstance(text, str) or not text or not _QUANTITY_RE.fullmatch(text):
         raise ValueError(
             f"{field} must be a Kubernetes quantity (e.g. '1', '500m', '256Mi'), got {value!r}"
         )
+    # Parsing is not the whole contract: `-1` and `-500m` are well-formed
+    # quantities that the API server rejects for a resource request
+    # ("must be greater than or equal to 0", checked against a live server).
+    # Sub-milli CPU is deliberately not rejected -- 0.5m and 100n are accepted
+    # there, so refusing them would be stricter than Kubernetes.
+    if text.startswith("-"):
+        raise ValueError(f"{field} must not be negative, got {value!r}")
     return text
 
 
@@ -172,10 +190,21 @@ class _StrictLoader(yaml.SafeLoader):
     """
 
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        # Flatten first. A merge key (`<<: *anchor`) is a key like any other to
+        # the scan below, and constructing it hits a tag SafeConstructor has no
+        # constructor for -- so plans that shared step definitions through an
+        # anchor, which loaded fine before, failed with an error naming a YAML
+        # tag rather than anything the author wrote.
+        self.flatten_mapping(node)
         seen: set[Any] = set()
         for key_node, _ in node.value:
             key = self.construct_object(key_node, deep=deep)
-            if key in seen:
+            try:
+                duplicate = key in seen
+            except TypeError:
+                # Let SafeConstructor report it, with the position it knows.
+                return super().construct_mapping(node, deep=deep)
+            if duplicate:
                 raise yaml.constructor.ConstructorError(
                     "while constructing a mapping", node.start_mark,
                     f"found duplicate key {key!r}", key_node.start_mark,
@@ -461,6 +490,7 @@ def render_argo_workflow(
                 "mission-id": sanitize_k8s_name(intent.mission_id),
                 "service-id": sanitize_k8s_name(intent.service_id),
                 "priority": str(intent.priority),
+                MANAGED_BY_LABEL: MANAGED_BY_VALUE,
             },
             "annotations": wf_annotations,
         },
@@ -551,7 +581,7 @@ def _first_available_rct(intent: WorkflowIntent, namespace: str) -> dict[str, An
             # Which route may reference this template. A Kueue Job never does, so
             # an operator reading the applied object -- not just the file it came
             # from -- can tell that this claim is not what the Job was admitted on.
-            "labels": {DRA_ROUTE_LABEL: "scheduler"},
+            "labels": {DRA_ROUTE_LABEL: "scheduler", MANAGED_BY_LABEL: MANAGED_BY_VALUE},
         },
         "spec": {
             "spec": {
@@ -636,7 +666,10 @@ def render_resource_claim_templates(
             "metadata": {
                 "name": _rct_name_for_intent(intent, "gpu"),
                 "namespace": namespace,
-                "labels": {DRA_ROUTE_LABEL: "kueue"},
+                "labels": {
+                    DRA_ROUTE_LABEL: "kueue",
+                    MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+                },
             },
             "spec": {
                 "spec": {
@@ -664,7 +697,7 @@ PRIORITY_CLASS_MAPPING_VERSION = "v1"
 
 # An RFC 1123 label, which is what both a WorkloadPriorityClass name and the
 # kueue.x-k8s.io/priority-class label value must be.
-_K8S_LABEL_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+_K8S_LABEL_RE = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?\Z")
 
 
 def _priority_class_name(orchide_priority: int, prefix: str = ORCHIDE_PRIORITY_CLASS_PREFIX) -> str:
@@ -675,7 +708,7 @@ def _priority_class_name(orchide_priority: int, prefix: str = ORCHIDE_PRIORITY_C
     value on the Job, so it must satisfy the 63-character label bound too.
     """
     name = f"{prefix}{orchide_priority}"
-    if len(name) > 63 or not _K8S_LABEL_RE.match(name):
+    if len(name) > 63 or not _K8S_LABEL_RE.fullmatch(name):
         raise ValueError(
             f"priority-class prefix {prefix!r} yields invalid name {name!r}: must be an "
             "RFC 1123 label (lowercase alphanumeric and '-', starting and ending "
@@ -716,6 +749,35 @@ def render_workload_priority_classes(
     ]
 
 
+def kueue_step_projection(intent: WorkflowIntent) -> dict[str, Any] | None:
+    """Which step a Kueue Job for this intent runs, and which it leaves out.
+
+    Derived here rather than recomputed by the caller: the renderer selects the
+    step by identity, and a caller comparing names finds nothing dropped when two
+    steps share one -- which silences the very warning this exists to raise.
+    """
+    primary = _primary_step(intent)
+    dropped = [step.name for step in intent.steps if step is not primary]
+    if not dropped:
+        return None
+    return {
+        "service_id": intent.service_id,
+        "executed_step": primary.name,
+        "steps_not_in_job": dropped,
+    }
+
+
+def _primary_step(intent: WorkflowIntent) -> WorkflowStep:
+    """The one step a Kueue Job runs: GPU first, then FPGA, then the first step."""
+    gpu = [s for s in intent.steps if s.resource_class == ResourceClass.GPU]
+    fpga = [s for s in intent.steps if s.resource_class == ResourceClass.FPGA]
+    if gpu:
+        return gpu[0]
+    if fpga:
+        return fpga[0]
+    return intent.steps[0]
+
+
 def render_kueue_job(
     intent: WorkflowIntent,
     queue_name: str = "orbital-demo-local",
@@ -738,17 +800,16 @@ def render_kueue_job(
     requires_fpga = intent.resource_hints.get("requires_fpga", False)
 
     # Pick the primary compute step (GPU > FPGA > first step).
-    gpu_steps = [s for s in intent.steps if s.resource_class == ResourceClass.GPU]
-    fpga_steps = [s for s in intent.steps if s.resource_class == ResourceClass.FPGA]
-    if gpu_steps:
-        primary = gpu_steps[0]
-    elif fpga_steps:
-        primary = fpga_steps[0]
-    else:
-        primary = intent.steps[0]
+    primary = _primary_step(intent)
 
-    # A Kueue Job here is an ADMISSION artifact, not the execution artifact: it
-    # carries one container so the workload can be quota-counted and admitted.
+    # This Job is a STANDALONE workload that demonstrates Kueue admission for the
+    # service's primary step. It is not an admission gate for the Argo Workflow:
+    # nothing links the two, the Job's Kueue Workload reserves quota for itself
+    # alone, and applying both artifacts runs the primary step twice. Kueue's own
+    # Argo integration works the other way round -- a queue-name label in
+    # spec.podMetadata or a template's metadata, so Kueue admits each Pod Argo
+    # creates -- and it is per-Pod, not whole-workflow atomic. Wiring that up is
+    # a feature, not a rename, and is deliberately not attempted here.
     # A service with several steps is therefore projected onto its primary step,
     # and the rest do not run in this Job -- the Argo Workflow is what executes
     # the full sequence. Silently dropping them would make the Job look like the
@@ -756,6 +817,8 @@ def render_kueue_job(
     # the caller. Preserving multi-step semantics under Kueue needs a different
     # owner (a Kueue-managed Workflow, JobSet, or one Job per step) and is a
     # contract decision, not something to infer here.
+    # By identity, not by name: two steps may share a name, and comparing names
+    # would report nothing dropped while one of them is silently absent.
     dropped = [step.name for step in intent.steps if step is not primary]
 
     container: dict[str, Any] = {
@@ -829,7 +892,7 @@ def render_kueue_job(
         # Named explicitly so an operator reading the applied Job can see that it
         # does not run the whole service, without having to diff it against the plan.
         "orbital/steps-not-in-this-job": ",".join(dropped),
-        "orbital/kueue-artifact-role": "admission-proxy",
+        "orbital/kueue-artifact-role": "standalone-primary-step",
         "orbital/requires-gpu": str(requires_gpu).lower(),
         "orbital/requires-fpga": str(requires_fpga).lower(),
         "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),
@@ -843,6 +906,7 @@ def render_kueue_job(
             "namespace": namespace,
             "labels": {
                 "kueue.x-k8s.io/queue-name": queue_name,
+        MANAGED_BY_LABEL: MANAGED_BY_VALUE,
                 "mission-id": sanitize_k8s_name(intent.mission_id),
                 "service-id": sanitize_k8s_name(intent.service_id),
                 "priority": str(intent.priority),
@@ -1139,9 +1203,7 @@ def render_workflows_for_file(
         if rct is not None:
             objects.append(rct)
         objects.append(
-            render_argo_workflow(
-                intent, dra_fallback=dra_fallback, namespace=namespace if rct is not None else None
-            )
+            render_argo_workflow(intent, dra_fallback=dra_fallback, namespace=namespace)
         )
     return objects
 
@@ -1159,31 +1221,54 @@ def _load_or_accept_plan(source: str | Path | MissionPlan) -> MissionPlan:
     return load_mission_plan(source)
 
 
-# Every object this compiler renders carries at least one label or annotation in
-# this namespace, which is how a leftover artifact is told from a file that
-# happened to be in the output directory.
-_OWNED_KEY_PREFIX = "orbital/"
+# How a leftover artifact is told from a file that happened to be in the output
+# directory. Not the `orbital/` prefix: that is an ordinary label namespace an
+# operator may already be using, and keying deletion on it means --prune removes
+# their files. This label is stamped by the renderers below and by nothing else.
+MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
+MANAGED_BY_VALUE = "orbital-mission-compiler"
 
 
 def _is_rendered_artifact(path: Path) -> bool:
-    """Whether this file looks like output a previous render of this tool wrote."""
+    """Whether every document in this file is output this tool wrote.
+
+    Every document, not any: a file holding one of our manifests and one of the
+    operator's would otherwise be deleted whole by --prune.
+
+    Anything unreadable is not ours. The read is deliberately broad about what it
+    catches -- a file that is not valid UTF-8, or nests deeply enough to exhaust
+    the parser, is still just a file in a directory, and letting that abort a
+    render that has already written its output would strand the caller with
+    artifacts on disk and no result.
+    """
     try:
-        docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
-    except (OSError, yaml.YAMLError):
+        docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8"))]
+    except Exception:  # noqa: BLE001 - see the docstring: unreadable means not ours
+        return False
+    if not docs:
         return False
     for doc in docs:
         if not isinstance(doc, dict):
-            continue
+            return False
         meta = doc.get("metadata")
-        if not isinstance(meta, dict):
-            continue
-        for section in ("labels", "annotations"):
-            values = meta.get(section)
-            if isinstance(values, dict) and any(
-                isinstance(k, str) and k.startswith(_OWNED_KEY_PREFIX) for k in values
-            ):
-                return True
-    return False
+        labels = meta.get("labels") if isinstance(meta, dict) else None
+        if not isinstance(labels, dict) or labels.get(MANAGED_BY_LABEL) != MANAGED_BY_VALUE:
+            return False
+    return True
+
+
+def _artifact_mission(path: Path) -> str | None:
+    """The mission every document in this file belongs to, if they agree."""
+    try:
+        docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8"))]
+    except Exception:  # noqa: BLE001 - unreadable is not ours; see _is_rendered_artifact
+        return None
+    missions = {
+        (d.get("metadata") or {}).get("labels", {}).get("mission-id")
+        for d in docs
+        if isinstance(d, dict)
+    }
+    return missions.pop() if len(missions) == 1 else None
 
 
 def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> list[Path]:
@@ -1203,9 +1288,19 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
     if not out.is_dir():
         return []
     current = {p.resolve() for p in written}
+    # Scoped to the missions this render just wrote. Ownership alone is not
+    # enough to delete by: another mission's manifests in the same directory
+    # carry the same managed-by label and are equally ours, but they are not
+    # this render's to remove. Objects without a mission -- the cluster-scoped
+    # WorkloadPriorityClasses the other renderer emits -- are never in scope.
+    missions = {m for m in (_artifact_mission(p) for p in written) if m}
+    if not missions:
+        return []
     return sorted(
         p for p in out.glob("*.yaml")
-        if p.resolve() not in current and _is_rendered_artifact(p)
+        if p.resolve() not in current
+        and _is_rendered_artifact(p)
+        and _artifact_mission(p) in missions
     )
 
 
@@ -1271,7 +1366,7 @@ def write_individual_workflows(
         workflow = render_argo_workflow(
             intent,
             dra_fallback=dra_fallback,
-            namespace=namespace if rct is not None else None,
+            namespace=namespace,
             service_account=service_account,
         )
         out = out_dir / f"{workflow['metadata']['name']}.yaml"
