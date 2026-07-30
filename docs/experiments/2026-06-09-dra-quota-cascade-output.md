@@ -5,7 +5,7 @@ Kueue v0.17.3, NVIDIA GeForce GT 1030, NVIDIA DRA driver v25.x).
 
 Reproducibility set: `manifests/k8s/kueue/dra-paper-test/*.yaml` +
 `scripts/install_kueue.sh` (Kueue v0.17.3) + the controller patch
-`--feature-gates=DRAExtendedResources=true,DynamicResourceAllocation=true`.
+`--feature-gates=DRAExtendedResources=true,DynamicResourceAllocation=true`. (Those are the v0.17.x names, kept as the record of this run: Kueue renamed them in v0.18 to `KueueDRAIntegration` and `KueueDRAIntegrationExtendedResource`, and v0.19 enables the integration without a gate argument.)
 
 ## ClusterQueue activation
 

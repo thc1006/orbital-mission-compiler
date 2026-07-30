@@ -238,8 +238,27 @@ fi
 
 JOB_FILE=$(find "${KUEUE_OUT}" -name '*-kueue.yaml' -print -quit 2>/dev/null)
 if [ -n "${JOB_FILE}" ] && command -v kubectl >/dev/null 2>&1; then
+  # The bundle mixes a fixed-name ResourceClaimTemplate with a generateName Job,
+  # so `kubectl create` over the whole file is not repeatable: the second run
+  # fails on the template that the first run left behind. Apply the named
+  # documents, which is idempotent, and create only the Job.
+  RCT_FILE="${KUEUE_OUT}/claims.yaml"
+  JOB_ONLY_FILE="${KUEUE_OUT}/job.yaml"
+  ${PYTHON_BIN} - "${JOB_FILE}" "${RCT_FILE}" "${JOB_ONLY_FILE}" <<'PYSPLIT'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1], encoding="utf-8")) if d]
+named = [d for d in docs if d.get("kind") != "Job"]
+jobs = [d for d in docs if d.get("kind") == "Job"]
+open(sys.argv[2], "w", encoding="utf-8").write(yaml.safe_dump_all(named, sort_keys=False) if named else "")
+open(sys.argv[3], "w", encoding="utf-8").write(yaml.safe_dump_all(jobs, sort_keys=False))
+PYSPLIT
+  if [ -s "${RCT_FILE}" ]; then
+    kubectl apply -f "${RCT_FILE}" -n "${NAMESPACE}" >/dev/null 2>&1 \
+      && report PASS "Kueue claim template(s) applied" \
+      || report FAIL "Kueue claim template(s) failed to apply"
+  fi
   echo "Submitting Kueue Job to cluster ..."
-  if JOB_NAME=$(kubectl create -f "${JOB_FILE}" -o jsonpath='{.metadata.name}' 2>/dev/null); then
+  if JOB_NAME=$(kubectl create -f "${JOB_ONLY_FILE}" -o jsonpath='{.metadata.name}' 2>/dev/null); then
     report PASS "Kueue Job submitted: ${JOB_NAME}"
 
     echo "Checking Kueue admission (up to ${KUEUE_ADMISSION_TIMEOUT_SECONDS}s) ..."
@@ -311,8 +330,12 @@ if [ -n "${JOB_FILE}" ] && command -v kubectl >/dev/null 2>&1; then
       fi
     fi
 
-    # Cleanup
+    # Cleanup. The claim templates go too: leaving them behind is what made a
+    # second run of this script fail on a GPU plan.
     kubectl delete "job/${JOB_NAME}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+    if [ -s "${RCT_FILE}" ]; then
+      kubectl delete -f "${RCT_FILE}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+    fi
   else
     report FAIL "Kueue Job submission failed"
   fi

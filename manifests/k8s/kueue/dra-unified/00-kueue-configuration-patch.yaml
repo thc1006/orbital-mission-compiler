@@ -23,7 +23,15 @@
 #   1. THIS FILE — then restart the controller:
 #        kubectl rollout restart deployment/kueue-controller-manager -n kueue-system
 #      and ensure the deployment args carry BOTH feature gates:
-#        --feature-gates=DRAExtendedResources=true,DynamicResourceAllocation=true
+# NOTE (verified 2026-07-31 against the live cluster): these gate names are the
+# pre-v0.18 ones. Kueue renamed them in v0.18 to avoid colliding with the
+# upstream Kubernetes gates:
+#     DynamicResourceAllocation -> KueueDRAIntegration
+#     DRAExtendedResources      -> KueueDRAIntegrationExtendedResource
+# On Kueue v0.19 no gate argument is needed at all: the controller here runs with
+# only --config and --zap-log-level, and both dra.gpu.nvidia.com and dra.cpu
+# appear in ClusterQueue status with usage tracked.
+#        --feature-gates=KueueDRAIntegration=true,KueueDRAIntegrationExtendedResource=true
 #      (set via deployment patch; NOT in this ConfigMap, or Kueue refuses to start
 #       with "feature gates for CLI and configuration cannot both specified").
 #   2. 01-namespace-and-queue.yaml

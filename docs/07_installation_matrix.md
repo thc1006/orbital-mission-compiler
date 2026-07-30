@@ -7,6 +7,7 @@
 | K3s | `k3s` | https://docs.k3s.io/quick-start ; https://github.com/k3s-io/k3s/releases | pin: **v1.34.5+k3s1** | `curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.34.5+k3s1 sh -` | Linux only; root required | Verify cgroup/kernel setup on Ubuntu 22/24 before production use |
 | Argo Workflows | `argo-workflows` | https://argo-workflows.readthedocs.io/en/latest/installation/ ; https://github.com/argoproj/argo-workflows/releases | **v4.0.1** | `kubectl apply -n argo -f https://github.com/argoproj/argo-workflows/releases/download/v4.0.1/install.yaml` | Kubernetes required | Check Kubernetes compatibility against chosen K3s minor before production use |
 | Argo CLI | `argo` | https://argo-workflows.readthedocs.io/en/latest/cli/argo_lint/ ; https://github.com/argoproj/argo-workflows/releases | **v4.0.1** | download `argo-linux-amd64.gz` from release assets (verify against `argo-workflows-cli-checksums.txt`) and move to PATH | Linux/macOS | optional locally, not required by the compiler core; CI installs this pin, checksum-verified, and the Argo smoke runs `argo lint --offline` with `REQUIRE_ARGO_LINT=1` so a missing CLI fails the build instead of skipping the lint |
+| dra-driver-cpu | `dra-driver-cpu` | https://github.com/kubernetes-sigs/dra-driver-cpu | **v0.2.0** (alpha) | `bash manifests/k8s/kueue/dra-unified/install-dra-driver-cpu.sh` (applies the kubelet-root-dir workaround) | containerd with NRI enabled; kubelet CPUManager policy **none** | Required only by `--dra-fallback`, whose CPU leg claims the `dra.cpu` device class. Without this driver a cluster has no such class and the claim never allocates. The driver replaces kubelet CPUManager and is mutually exclusive with the `static` policy. |
 | Kueue | `kueue` | https://kueue.sigs.k8s.io/docs/installation/ ; https://github.com/kubernetes-sigs/kueue/releases | **v0.17.0** | `kubectl apply --server-side -f https://github.com/kubernetes-sigs/kueue/releases/download/v0.17.0/manifests.yaml` | Kubernetes required | Kueue queueing is provided as demo manifests; Argo↔Kueue integration remains project glue |
 | OPA | `opa` / `openpolicyagent/opa` | https://openpolicyagent.org/docs ; https://github.com/open-policy-agent/opa/releases | **1.15.1** | binary or container; CLI example uses `opa eval --stdin-input --data ...` | none for local CI; cluster optional | CI verifies downloaded binary integrity via official `.sha256` sidecar file |
 | PyYAML | `PyYAML` | https://pypi.org/project/PyYAML/6.0.2/ | **6.0.2** | `pip install PyYAML==6.0.2` | Python >=3.8 typical | none known here |
@@ -19,6 +20,19 @@
 | mypy | `mypy` | https://mypy.readthedocs.io/ ; https://github.com/python/mypy/releases | **1.16.0** | `pip install mypy==1.16.0` | Python toolchain | static type checker; dev dependency only |
 | types-PyYAML | `types-PyYAML` | https://pypi.org/project/types-PyYAML/ | **6.0.12.20250915** | `pip install types-PyYAML==6.0.12.20250915` | Python toolchain | type stubs for PyYAML; dev dependency only |
 | OTel Collector (optional) | `opentelemetry-collector` | https://opentelemetry.io/docs/collector/install/kubernetes/ ; https://github.com/open-telemetry/opentelemetry-collector/releases | **v0.149.0** | `kubectl apply -f https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector/v0.149.0/examples/k8s/otel-config.yaml` | Kubernetes required | optional, not validated end-to-end here |
+
+
+### `--dra-fallback` is not a portable CPU fallback
+
+The opt-in `--dra-fallback` render claims two device classes: `gpu.nvidia.com`
+and `dra.cpu`. The CPU leg is not a plain CPU request, it is a DRA device class
+published by **dra-driver-cpu**, so on a cluster without that driver the
+scheduler has nothing to satisfy the CPU alternative with and the claim stays
+pending. Its prerequisites are containerd with NRI, a kubelet CPUManager policy
+of `none` (the driver replaces CPUManager and cannot coexist with `static`), and
+the driver's own CPU accounting contract. The default render, without the flag,
+keeps the portable runtime env-var path and needs none of this.
+
 
 ## Dependencies discussed but not included in default scaffold
 | Dependency | Reason not in default scaffold |
