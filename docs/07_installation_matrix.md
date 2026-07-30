@@ -29,6 +29,59 @@
 | KServe | strong inference serving option, but this repo is not an inference-serving platform |
 | Temporal / Flyte / Dagster | heavier or less transcript-aligned than the selected K3s + Argo path |
 
+## Upstream currency and forward compatibility (checked 2026-07-30)
+
+The "Version used in scaffold" column above is the **validated** record — the
+versions this repo was actually exercised against (host kubeadm cluster K8s
+**v1.36.1**; Kueue **v0.18.3**; Argo Workflows **v4.0.1**). It is intentionally
+*not* bumped to the newest upstream tag, because doing so would claim a
+validation that has not been run. This section instead tracks the **current
+upstream** and the repo's **forward compatibility**, so the two concerns stay
+separate and honest.
+
+| Concern | Validated against (scaffold) | Current upstream (2026-07-30) | Notes |
+|---|---|---|---|
+| Kubernetes | host kubeadm **v1.36.1** / K3s pin v1.34.5+k3s1 | latest stable **v1.36.3** (2026-07-23); supported minors **1.34–1.36**; **no v1.37 GA yet** (GA ~2026-08-26) — a `v1.37.0-beta.0` **pre-release** exists and is installable for early testing only (not for production, feature/API surface may still change) | sources: https://kubernetes.io/releases/ ; https://github.com/kubernetes/kubernetes/releases/tag/v1.37.0-beta.0 |
+| Kueue | live cluster **v0.18.3** / scaffold pin v0.17.0 | **v0.19.0** (latest tag) | source: https://github.com/kubernetes-sigs/kueue/releases ; API `kueue.x-k8s.io/v1beta2` is served+storage across v0.17–v0.19 |
+| Argo Workflows | **v4.0.1** | v4.0.1 | CRD group `argoproj.io/v1alpha1` unchanged |
+
+### Emitted API versions (still current on the latest stable stack)
+
+The compiler's rendered manifests use only GA / current API versions, so the
+output is forward-compatible with the supported Kubernetes minors above without
+a code change:
+
+| Manifest | Emitted `apiVersion` | Stability |
+|---|---|---|
+| Argo Workflow | `argoproj.io/v1alpha1` | current Argo Workflows CRD version (v4.x) |
+| DRA ResourceClaimTemplate / ResourceClaim | `resource.k8s.io/v1` | **GA** since Kubernetes v1.34; current through v1.36 |
+| Kueue WorkloadPriorityClass | `kueue.x-k8s.io/v1beta2` | served + storage in Kueue v0.17–v0.19 |
+| Kueue-managed Job | `batch/v1` | stable |
+
+### Kubernetes v1.37 DRA landscape (forward-compat, not an install target)
+
+v1.37 has no GA yet (only the `v1.37.0-beta.0` pre-release above), so it is
+documented here only as a forward-looking compatibility target, verified from
+the release's enhancement tracking
+(https://github.com/kubernetes/sig-release/tree/master/releases/release-1.37 and
+the linked KEPs in kubernetes/enhancements, checked 2026-07-30):
+
+| KEP | Feature | v1.37 stage | Relevance to this repo |
+|---|---|---|---|
+| 5004 | DRA extended resources | **Stable (GA)** | no change; the compiler does not depend on it |
+| 5729 | DRA consumable-capacity / workload claims | **Beta** | no change; not used by the emitted claims |
+| 4816 | DRA prioritized list (`firstAvailable`) | **Stable** (as of v1.36) | already used by the opt-in `--dra-fallback` renderer |
+| 6080 | DRA derived attributes | **Alpha** (feasibility) | future work; would enrich device selection, no manifest change today |
+| 5963 | DRA device compatibility groups | **Alpha** (feasibility) | future work; an additional scheduling predicate, independent of quota math |
+| 5517 | DRA node-allocatable | **Alpha** | intentionally **not** adopted — DRA CPU adds to PodSpec but does not drive QoS/cgroup, so the baseline CPU path is kept |
+
+**Kueue DRA quota caveat (unchanged at v0.19.0):** Kueue's DRA quota counting
+still supports only `exactly` device requests; `firstAvailable` and `all` remain
+unsupported. This is why `--dra-fallback` (a `firstAvailable` claim) is a
+**scheduler-level** fallback that is *not* Kueue-quota-counted, while the unified
+quota path uses `exactly` claims of each device class. See
+`manifests/k8s/kueue/dra-unified/README.md`.
+
 ## GPU note
 This scaffold does **not** force-install CUDA or PyTorch. GPU support is modeled as a **resource class**, optional scheduling preference, and optional execution path, because:
 - the transcript mentions heterogeneous accelerators configurable per application,
