@@ -214,7 +214,24 @@ def _preferred_affinity(step: WorkflowStep) -> dict[str, Any] | None:
     }
 
 
-def render_argo_workflow(intent: WorkflowIntent) -> dict[str, Any]:
+def render_argo_workflow(
+    intent: WorkflowIntent,
+    *,
+    dra_fallback: bool = False,
+) -> dict[str, Any]:
+    """Render an Argo Workflow for the intent's steps.
+
+    Default: the accelerator-with-fallback preference is realized only as the
+    runtime env-var switch (``ORBITAL_FALLBACK_RESOURCE_CLASS``).
+
+    Opt-in ``dra_fallback``: the driver-backed accelerator-fallback step's Pod is
+    wired to a DRA ``firstAvailable`` ResourceClaimTemplate via ``podSpecPatch`` (see
+    ``_argo_dra_pod_spec_patch``), so GPU->CPU fallback becomes a scheduler-level
+    decision on the Argo/plain-Pod route -- the end-to-end scheduler fallback rather
+    than an orphan claim template. Pair with ``_first_available_rct`` (emitted
+    alongside by ``write_individual_workflows``) so the reference resolves.
+    """
+    fallback_step = _dra_fallback_step(intent) if dra_fallback else None
     templates = []
     dag_tasks = []
     for idx, step in enumerate(intent.steps):
@@ -255,6 +272,17 @@ def render_argo_workflow(intent: WorkflowIntent) -> dict[str, Any]:
         affinity = _preferred_affinity(step)
         if affinity:
             template["affinity"] = affinity
+        # DRA scheduler-level fallback: bind THIS step's Pod to the firstAvailable
+        # ResourceClaimTemplate (emitted alongside), so GPU->CPU fallback is a
+        # scheduler decision rather than the runtime env-var switch. Two halves:
+        # the container binding is a native CRD field (structural), the pod-level
+        # resourceClaims entry has no Template field so it goes via podSpecPatch.
+        if fallback_step is not None and step is fallback_step:
+            claim = "compute"
+            template["container"].setdefault("resources", {})["claims"] = [{"name": claim}]
+            template["podSpecPatch"] = _argo_dra_pod_spec_patch(
+                _rct_name_for_intent(intent, "accel"), claim
+            )
         templates.append(template)
 
         dag_task: dict[str, Any] = {"name": template_name, "template": template_name}
@@ -325,6 +353,61 @@ def _dra_fallback_step(intent: WorkflowIntent) -> WorkflowStep | None:
     return None
 
 
+def _first_available_rct(intent: WorkflowIntent, namespace: str) -> dict[str, Any] | None:
+    """The scheduler-route ``firstAvailable`` ResourceClaimTemplate for the intent's
+    driver-backed accelerator-with-fallback step, or ``None`` if no step qualifies.
+
+    "prefer <primary>, else <fallback>" as a single scheduler-level decision. This
+    is the artifact the Argo/plain-Pod (non-Kueue) route consumes; Kueue admission
+    rejects ``firstAvailable`` and uses the ``exactly`` claim instead.
+    """
+    step = _dra_fallback_step(intent)
+    if step is None:
+        return None
+    primary = step.resource_class
+    fallback = cast(ResourceClass, step.fallback_resource_class)
+    return {
+        "apiVersion": "resource.k8s.io/v1",
+        "kind": "ResourceClaimTemplate",
+        "metadata": {
+            "name": _rct_name_for_intent(intent, "accel"),
+            "namespace": namespace,
+        },
+        "spec": {
+            "spec": {
+                "devices": {
+                    "requests": [
+                        {
+                            "name": "compute",
+                            "firstAvailable": [
+                                {"name": primary.value, "deviceClassName": DRA_DEVICE_CLASS[primary]},
+                                {"name": fallback.value, "deviceClassName": DRA_DEVICE_CLASS[fallback]},
+                            ],
+                        }
+                    ],
+                },
+            },
+        },
+    }
+
+
+def _argo_dra_pod_spec_patch(rct_name: str, claim_name: str = "compute") -> str:
+    """An Argo ``podSpecPatch`` that adds ONLY the pod-level ``resourceClaims``
+    entry binding a DRA ResourceClaimTemplate.
+
+    The split is deliberate and matches Argo's schema (>= v4.0, k8s api v0.33+):
+    the container binding (``resources.claims``) is a native CRD field and is set
+    structurally on ``template.container`` by the renderer; but the Template has NO
+    structured pod-level ``resourceClaims`` field, so that half must go through
+    ``podSpecPatch`` (a strategic-merge patch the controller applies to the final
+    PodSpec before creating the Pod). On older Argo whose CRD lacks the DRA fields,
+    both halves are pruned/dropped and the step falls back to the runtime env-var
+    switch -- no invalid Pod is produced.
+    """
+    patch = {"resourceClaims": [{"name": claim_name, "resourceClaimTemplateName": rct_name}]}
+    return yaml.safe_dump(patch, sort_keys=False)
+
+
 def render_resource_claim_templates(
     intent: WorkflowIntent,
     namespace: str = "orbital-demo",
@@ -355,39 +438,9 @@ def render_resource_claim_templates(
     """
     templates: list[dict[str, Any]] = []
     if dra_fallback:
-        step = _dra_fallback_step(intent)
-        if step is not None:
-            primary = step.resource_class
-            fallback = cast(ResourceClass, step.fallback_resource_class)
-            templates.append({
-                "apiVersion": "resource.k8s.io/v1",
-                "kind": "ResourceClaimTemplate",
-                "metadata": {
-                    "name": _rct_name_for_intent(intent, "accel"),
-                    "namespace": namespace,
-                },
-                "spec": {
-                    "spec": {
-                        "devices": {
-                            "requests": [
-                                {
-                                    "name": "compute",
-                                    "firstAvailable": [
-                                        {
-                                            "name": primary.value,
-                                            "deviceClassName": DRA_DEVICE_CLASS[primary],
-                                        },
-                                        {
-                                            "name": fallback.value,
-                                            "deviceClassName": DRA_DEVICE_CLASS[fallback],
-                                        },
-                                    ],
-                                }
-                            ],
-                        },
-                    },
-                },
-            })
+        rct = _first_available_rct(intent, namespace)
+        if rct is not None:
+            templates.append(rct)
             # Fall through: also emit the exactly GPU RCT below (Kueue route).
     requires_gpu = intent.resource_hints.get("requires_gpu", False)
     if requires_gpu:
@@ -417,27 +470,41 @@ def render_resource_claim_templates(
 
 
 ORCHIDE_PRIORITY_CLASS_PREFIX = "orbital-orchide-"
+# Bump when the tier->value mapping below changes, so a cluster can detect a Job
+# labelled against a stale class set.
+PRIORITY_CLASS_MAPPING_VERSION = "v1"
 
 
-def _priority_class_name(orchide_priority: int) -> str:
+def _priority_class_name(orchide_priority: int, prefix: str = ORCHIDE_PRIORITY_CLASS_PREFIX) -> str:
     """Kueue WorkloadPriorityClass name for an ORCHIDE 1-4 tier."""
-    return f"{ORCHIDE_PRIORITY_CLASS_PREFIX}{orchide_priority}"
+    return f"{prefix}{orchide_priority}"
 
 
-def render_workload_priority_classes() -> list[dict[str, Any]]:
+def render_workload_priority_classes(
+    prefix: str = ORCHIDE_PRIORITY_CLASS_PREFIX,
+) -> list[dict[str, Any]]:
     """Kueue WorkloadPriorityClass objects for the four ORCHIDE priority tiers.
 
     A rendered Kueue Job references one of these via the
-    ``kueue.x-k8s.io/priority-class`` label, so a mission plan's priority drives
-    Kueue admission ordering and preemption. Higher ORCHIDE tier maps to a higher
-    Kueue value (ORCHIDE~1 is highest). Apply these once per cluster before
-    submitting Jobs; ``kubectl apply`` is idempotent.
+    ``kueue.x-k8s.io/priority-class`` label, so a mission plan's priority feeds
+    Kueue's queue-sorting and **contributes to preemption eligibility** (whether a
+    preemption actually occurs still depends on the ClusterQueue/cohort preemption
+    configuration). Higher ORCHIDE tier maps to a higher Kueue value (ORCHIDE~1 is
+    highest). These are cluster-scoped: apply them once per cluster before
+    submitting Jobs (``kubectl apply`` is idempotent); a configurable ``prefix``
+    keeps parallel installations from colliding on the fixed names.
     """
     return [
         {
             "apiVersion": "kueue.x-k8s.io/v1beta2",
             "kind": "WorkloadPriorityClass",
-            "metadata": {"name": _priority_class_name(tier)},
+            "metadata": {
+                "name": _priority_class_name(tier, prefix),
+                "labels": {
+                    "app.kubernetes.io/managed-by": "orbital-mission-compiler",
+                    "orbital/priority-mapping-version": PRIORITY_CLASS_MAPPING_VERSION,
+                },
+            },
             "value": (5 - tier) * 100,  # ORCHIDE 1 -> 400 (highest), 4 -> 100
             "description": f"ORCHIDE priority tier {tier} (1=highest)",
         }
@@ -454,6 +521,7 @@ def render_kueue_job(
     dra_enabled: bool = True,
     dra_fallback: bool = False,
     priority_class: bool = False,
+    priority_class_prefix: str = ORCHIDE_PRIORITY_CLASS_PREFIX,
 ) -> dict[str, Any]:
     if not isinstance(cpu_request, str) or not cpu_request.strip():
         raise ValueError("cpu_request must not be empty")
@@ -564,15 +632,30 @@ def render_kueue_job(
             },
         },
     }
-    # Opt-in: a kueue.x-k8s.io/priority-class label that Kueue reads for admission
-    # ordering and preemption. Off by default because the referenced
+    # Opt-in: a kueue.x-k8s.io/priority-class label that Kueue reads for queue
+    # sorting and preemption eligibility. Off by default because the referenced
     # WorkloadPriorityClass must already exist in the cluster (Kueue errors on a
-    # missing class); apply render_workload_priority_classes() before enabling.
+    # missing class); apply render_workload_priority_classes() first (or use the
+    # CLI's --emit-priority-classes). The prefix must match the emitted classes.
     if priority_class:
         job["metadata"]["labels"]["kueue.x-k8s.io/priority-class"] = _priority_class_name(
-            scale_priority_orchide(intent.priority)
+            scale_priority_orchide(intent.priority), priority_class_prefix
         )
     return job
+
+
+DEFAULT_POLICY_BUNDLE = "configs/policies"
+DEFAULT_POLICY_DECISION = "data.orbitalmission"
+
+
+class PolicyEngineUnavailableError(RuntimeError):
+    """The selected policy engine could not render a decision (e.g. ``opa`` not
+    installed, timeout, or an unparseable/undefined result).
+
+    Enforcement fails **closed**: the compiler refuses to emit an artifact rather
+    than silently downgrade to a different engine or skip the check. Distinct from
+    ``PolicyViolationError`` (the plan was evaluated and denied).
+    """
 
 
 class PolicyViolationError(ValueError):
@@ -582,67 +665,170 @@ class PolicyViolationError(ValueError):
     artifact is produced for a plan the policy layer would deny. This realizes the
     paper's admission-gate claim -- "the compiler enforces four independent checks
     on every mission plan before any artifact is admitted to a cluster" (Sec. II).
-    Enforcement uses the in-process, OPA-equivalent baseline (``baseline_validator``),
-    so the gate needs no external ``opa`` CLI, always runs (a missing ``opa`` binary
-    cannot silently disable it), and runs in CI; the auditable OPA path remains
-    available via the ``policy`` CLI subcommand.
 
-    The four stages remain *independent modules* (Sec. VI): the enforcement-free
-    primitives -- ``compile_plan_to_intents``, ``render_argo_workflow``,
-    ``render_kueue_job``, ``baseline_validator.evaluate`` -- are still callable in
-    isolation for ablation, benchmarking, and standalone audit. Only the file-level
-    entrypoints (and the CLI/MCP that drive them) gate by default; each exposes an
-    explicit ``enforce_policy=False`` / ``--unsafe-skip-policy`` opt-out, matching
-    the paper's own caveat that a fully bypassed pipeline carries no guarantee.
+    Enforcement runs through a selectable engine (``evaluate_policy_decision``):
+    the authoritative ``opa`` engine executes the versioned, independently-auditable
+    Rego bundle, and the ``baseline`` engine is the proven-equivalent in-process
+    mirror. The four stages remain *independent modules* (Sec. VI): the
+    enforcement-free primitives (``compile_plan_to_intents``, ``render_argo_workflow``,
+    ``render_kueue_job``, ``baseline_validator``) are still callable in isolation.
+    Only the file-level entrypoints (and the CLI/MCP that drive them) gate by
+    default; each exposes an explicit ``enforce_policy=False`` / ``--unsafe-skip-policy``
+    opt-out, matching the paper's caveat that a fully bypassed pipeline carries no
+    guarantee.
+
+    ``violations`` is the list of TYPED violation objects
+    (``{rule, severity, provenance, path, message}``); ``messages`` is the string
+    projection for backward-compatible consumers.
     """
 
-    def __init__(self, violations: list[str]) -> None:
+    def __init__(self, violations: list[dict[str, Any]]) -> None:
         self.violations = list(violations)
-        joined = "; ".join(self.violations)
+        self.messages = [v["message"] for v in self.violations]
+        joined = "; ".join(self.messages)
         super().__init__(
-            f"policy denied the mission plan ({len(self.violations)} violation(s)): {joined}"
+            f"policy denied the mission plan ({len(self.messages)} violation(s)): {joined}"
         )
 
 
-def enforce_policy_or_raise(plan: MissionPlan) -> None:
-    """Run the policy layer (in-process OPA-equivalent baseline) and fail closed."""
-    from . import baseline_validator
+def evaluate_policy_decision(
+    plan: dict[str, Any],
+    *,
+    engine: str = "baseline",
+    bundle: str = DEFAULT_POLICY_BUNDLE,
+    decision: str = DEFAULT_POLICY_DECISION,
+) -> list[dict[str, Any]]:
+    """Return the typed policy violations for a plan dict via the selected engine.
 
-    violations = baseline_validator.evaluate(plan.model_dump(mode="json"))
+    ``engine="opa"`` executes the versioned, independently-auditable Rego bundle
+    via ``opa`` (honouring ``bundle``/``decision``) -- the authoritative
+    policy-as-code path an external reviewer runs. It fails CLOSED
+    (``PolicyEngineUnavailableError``) when ``opa`` is unavailable or the result is
+    unparseable/undefined; it never silently downgrades to the baseline.
+    ``engine="baseline"`` uses the proven-equivalent in-process mirror (no
+    subprocess), for tests/benchmarks and offline use.
+    """
+    if engine == "baseline":
+        from . import baseline_validator
+
+        return baseline_validator.violations(plan)
+    if engine == "opa":
+        import json as _json
+
+        from .policy import eval_policy, opa_available
+
+        if not opa_available():
+            raise PolicyEngineUnavailableError(
+                "policy engine 'opa' selected but the opa CLI is not installed; "
+                "install opa or pass --policy-engine=baseline"
+            )
+        rc, out = eval_policy(bundle, plan, decision)
+        if rc != 0:
+            raise PolicyEngineUnavailableError(f"opa evaluation failed (rc={rc}): {out}")
+        try:
+            value = _json.loads(out)["result"][0]["expressions"][0]["value"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise PolicyEngineUnavailableError(
+                f"opa returned an unparseable decision: {out[:200]}"
+            ) from exc
+        if isinstance(value, dict) and "violations" in value:
+            return list(value["violations"])
+        # Custom --decision without a typed `violations` set: fall back to the deny
+        # message set (untyped) so enforcement still fails closed on any deny.
+        if isinstance(value, dict) and "deny" in value:
+            return [
+                {"rule": None, "severity": "T1", "provenance": "A", "path": "", "message": m}
+                for m in value.get("deny", [])
+            ]
+        raise PolicyEngineUnavailableError(
+            f"opa decision {decision!r} did not return a violations/deny set"
+        )
+    raise ValueError(f"unknown policy engine: {engine!r} (expected 'opa' or 'baseline')")
+
+
+def enforce_policy_or_raise(
+    plan: MissionPlan,
+    *,
+    engine: str = "baseline",
+    bundle: str = DEFAULT_POLICY_BUNDLE,
+    decision: str = DEFAULT_POLICY_DECISION,
+) -> None:
+    """Run the policy layer via the selected engine and fail closed on any deny."""
+    violations = evaluate_policy_decision(
+        plan.model_dump(mode="json"), engine=engine, bundle=bundle, decision=decision
+    )
     if violations:
         raise PolicyViolationError(violations)
 
 
 def render_workflows_for_file(
-    input_path: str | Path, enforce_policy: bool = True
+    input_path: str | Path,
+    enforce_policy: bool = True,
+    *,
+    policy_engine: str = "baseline",
+    bundle: str = DEFAULT_POLICY_BUNDLE,
+    decision: str = DEFAULT_POLICY_DECISION,
+    dra_fallback: bool = False,
 ) -> list[dict[str, Any]]:
     plan = load_mission_plan(input_path)
     if enforce_policy:
-        enforce_policy_or_raise(plan)
+        enforce_policy_or_raise(plan, engine=policy_engine, bundle=bundle, decision=decision)
     intents = compile_plan_to_intents(plan)
-    return [render_argo_workflow(intent) for intent in intents]
+    return [render_argo_workflow(intent, dra_fallback=dra_fallback) for intent in intents]
 
 
 def write_individual_workflows(
-    input_path: str | Path, output_dir: str | Path, enforce_policy: bool = True
+    input_path: str | Path,
+    output_dir: str | Path,
+    enforce_policy: bool = True,
+    *,
+    policy_engine: str = "baseline",
+    bundle: str = DEFAULT_POLICY_BUNDLE,
+    decision: str = DEFAULT_POLICY_DECISION,
+    dra_fallback: bool = False,
+    namespace: str = "orbital-demo",
 ) -> list[Path]:
-    workflows = render_workflows_for_file(input_path, enforce_policy=enforce_policy)
+    """Write one Argo manifest file per intent.
+
+    With ``dra_fallback``, an intent whose accelerator-fallback step is
+    driver-backed produces a **self-contained multi-doc file**: the scheduler-route
+    ``firstAvailable`` ResourceClaimTemplate followed by the DRA-wired Workflow that
+    references it (via ``podSpecPatch``) -- so the claim template is no longer an
+    orphan artifact and the file is applyable end-to-end.
+    """
+    plan = load_mission_plan(input_path)
+    if enforce_policy:
+        enforce_policy_or_raise(plan, engine=policy_engine, bundle=bundle, decision=decision)
+    intents = compile_plan_to_intents(plan)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
-    for workflow in workflows:
+    for intent in intents:
+        workflow = render_argo_workflow(intent, dra_fallback=dra_fallback)
         out = out_dir / f"{workflow['metadata']['name']}.yaml"
-        out.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+        rct = _first_available_rct(intent, namespace) if dra_fallback else None
+        if rct is not None:
+            out.write_text(
+                yaml.safe_dump_all([rct, workflow], sort_keys=False), encoding="utf-8"
+            )
+        else:
+            out.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
         written.append(out)
     return written
 
 
 def compile_file(
-    input_path: str | Path, output_path: str | Path, enforce_policy: bool = True
+    input_path: str | Path,
+    output_path: str | Path,
+    enforce_policy: bool = True,
+    *,
+    policy_engine: str = "baseline",
+    bundle: str = DEFAULT_POLICY_BUNDLE,
+    decision: str = DEFAULT_POLICY_DECISION,
 ) -> dict[str, Any]:
     plan = load_mission_plan(input_path)
     if enforce_policy:
-        enforce_policy_or_raise(plan)
+        enforce_policy_or_raise(plan, engine=policy_engine, bundle=bundle, decision=decision)
     intents = compile_plan_to_intents(plan)
     payload = {
         "mission_id": plan.mission_id,

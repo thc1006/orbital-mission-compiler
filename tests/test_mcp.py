@@ -76,7 +76,7 @@ def test_validate_plan_reports_policy_denial(server):
     result = _call(server, "validate_plan", {"path": DENIED_PLAN})
     assert result["schema"] == "valid"
     assert result["policy_allowed"] is False
-    assert any("fallback_resource_class" in v for v in result["violations"])
+    assert any("fallback_resource_class" in v["message"] for v in result["violations"])
     assert result["status"] == "policy_denied"
 
 
@@ -85,7 +85,7 @@ def test_compile_plan_denied_blocks_by_default(server):
     and NO compilation -- it cannot skip the gate the way it could skip explain_policy."""
     result = _call(server, "compile_plan", {"path": DENIED_PLAN})
     assert result["status"] == "denied"
-    assert any("fallback_resource_class" in v for v in result["violations"])
+    assert any("fallback_resource_class" in v["message"] for v in result["violations"])
     assert "intent_count" not in result  # nothing was compiled
 
 
@@ -99,7 +99,7 @@ def test_render_argo_denied_blocks_by_default(server):
     """Fail-closed: no Argo artifact is produced for a denied plan by default."""
     result = _call(server, "render_argo", {"path": DENIED_PLAN})
     assert result["status"] == "denied"
-    assert any("fallback_resource_class" in v for v in result["violations"])
+    assert any("fallback_resource_class" in v["message"] for v in result["violations"])
     assert "files" not in result  # no artifact produced
 
 

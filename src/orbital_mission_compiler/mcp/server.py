@@ -83,7 +83,9 @@ def build_server() -> Any:
         """
         safe_path = _validate_plan_path(path)
         plan = load_mission_plan(safe_path)
-        violations = baseline_validator.evaluate(plan.model_dump(mode="json"))
+        # Typed, occurrence-level violations {rule, severity, provenance, path, message}
+        # so an agent can triage without re-parsing prose.
+        violations = baseline_validator.violations(plan.model_dump(mode="json"))
         return {
             "mission_id": plan.mission_id,
             "events": len(plan.events),

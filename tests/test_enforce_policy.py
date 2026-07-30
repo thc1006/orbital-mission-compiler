@@ -52,7 +52,7 @@ def test_enforce_blocks_and_surfaces_the_real_violation():
         render_workflows_for_file(DENIED, enforce_policy=True)
     # Must surface the SAME decision the policy layer produces (not a generic
     # error): proves enforcement actually ran the policy rather than a stub.
-    assert exc.value.violations == _policy_violations(DENIED)
+    assert exc.value.messages == _policy_violations(DENIED)
     assert "detect-ships" in str(exc.value)
 
 
@@ -61,7 +61,7 @@ def test_default_blocks_a_denied_plan():
     # An opt-in / fail-open regression would fail here.
     with pytest.raises(PolicyViolationError) as exc:
         render_workflows_for_file(DENIED)
-    assert exc.value.violations == _policy_violations(DENIED)
+    assert exc.value.messages == _policy_violations(DENIED)
 
 
 def test_explicit_skip_renders_a_denied_plan():
@@ -85,6 +85,19 @@ def test_compile_file_enforce_writes_no_artifact(tmp_path):
     assert not out.exists()
 
 
+def test_denied_run_leaves_preexisting_artifact_untouched(tmp_path):
+    # Stale-output contract: on denial NO new artifact is written and a file that
+    # already exists at the output path is left exactly as-is (not overwritten,
+    # not truncated). A correct consumer keys on the non-zero exit / raised error,
+    # NOT on file existence -- otherwise a stale artifact could be mistaken for
+    # fresh output. (We deliberately do NOT delete a prior valid artifact.)
+    out = tmp_path / "out.json"
+    out.write_text("STALE-BUT-VALID-FROM-A-PRIOR-RUN")
+    with pytest.raises(PolicyViolationError):
+        compile_file(DENIED, out, enforce_policy=True)
+    assert out.read_text() == "STALE-BUT-VALID-FROM-A-PRIOR-RUN"
+
+
 def test_compile_file_enforce_valid_writes_artifact(tmp_path):
     out = tmp_path / "out.json"
     compile_file(VALID, out, enforce_policy=True)
@@ -100,8 +113,11 @@ def test_cli_denied_blocks_by_default(tmp_path, capsys, monkeypatch):
 
     # No flag: the CLI is fail-closed by default -> exit 1, no artifact.
     out = tmp_path / "cli-out.json"
+    # Use the always-available baseline engine so this enforcement test runs
+    # without opa; a separate opa-guarded test covers the opa-default path.
     monkeypatch.setattr(
-        sys, "argv", ["prog", "compile", "--input", DENIED, "--output", str(out)]
+        sys, "argv",
+        ["prog", "compile", "--input", DENIED, "--output", str(out), "--policy-engine", "baseline"],
     )
     with pytest.raises(SystemExit) as se:
         main()
