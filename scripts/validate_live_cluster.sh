@@ -68,12 +68,19 @@ echo ""
 echo "=== Checking cluster controllers ==="
 
 if command -v kubectl >/dev/null 2>&1; then
-  if kubectl get deployment -n argo workflow-controller >/dev/null 2>&1; then
-    ARGO_READY=$(kubectl get deployment -n argo workflow-controller -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+  # Match both install layouts: the release manifest names the deployment
+  # "workflow-controller"; the Helm chart prefixes it ("argo-workflows-workflow-controller").
+  ARGO_CTRL_DEPLOY="$(
+    kubectl get deployments -n argo \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+      | grep -E '(^|-)workflow-controller$' | head -n1
+  )"
+  if [ -n "${ARGO_CTRL_DEPLOY}" ]; then
+    ARGO_READY=$(kubectl get deployment -n argo "${ARGO_CTRL_DEPLOY}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
     if [ "${ARGO_READY}" -ge 1 ] 2>/dev/null; then
-      report PASS "Argo Workflow controller running (${ARGO_READY} replica(s))"
+      report PASS "Argo Workflow controller running (${ARGO_CTRL_DEPLOY}, ${ARGO_READY} replica(s))"
     else
-      report FAIL "Argo Workflow controller not ready"
+      report FAIL "Argo Workflow controller not ready (${ARGO_CTRL_DEPLOY})"
     fi
   else
     report FAIL "Argo Workflow controller not found"
