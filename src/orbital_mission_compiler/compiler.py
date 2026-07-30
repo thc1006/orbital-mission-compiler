@@ -416,6 +416,35 @@ def render_resource_claim_templates(
     return templates
 
 
+ORCHIDE_PRIORITY_CLASS_PREFIX = "orbital-orchide-"
+
+
+def _priority_class_name(orchide_priority: int) -> str:
+    """Kueue WorkloadPriorityClass name for an ORCHIDE 1-4 tier."""
+    return f"{ORCHIDE_PRIORITY_CLASS_PREFIX}{orchide_priority}"
+
+
+def render_workload_priority_classes() -> list[dict[str, Any]]:
+    """Kueue WorkloadPriorityClass objects for the four ORCHIDE priority tiers.
+
+    A rendered Kueue Job references one of these via the
+    ``kueue.x-k8s.io/priority-class`` label, so a mission plan's priority drives
+    Kueue admission ordering and preemption. Higher ORCHIDE tier maps to a higher
+    Kueue value (ORCHIDE~1 is highest). Apply these once per cluster before
+    submitting Jobs; ``kubectl apply`` is idempotent.
+    """
+    return [
+        {
+            "apiVersion": "kueue.x-k8s.io/v1beta2",
+            "kind": "WorkloadPriorityClass",
+            "metadata": {"name": _priority_class_name(tier)},
+            "value": (5 - tier) * 100,  # ORCHIDE 1 -> 400 (highest), 4 -> 100
+            "description": f"ORCHIDE priority tier {tier} (1=highest)",
+        }
+        for tier in (1, 2, 3, 4)
+    ]
+
+
 def render_kueue_job(
     intent: WorkflowIntent,
     queue_name: str = "orbital-demo-local",
@@ -424,6 +453,7 @@ def render_kueue_job(
     memory_request: str = "256Mi",
     dra_enabled: bool = True,
     dra_fallback: bool = False,
+    priority_class: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(cpu_request, str) or not cpu_request.strip():
         raise ValueError("cpu_request must not be empty")
@@ -534,6 +564,14 @@ def render_kueue_job(
             },
         },
     }
+    # Opt-in: a kueue.x-k8s.io/priority-class label that Kueue reads for admission
+    # ordering and preemption. Off by default because the referenced
+    # WorkloadPriorityClass must already exist in the cluster (Kueue errors on a
+    # missing class); apply render_workload_priority_classes() before enabling.
+    if priority_class:
+        job["metadata"]["labels"]["kueue.x-k8s.io/priority-class"] = _priority_class_name(
+            scale_priority_orchide(intent.priority)
+        )
     return job
 
 

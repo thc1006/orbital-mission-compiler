@@ -13,6 +13,7 @@ from orbital_mission_compiler.compiler import (
     load_mission_plan,
     render_argo_workflow,
     render_kueue_job,
+    render_workload_priority_classes,
     scale_priority_orchide,
 )
 
@@ -104,3 +105,38 @@ class TestKueuePriorityAnnotation:
         intent = compile_plan_to_intents(plan)[0]
         job = render_kueue_job(intent)
         assert job["metadata"]["annotations"]["orbital/priority"] == "75"
+
+
+# ── Kueue WorkloadPriorityClass (priority actually drives Kueue) ─────────────
+
+
+class TestKueueWorkloadPriorityClass:
+    """The Kueue Job carries a kueue.x-k8s.io/priority-class label that Kueue
+    reads, so mission priority drives admission ordering and preemption."""
+
+    def test_priority_class_label_opt_in(self):
+        plan = load_mission_plan("configs/mission_plans/sample_gpu_cpu_fallback.yaml")
+        intent = compile_plan_to_intents(plan)[0]
+        job = render_kueue_job(intent, priority_class=True)
+        # priority 75 -> ORCHIDE tier 2 -> orbital-orchide-2
+        assert job["metadata"]["labels"]["kueue.x-k8s.io/priority-class"] == "orbital-orchide-2"
+
+    def test_priority_class_off_by_default(self):
+        # Default off: the referenced WorkloadPriorityClass must exist first
+        # (Kueue errors on a missing class), so the label is not emitted unless
+        # opted in -- no regression for callers that do not apply the classes.
+        plan = load_mission_plan("configs/mission_plans/sample_gpu_cpu_fallback.yaml")
+        intent = compile_plan_to_intents(plan)[0]
+        job = render_kueue_job(intent)
+        assert "kueue.x-k8s.io/priority-class" not in job["metadata"]["labels"]
+
+    def test_render_priority_classes_four_tiers_monotone(self):
+        wpcs = render_workload_priority_classes()
+        assert len(wpcs) == 4
+        assert all(w["kind"] == "WorkloadPriorityClass" for w in wpcs)
+        assert all(w["apiVersion"] == "kueue.x-k8s.io/v1beta2" for w in wpcs)
+        by_name = {w["metadata"]["name"]: w["value"] for w in wpcs}
+        # ORCHIDE 1 is highest priority -> highest Kueue value; strictly monotone.
+        assert by_name["orbital-orchide-1"] > by_name["orbital-orchide-2"]
+        assert by_name["orbital-orchide-2"] > by_name["orbital-orchide-3"]
+        assert by_name["orbital-orchide-3"] > by_name["orbital-orchide-4"]
