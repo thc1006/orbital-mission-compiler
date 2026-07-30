@@ -117,3 +117,46 @@ def test_existing_plans_still_load():
 
     plan_b = load_mission_plan("configs/mission_plans/sample_gpu_cpu_fallback.yaml")
     assert plan_b.mission_id == "mission-beta"
+
+
+# ── an unknown field is an error, not a silent default ───────────────
+
+
+def test_a_misspelled_field_is_rejected_rather_than_dropped():
+    """Pydantic ignores unknown keys by default, so a typo changes the mission
+    instead of failing it.
+
+    `execution_mod: parallel` leaves the service sequential and
+    `fallback_resource_clas: cpu` leaves a GPU step with no fallback, and the
+    plan is still reported schema-valid. The policy layer cannot recover the
+    intent either: what it evaluates is the model dump, from which the
+    misspelled key is already gone.
+    """
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from orbital_mission_compiler.schemas import AIService, MissionPlan, WorkflowStep
+
+    with _pytest.raises(ValidationError, match="execution_mod"):
+        AIService(
+            service_id="s", priority=50, execution_mod="parallel",
+            steps=[WorkflowStep(name="a", image="i")],
+        )
+    with _pytest.raises(ValidationError, match="fallback_resource_clas"):
+        WorkflowStep(name="a", image="i", fallback_resource_clas="cpu")
+    with _pytest.raises(ValidationError, match="commandd"):
+        WorkflowStep(name="a", image="i", commandd=["sh"])
+    with _pytest.raises(ValidationError, match="mission_i"):
+        MissionPlan(mission_i="m", events=[])
+
+
+def test_priority_true_is_not_priority_one():
+    """YAML reads `yes`/`on`/`true` as booleans and Python reads `True` as 1, so
+    an unguarded field turns `priority: yes` into the lowest ORCHIDE tier."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from orbital_mission_compiler.schemas import AIService, WorkflowStep
+
+    with _pytest.raises(ValidationError, match="boolean"):
+        AIService(service_id="s", priority=True, steps=[WorkflowStep(name="a", image="i")])

@@ -210,6 +210,8 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
     # behind when a later intent fails, and a consumer cannot tell that apart
     # from a complete render.
     planned: list[tuple[Path, str]] = []
+    projections: list[dict[str, object]] = []
+    dropped_total = 0
     if args.emit_priority_classes:
         wpc = render_workload_priority_classes(prefix=args.priority_class_prefix)
         planned.append(
@@ -227,6 +229,14 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
             priority_class=args.priority_class,
             priority_class_prefix=args.priority_class_prefix,
         )
+        dropped = [s.name for s in intent.steps if s.name != job["metadata"]["annotations"]["orbital/executed-step"]]
+        if dropped:
+            dropped_total += len(dropped)
+            projections.append({
+                "service_id": intent.service_id,
+                "executed_step": job["metadata"]["annotations"]["orbital/executed-step"],
+                "steps_not_in_job": dropped,
+            })
         safe_name = sanitize_k8s_name(intent.workflow_name)
         # Kueue admission rejects a firstAvailable claim, so the Job is admitted on
         # the exactly claim and never references the firstAvailable one. Keeping
@@ -255,6 +265,17 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         out.write_text(text, encoding="utf-8")
         written.append(out)
     result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
+    if projections:
+        # A Kueue Job runs one container, so a multi-step service is admitted as
+        # its primary step. Reporting it here keeps "the render succeeded" from
+        # reading as "the service was rendered whole".
+        result["step_projection"] = projections
+        print(
+            f"warning: the Kueue Job is an admission artifact and runs one container, so "
+            f"{dropped_total} step(s) across {len(projections)} service(s) are not in it; the Argo "
+            f"Workflow render executes the full sequence. See 'step_projection'.",
+            file=sys.stderr,
+        )
     _report_stale(result, args.output_dir, written, args.prune)
     print(json.dumps(result))
 

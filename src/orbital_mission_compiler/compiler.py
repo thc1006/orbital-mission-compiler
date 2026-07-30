@@ -62,6 +62,29 @@ _QUANTITY_RE = re.compile(
 )
 
 
+# An RFC 1123 DNS subdomain, which is the default name class for a Kubernetes
+# object: dots are allowed and the limit is 253, not 63. A ServiceAccount is one
+# of these, so `workflow.runner` is a legal account name. Verified against a live
+# API server: `kubectl create serviceaccount workflow.runner --dry-run=server`
+# is accepted, while a Namespace with a dot is rejected.
+_RFC1123_SUBDOMAIN_RE = re.compile(r"^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$")
+
+
+def _require_k8s_subdomain(value: str, field: str, max_len: int = 253) -> str:
+    """Reject a name the API server would reject, for objects named as subdomains."""
+    if (
+        not isinstance(value, str)
+        or not _RFC1123_SUBDOMAIN_RE.match(value)
+        or len(value) > max_len
+        or ".." in value
+    ):
+        raise ValueError(
+            f"{field} must be an RFC 1123 DNS subdomain (lowercase alphanumeric, '-' or '.', "
+            f"starting and ending alphanumeric, at most {max_len} characters), got {value!r}"
+        )
+    return value
+
+
 def _require_k8s_label(value: str, field: str) -> str:
     """Reject an operator-supplied name the API server would reject on apply.
 
@@ -448,7 +471,7 @@ def render_argo_workflow(
     if namespace is not None:
         workflow["metadata"]["namespace"] = _require_k8s_label(namespace, "namespace")  # type: ignore[index]
     if service_account is not None:
-        _require_k8s_label(service_account, "service_account")
+        _require_k8s_subdomain(service_account, "service_account")
         # `argo submit --serviceaccount` cannot be used on the multi-document
         # bundle, because argo submit drops the ResourceClaimTemplate. Applying
         # the bundle with kubectl therefore needs the account in the manifest, or
@@ -706,7 +729,10 @@ def render_kueue_job(
     cpu_request = _require_quantity(cpu_request, "cpu_request")
     memory_request = _require_quantity(memory_request, "memory_request")
     _require_k8s_label(namespace, "namespace")
-    _require_k8s_label(queue_name, "queue_name")
+    # The queue name is stamped as the kueue.x-k8s.io/queue-name label value and
+    # names a LocalQueue. The object name may be a subdomain, the label value is
+    # capped at 63, so the binding constraint is the intersection.
+    _require_k8s_subdomain(queue_name, "queue_name", max_len=63)
     requires_gpu = intent.resource_hints.get("requires_gpu", False)
     requires_fpga = intent.resource_hints.get("requires_fpga", False)
 
@@ -719,6 +745,17 @@ def render_kueue_job(
         primary = fpga_steps[0]
     else:
         primary = intent.steps[0]
+
+    # A Kueue Job here is an ADMISSION artifact, not the execution artifact: it
+    # carries one container so the workload can be quota-counted and admitted.
+    # A service with several steps is therefore projected onto its primary step,
+    # and the rest do not run in this Job -- the Argo Workflow is what executes
+    # the full sequence. Silently dropping them would make the Job look like the
+    # whole service, so the projection is recorded on the object and reported by
+    # the caller. Preserving multi-step semantics under Kueue needs a different
+    # owner (a Kueue-managed Workflow, JobSet, or one Job per step) and is a
+    # contract decision, not something to infer here.
+    dropped = [step.name for step in intent.steps if step is not primary]
 
     container: dict[str, Any] = {
         "name": sanitize_k8s_name(primary.name),
@@ -787,6 +824,11 @@ def render_kueue_job(
     job_annotations: dict[str, str] = {
         "orbital/priority": str(intent.priority),
         "orbital/orchide-priority": str(scale_priority_orchide(intent.priority)),
+        "orbital/executed-step": primary.name,
+        # Named explicitly so an operator reading the applied Job can see that it
+        # does not run the whole service, without having to diff it against the plan.
+        "orbital/steps-not-in-this-job": ",".join(dropped),
+        "orbital/kueue-artifact-role": "admission-proxy",
         "orbital/requires-gpu": str(requires_gpu).lower(),
         "orbital/requires-fpga": str(requires_fpga).lower(),
         "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),

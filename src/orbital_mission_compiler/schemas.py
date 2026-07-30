@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Any
-from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ResourceClass(str, Enum):
@@ -27,7 +27,27 @@ class ExecutionMode(str, Enum):
     PARALLEL = "parallel"
 
 
-class WorkflowStep(BaseModel):
+class StrictModel(BaseModel):
+    """Base for every mission-plan model: an unknown field is an error.
+
+    Pydantic ignores unrecognised keys by default, which for an admission schema
+    means a typo changes the mission rather than failing it. ``execution_mod:
+    parallel`` leaves the service sequential, ``fallback_resource_clas: cpu``
+    leaves an accelerator step with no fallback, and the plan is still reported
+    as schema-valid. The policy layer cannot recover the intent either, because
+    what it evaluates is the model dump, from which the misspelled key is
+    already gone.
+
+    ``strict`` is deliberately not set here: it would reject the RFC 3339
+    timestamp strings and enum values the plan format is written in. Where a
+    loose coercion would actually change meaning -- a boolean read as a
+    number -- the field carries its own validator.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WorkflowStep(StrictModel):
     name: str
     image: str
     phase: StepPhase | None = None
@@ -40,7 +60,7 @@ class WorkflowStep(BaseModel):
     preferred_node_selector: dict[str, str] = Field(default_factory=dict)
 
 
-class AIService(BaseModel):
+class AIService(StrictModel):
     """AI Service within a mission event (ORCHIDE slide 9: WORKFLOW + PRIORITY).
 
     Priority uses 0-100 (higher = higher priority). ORCHIDE's onboard system uses
@@ -56,11 +76,25 @@ class AIService(BaseModel):
         description="0-100 scale; ORCHIDE uses 1-4 (see rendering layer for conversion)",
     )
     landscape_type: str | None = None
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _priority_is_not_a_boolean(cls, value: Any) -> Any:
+        """`True` is an int in Python, and YAML reads `yes`/`on`/`true` as one.
+
+        Accepting it silently turns a mission priority into 1, the lowest ORCHIDE
+        tier, which is the opposite of what someone writing `priority: yes`
+        intends. There is no reading of a boolean as a 0-100 priority worth
+        guessing at.
+        """
+        if isinstance(value, bool):
+            raise ValueError("priority must be a number between 0 and 100, not a boolean")
+        return value
     execution_mode: ExecutionMode = ExecutionMode.SEQUENTIAL
     steps: list[WorkflowStep] = Field(min_length=1)
 
 
-class MissionEvent(BaseModel):
+class MissionEvent(StrictModel):
     timestamp: AwareDatetime
     event_type: MissionEventType
     orbit: int | None = Field(default=None, ge=0)
@@ -92,7 +126,7 @@ class MissionEvent(BaseModel):
         return self
 
 
-class MissionPlan(BaseModel):
+class MissionPlan(StrictModel):
     mission_id: str
     client_id: str | None = None
     events: list[MissionEvent] = Field(min_length=1)
@@ -105,7 +139,7 @@ class MissionPlan(BaseModel):
         return v
 
 
-class WorkflowIntent(BaseModel):
+class WorkflowIntent(StrictModel):
     mission_id: str
     service_id: str
     priority: int

@@ -272,3 +272,64 @@ jobs:
             echo "OK: $deny was refused and produced no artifact"
             rm -rf "$out"
           done
+
+  # The MCP surface is a required check of its own. FastMCP lives in a separate
+  # extra, and the MCP test modules skip themselves when it is missing, so the
+  # main job's green run never exercised them -- it reported passes and skips
+  # without saying which. This job installs the extra and treats a skip as a
+  # failure, so the MCP fixes cannot silently stop being tested.
+  mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install with the MCP extra
+        run: pip install -e ".[dev,mcp]"
+
+      - name: Confirm FastMCP is importable
+        run: python3 -c "import fastmcp; print(fastmcp.__version__)"
+
+      - name: MCP tests (a skip here is a failure)
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -rs tests/test_mcp.py tests/test_mcp_expansion.py \
+            | tee /tmp/mcp.log
+          if grep -qE '[0-9]+ skipped' /tmp/mcp.log; then
+            echo "FAIL: an MCP test skipped; the MCP surface must be exercised here" >&2
+            grep -E '^SKIPPED' /tmp/mcp.log >&2 || true
+            exit 1
+          fi
+
+      # The packaged path this PR exists to support: an installed wheel resolving
+      # its own policy bundle, with the plan root pointed somewhere real.
+      - name: Installed-wheel MCP smoke
+        env:
+          PYTHONPATH: ""
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet build
+          rm -rf dist && python3 -m build --wheel
+          python3 -m venv /tmp/mcp-venv
+          /tmp/mcp-venv/bin/pip install "$(echo dist/*.whl)[mcp]"
+          plan_root="$(mktemp -d)"
+          cp configs/mission_plans/sample_gpu_cpu_fallback.yaml "$plan_root/"
+          cp configs/mission_plans/demo_gpu_no_fallback.yaml "$plan_root/"
+          ORBITAL_MCP_PLAN_ROOT="$plan_root" ORBITAL_MCP_POLICY_ENGINE=baseline \
+            /tmp/mcp-venv/bin/python - <<'PYMCP'
+          import asyncio, json
+          from orbital_mission_compiler.mcp.server import build_server
+          server = build_server()
+          def call(name, args):
+              return asyncio.run(server.call_tool(name, args)).structured_content
+          ok = call("render_argo", {"path": "sample_gpu_cpu_fallback.yaml"})
+          assert ok["status"] == "ok" and ok["count"] >= 1, ok
+          denied = call("render_argo", {"path": "demo_gpu_no_fallback.yaml"})
+          assert denied["status"] == "denied" and denied["violations"], denied
+          print(f"installed-wheel MCP smoke OK: rendered {ok['count']}, denied 1")
+          PYMCP

@@ -288,9 +288,18 @@ if [ -n "${JOB_FILE}" ] && command -v kubectl >/dev/null 2>&1; then
       fi
     fi
 
+    # A Kueue Job runs one container, so a multi-step service is admitted as its
+    # primary step and the rest are not in this Job. Name the step being waited
+    # on, so "Kueue Job completed" is not read as "the service ran".
+    EXECUTED_STEP="$(kubectl get "job/${JOB_NAME}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.orbital/executed-step}' 2>/dev/null || true)"
+    SKIPPED_STEPS="$(kubectl get "job/${JOB_NAME}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.orbital/steps-not-in-this-job}' 2>/dev/null || true)"
     echo "Waiting for Job completion (up to ${KUEUE_COMPLETION_TIMEOUT_SECONDS}s) ..."
     if kubectl wait --for=condition=complete "job/${JOB_NAME}" -n "${NAMESPACE}" --timeout="${KUEUE_COMPLETION_TIMEOUT_SECONDS}s" >/dev/null 2>&1; then
-      report PASS "Kueue Job completed"
+      if [ -n "${SKIPPED_STEPS}" ]; then
+        report PASS "Kueue Job completed (admission artifact: ran step '${EXECUTED_STEP}'; not in this Job: ${SKIPPED_STEPS} -- the Argo Workflow runs the full sequence)"
+      else
+        report PASS "Kueue Job completed"
+      fi
     else
       report FAIL "Kueue Job did not complete within timeout"
       POD_NAME="$(kubectl get pods -n "${NAMESPACE}" -l "job-name=${JOB_NAME}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"

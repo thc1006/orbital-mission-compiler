@@ -164,3 +164,70 @@ def test_render_kueue_job_labels():
     assert labels["mission-id"] == "mission-beta"
     assert labels["service-id"] == "wildfire-detection"
     assert labels["priority"] == "75"
+
+
+# ── the Kueue Job is an admission artifact, not the whole service ─────
+
+
+def test_a_multi_step_service_says_which_steps_are_not_in_the_job():
+    """A Kueue Job runs one container, so a three-step service is admitted as
+    its primary step only.
+
+    That projection is defensible -- the Argo Workflow is what executes the
+    sequence -- but it cannot be silent: the live smoke waits for this Job and
+    would otherwise report the service complete when two of its three steps
+    never ran.
+    """
+    plan = load_mission_plan("configs/mission_plans/validation_live_cluster.yaml")
+    intent = compile_plan_to_intents(plan)[0]
+    assert [s.name for s in intent.steps] == ["preprocess", "detect", "postprocess"]
+
+    job = render_kueue_job(intent)
+    containers = job["spec"]["template"]["spec"]["containers"]
+    assert len(containers) == 1
+
+    ann = job["metadata"]["annotations"]
+    assert ann["orbital/executed-step"] == "preprocess"
+    assert ann["orbital/steps-not-in-this-job"] == "detect,postprocess"
+    assert ann["orbital/kueue-artifact-role"] == "admission-proxy"
+
+
+def test_a_single_step_service_reports_nothing_dropped():
+    intent = WorkflowIntent(
+        mission_id="test", service_id="svc", priority=50, workflow_name="test-wf",
+        steps=[WorkflowStep(name="only", image="busybox:1.36")],
+    )
+    ann = render_kueue_job(intent)["metadata"]["annotations"]
+    assert ann["orbital/executed-step"] == "only"
+    assert ann["orbital/steps-not-in-this-job"] == ""
+
+
+def test_service_account_may_be_a_dns_subdomain():
+    """A ServiceAccount name is a DNS subdomain, not a label: dots are legal and
+    the limit is 253. Verified against a live API server, which accepts
+    `workflow.runner` and a 100-character name."""
+    from orbital_mission_compiler.compiler import render_argo_workflow
+
+    intent = WorkflowIntent(
+        mission_id="test", service_id="svc", priority=50, workflow_name="test-wf",
+        steps=[WorkflowStep(name="s1", image="busybox:1.36")],
+    )
+    for account in ("workflow.runner", "team-a.runtime", "a" * 100):
+        wf = render_argo_workflow(intent, namespace="ns", service_account=account)
+        assert wf["spec"]["serviceAccountName"] == account
+    for bad in ("Workflow.Runner", "-leading", "a..b", "a" * 254):
+        with pytest.raises(ValueError, match="service_account"):
+            render_argo_workflow(intent, namespace="ns", service_account=bad)
+
+
+def test_queue_name_may_contain_dots_but_not_exceed_a_label_value():
+    """The queue name names a LocalQueue (a subdomain) and is stamped as a label
+    value (capped at 63), so the binding constraint is the intersection."""
+    intent = WorkflowIntent(
+        mission_id="test", service_id="svc", priority=50, workflow_name="test-wf",
+        steps=[WorkflowStep(name="s1", image="busybox:1.36")],
+    )
+    job = render_kueue_job(intent, queue_name="team-a.local")
+    assert job["metadata"]["labels"]["kueue.x-k8s.io/queue-name"] == "team-a.local"
+    with pytest.raises(ValueError, match="queue_name"):
+        render_kueue_job(intent, queue_name="q" * 64)

@@ -3,6 +3,20 @@
 ## Unreleased
 
 ### Changed
+- Mission-plan models reject unknown fields. Pydantic ignores them by default, so
+  `execution_mod: parallel` left the service sequential and
+  `fallback_resource_clas: cpu` left an accelerator step with no fallback, and the
+  plan was still reported schema-valid. `priority` also rejects a boolean, since
+  YAML reads `yes`/`on` as one and Python reads it as 1, the lowest ORCHIDE tier.
+- The Kueue Job records the step it runs and the steps it does not. A Kueue Job
+  carries one container, so a multi-step service is admitted as its primary step;
+  that projection is now on the object (`orbital/executed-step`,
+  `orbital/steps-not-in-this-job`), in the CLI output, and in what the live
+  validation reports, instead of a complete-looking artifact.
+- A ServiceAccount name is validated as a DNS subdomain and a queue name as a
+  subdomain capped at a label value's 63 characters. Both were checked as DNS
+  labels, which rejects the dots and lengths the API server accepts (verified
+  against a live API server).
 - `render-kueue --dra-fallback` writes the scheduler-route `firstAvailable` claim
   to its own `*-scheduler-fallback.yaml` instead of the `*-kueue.yaml` bundle. The
   Job is admitted on the `exactly` claim and never references the `firstAvailable`
@@ -39,6 +53,10 @@
 - The MCP `render_argo` tool now fails closed with `policy_engine_unavailable`
   like the other tools, instead of calling the renderer directly and surfacing a
   raw exception.
+- A required CI job installs the MCP extra and runs the MCP tests, treating a skip
+  as a failure. FastMCP is in a separate extra that CI did not install, and the
+  MCP test modules skip themselves without it, so the MCP surface was never
+  exercised by the required check.
 - CI installs the pinned Argo CLI and lints with it. The Argo smoke previously
   printed "argo CLI not found; skipped argo lint" and still passed, so its only
   real gate never ran.
