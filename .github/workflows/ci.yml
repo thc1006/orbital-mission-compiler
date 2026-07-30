@@ -94,6 +94,12 @@ jobs:
       # real artifact so a bundle missing from the wheel is caught here rather
       # than by whoever pip-installs it.
       - name: Wheel install smoke (default policy path from a clean venv)
+        env:
+          # The job-level PYTHONPATH puts src/ (and its egg-info) on the path, so
+          # pip would see the package as already satisfied and install only its
+          # dependencies, leaving nothing to import. Clearing it is also what
+          # makes this a clean-venv test rather than a source-tree one.
+          PYTHONPATH: ""
         run: |
           set -euo pipefail
           python3 -m pip install --quiet build
@@ -107,7 +113,7 @@ jobs:
           print(f"wheel ships the policy bundle: {wheel}")
           PYCHK
           python3 -m venv /tmp/wheel-venv
-          /tmp/wheel-venv/bin/pip install --quiet dist/*.whl
+          /tmp/wheel-venv/bin/pip install dist/*.whl
           workdir="$(mktemp -d)"
           plan="$PWD/configs/mission_plans/sample_gpu_cpu_fallback.yaml"
           cd "$workdir"
