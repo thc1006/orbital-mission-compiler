@@ -43,7 +43,7 @@ separate and honest.
 |---|---|---|---|
 | Kubernetes | host kubeadm **v1.36.1** / K3s pin v1.34.5+k3s1 | latest stable **v1.36.3** (2026-07-23); supported minors **1.34–1.36**; **no v1.37 GA yet** (GA ~2026-08-26) — a `v1.37.0-beta.0` **pre-release** exists and is installable for early testing only (not for production, feature/API surface may still change) | sources: https://kubernetes.io/releases/ ; https://github.com/kubernetes/kubernetes/releases/tag/v1.37.0-beta.0 |
 | Kueue | live cluster **v0.18.3** / scaffold pin v0.17.0 | **v0.19.0** (latest tag) | source: https://github.com/kubernetes-sigs/kueue/releases ; API `kueue.x-k8s.io/v1beta2` is served+storage across v0.17–v0.19 |
-| Argo Workflows | **v4.0.1** | v4.0.1 | CRD group `argoproj.io/v1alpha1` unchanged |
+| Argo Workflows | live cluster **v4.0.8** (Helm chart 1.0.23; upgraded from v3.5.11) / CLI v4.0.1 | **v4.0.8** (2026-07-22) | CRD group `argoproj.io/v1alpha1`; end-to-end DRA (pod-level `resourceClaims` via `podSpecPatch`, used by `render-argo --dra-fallback`) needs Argo **>= v4.0** — v3.5.x prunes the DRA fields and drops the claim. source: https://github.com/argoproj/argo-workflows/releases |
 
 ### Emitted API versions (still current on the latest stable stack)
 
@@ -69,7 +69,8 @@ the linked KEPs in kubernetes/enhancements, checked 2026-07-30):
 | KEP | Feature | v1.37 stage | Relevance to this repo |
 |---|---|---|---|
 | 5004 | DRA extended resources | **Stable (GA)** | no change; the compiler does not depend on it |
-| 5729 | DRA consumable-capacity / workload claims | **Beta** | no change; not used by the emitted claims |
+| 5729 | DRA ResourceClaim support for workloads | **Beta** | no change; not used by the emitted claims |
+| 5075 | DRA consumable capacity | **Beta** (Stable targeted v1.38) | no change; capacity-source semantics, not used here |
 | 4816 | DRA prioritized list (`firstAvailable`) | **Stable** (as of v1.36) | already used by the opt-in `--dra-fallback` renderer |
 | 6080 | DRA derived attributes | **Alpha** (feasibility) | future work; would enrich device selection, no manifest change today |
 | 5963 | DRA device compatibility groups | **Alpha** (feasibility) | future work; an additional scheduling predicate, independent of quota math |

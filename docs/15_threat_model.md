@@ -128,4 +128,4 @@ ORCHIDE D3.1 §3.2.1.4 defines a Security Manager responsible for encryption and
 - Authentication of the deployment uplink (transport-layer concern)
 - On-satellite integrity verification (ORCHIDE scope)
 
-The compiler's security scope is limited to **input validation, policy enforcement, and safe rendering** within the ground environment. Security at TB3 (deployment) and beyond is delegated to ORCHIDE's Security Manager.
+The compiler's security scope is limited to **input validation, policy enforcement, and safe rendering** within the ground environment. Policy enforcement is **fail-closed by default**: the artifact-producing entrypoints refuse to emit output for a denied plan, running either the versioned, independently-auditable OPA/Rego bundle (default) or its proven-equivalent in-process baseline — see the fail-closed enforcement note in `docs/04_architecture.md`. Security at TB3 (deployment) and beyond is delegated to ORCHIDE's Security Manager.

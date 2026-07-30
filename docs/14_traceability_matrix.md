@@ -85,11 +85,12 @@ Each deny rule in `configs/policies/mission_plan.rego` is mapped to its ORCHIDE 
 | 2 | `mission plan must contain at least one event` | Structural requirement | — | `test_policy.py::test_deny_zero_events` | **Yes** — structural guard |
 | 3 | `acquisition event %v must declare at least one service` | ACQ rows have WORKFLOW columns | Slide 9 | `test_policy.py::test_deny_acquisition_no_services` | No — derived from slide 9 table structure |
 | 4 | `accelerator step %q (resource_class %q) must declare fallback_resource_class` | — | — | `test_policy.py::test_deny_gpu_no_fallback`, `test_deny_fpga_no_fallback`, `test_deny_gpu_no_fallback_without_flag` | **Yes** — ground-side reliability; fires when `resource_class in {"gpu","fpga"}` AND no `fallback_resource_class`, independent of the optional `needs_acceleration` flag (which defaults false and must not gate the check) |
+| 4 | `accelerator step %q (resource_class %q) declares fallback_resource_class %v, but the only usable fallback is %q` | — | — | `test_structured_violations.py::test_rule4_rejects_fallback_equal_to_primary` | **Yes** — a *usable*-fallback check: the fallback must resolve to CPU (the only driver-backed non-accelerator target; `DRA_DEVICE_CLASS` maps GPU→`gpu.nvidia.com`, CPU→`dra.cpu`, and there is no FPGA driver), so a fallback equal to the primary class or any non-CPU class is rejected |
 | 5 | `service %q has zero priority, which is likely a misconfiguration` | Informed by ORCHIDE's 1-4 priority scale; the `!=0` check operates on the compiler's 0-100 scale | Slide 9 (PRIORITY columns) | `test_policy.py::test_deny_zero_priority` | **Yes** — author-imposed range check on the 0–100 scale, informed by (not literally required by) ORCHIDE's 1–4 priority semantics |
-| 6 | `step %q claims needs_acceleration but uses cpu resource class` | ukAccel mediates GPU/FPGA only; CPU is host | Slide 18 | `test_policy.py::test_deny_acceleration_on_cpu` | No — derived from slide 18 ukAccel scope |
+| 6 | `step %q claims needs_acceleration but uses cpu resource class` | ukAccel mediates GPU/FPGA only; CPU is host | Slide 18 | `test_policy.py::test_deny_acceleration_on_cpu` | **Yes** — author-imposed policy (frozen paper Table II/III mark Rule 6 as **A**); the domain *concept* traces to slide 18 (ukAccel mediates GPU/FPGA only), but ORCHIDE does not mandate this contradiction check as a rule |
 | 7 | `download event %v must not declare services (transmission only)` | DOWNLOAD rows have no WORKFLOW columns | Slide 9 | `test_policy.py::test_deny_download_with_services` | No — derived from slide 9 table structure |
 | 8 | `download event %v requires ground_visibility (station must be visible for transmission)` | DOWNLOAD requires VISI=1 | Slide 9 | `test_policy.py::test_deny_download_without_visibility` | No — derived from slide 9 VISI column |
-| 9 | `service %q has no steps and cannot produce a workflow` | Pipeline requires ≥1 stage | Slide 10 | `test_policy.py` (implicit via schema min_length=1) | No — derived from slide 10 pipeline model |
+| 9 | `service %q has no steps and cannot produce a workflow` | Pipeline requires ≥1 stage | Slide 10 | `test_policy.py` (implicit via schema min_length=1) | **Yes** — author-imposed policy (frozen paper Table II/III mark Rule 9 as **A**); the *concept* traces to slide 10 (pipeline requires ≥1 stage), but ORCHIDE does not mandate the check |
 | 10 | `service %q has unrecognized landscape_type %q (expected: ocean, land)` | TYPE = O (ocean) or L (land) | Slide 9 (TYPE_D1-D4) | `test_policy.py` | No — derived from slide 9 TYPE column |
 | 10 | `service %q has a non-string landscape_type (expected a string: ocean or land)` | TYPE must be a string O/L; defense-in-depth clause for the raw-JSON schema-bypass path | Slide 9 (TYPE_D1-D4) | `test_policy.py::test_deny_non_string_landscape_raw_bypass` | Partly — value derived from slide 9; type-robustness on the bypass path is author-imposed |
 
@@ -143,7 +144,7 @@ The following features are explicitly added by this project to fill gaps that OR
 |---|---|---|---|---|
 | Schema fields (4 mission-plan models) | 27 | 21 | 6 | 100% traced |
 | Enum values | 11 | 11 | 0 | 100% traced |
-| OPA deny rules | 10 | 7 | 3 | 100% traced |
+| OPA deny rules | 10 | 4 | 6 | 100% traced |
 | Resource hints keys | 10 | 7 | 3 | 100% traced |
 | **Total** | **58** | **46 (79%)** | **12 (21%)** | **100% traced** |
 

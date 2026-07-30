@@ -93,7 +93,16 @@ This repo produces rendered YAML artifacts. It does not deploy to or control a l
 
 ### Fail-closed admission gate
 
-The policy layer runs on **every** plan before any artifact is produced. The CLI `compile` / `render-argo` / `render-kueue` commands and the MCP `compile_plan` / `render_argo` tools are **fail-closed by default**: a plan that violates a policy rule yields no artifact and a non-zero exit (CLI) or a `{"status": "denied", ...}` result (MCP). The gate uses the in-process, OPA-equivalent baseline, so it always runs even without the `opa` CLI installed. The four stages remain independent modules callable in isolation (schema, policy, IR, renderer); an explicit `--unsafe-skip-policy` flag (CLI) / `unsafe_skip_policy=True` argument (MCP) bypasses the gate for development and forfeits the pre-uplink guarantee. The standalone `policy` subcommand and `opa_smoke.sh` also gate on the decision (non-zero exit on any deny), so they are usable in CI.
+The policy layer runs on **every** plan before any artifact is produced. The CLI `compile` / `render-argo` / `render-kueue` commands and the MCP `compile_plan` / `render_argo` tools are **fail-closed by default**: a plan that violates a policy rule yields no artifact and a non-zero exit (CLI) or a `{"status": "denied", ...}` result (MCP), with the typed violations (`rule`/`severity`/`provenance`/`path`/`message`) surfaced for triage.
+
+Two interchangeable policy engines back the gate, selected with `--policy-engine`:
+
+- **`opa`** (default for the CLI artifact commands) executes the versioned, independently-auditable Rego bundle — the same policy-as-code artifact an external reviewer runs with `opa eval`, honouring `--bundle` / `--decision`. It **fails closed** if `opa` is unavailable or returns no decision (a distinct non-zero exit); it never silently downgrades.
+- **`baseline`** is the proven-equivalent in-process mirror (no subprocess), used for offline/CI use and as the library default. The two engines are asserted to produce identical typed violations on well-formed inputs and identical accept/reject decisions on all inputs.
+
+The four stages remain independent modules callable in isolation (schema, policy, IR, renderer); an explicit `--unsafe-skip-policy` flag (CLI) / `unsafe_skip_policy=True` argument (MCP) bypasses the gate for development and forfeits the pre-uplink guarantee. The standalone `policy` subcommand and `opa_smoke.sh` also gate on the decision (non-zero exit on any deny), so they are usable in CI.
+
+On denial the compiler writes **no** new artifact; a file that already exists at the output path is left untouched (it is not deleted, to avoid destroying a prior valid artifact). Consumers should key on the exit code / `denied` status, not on file existence alone.
 
 ## Project structure
 
