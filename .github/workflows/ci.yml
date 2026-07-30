@@ -120,8 +120,36 @@ jobs:
             echo "OK: $deny was rejected as expected"
           done
 
-      - name: Argo smoke (Python sanity only)
+      - name: Argo smoke (valid plans render, deny fixtures produce no artifact)
         run: |
+          # render-argo is fail-closed now, so the deny fixture produces no
+          # artifact by design. Assert that rather than looping it in with the
+          # plans that must render: a rendered artifact for a policy-denied plan
+          # is the exact failure the gate exists to prevent.
+          DENY_FIXTURES=("demo_gpu_no_fallback.yaml")
           for plan in configs/mission_plans/*.yaml; do
+            base="$(basename "$plan")"
+            skip=""
+            for deny in "${DENY_FIXTURES[@]}"; do
+              [ "$base" = "$deny" ] && skip=1 && break
+            done
+            if [ -n "$skip" ]; then
+              continue
+            fi
             bash scripts/argo_smoke.sh "$plan"
+          done
+          for deny in "${DENY_FIXTURES[@]}"; do
+            echo "Asserting render-argo refuses the deny fixture: $deny"
+            out="$(mktemp -d)"
+            if python3 -m orbital_mission_compiler.cli render-argo \
+                 --input "configs/mission_plans/$deny" --output-dir "$out"; then
+              echo "FAIL: render-argo produced artifacts for denied plan $deny" >&2
+              exit 1
+            fi
+            if [ -n "$(ls -A "$out")" ]; then
+              echo "FAIL: $deny was denied but left artifacts behind in $out" >&2
+              exit 1
+            fi
+            echo "OK: $deny was refused and produced no artifact"
+            rm -rf "$out"
           done
