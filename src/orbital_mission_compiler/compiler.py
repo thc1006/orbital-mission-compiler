@@ -424,9 +424,14 @@ def _argo_dra_pod_spec_patch(rct_name: str, claim_name: str = "compute") -> str:
     structurally on ``template.container`` by the renderer; but the Template has NO
     structured pod-level ``resourceClaims`` field, so that half must go through
     ``podSpecPatch`` (a strategic-merge patch the controller applies to the final
-    PodSpec before creating the Pod). On older Argo whose CRD lacks the DRA fields,
-    both halves are pruned/dropped and the step falls back to the runtime env-var
-    switch -- no invalid Pod is produced.
+    PodSpec before creating the Pod).
+
+    This requires Argo >= v4.0 on a Kubernetes that serves ``resource.k8s.io/v1``.
+    Do not rely on an older Argo degrading gracefully: the container half is
+    pruned by a CRD that lacks the field, but ``podSpecPatch`` is an opaque
+    string the controller merges into the PodSpec regardless, so the request can
+    reach the API server and be rejected there rather than falling back to the
+    runtime env-var switch. Leave ``dra_fallback`` off on older stacks.
     """
     patch = {"resourceClaims": [{"name": claim_name, "resourceClaimTemplateName": rct_name}]}
     return yaml.safe_dump(patch, sort_keys=False)
@@ -499,9 +504,26 @@ ORCHIDE_PRIORITY_CLASS_PREFIX = "orbital-orchide-"
 PRIORITY_CLASS_MAPPING_VERSION = "v1"
 
 
+# An RFC 1123 label, which is what both a WorkloadPriorityClass name and the
+# kueue.x-k8s.io/priority-class label value must be.
+_K8S_LABEL_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+
 def _priority_class_name(orchide_priority: int, prefix: str = ORCHIDE_PRIORITY_CLASS_PREFIX) -> str:
-    """Kueue WorkloadPriorityClass name for an ORCHIDE 1-4 tier."""
-    return f"{prefix}{orchide_priority}"
+    """Kueue WorkloadPriorityClass name for an ORCHIDE 1-4 tier.
+
+    Rejects a prefix that would produce a name the API server refuses, rather
+    than emitting YAML that fails only on apply. The same string becomes a label
+    value on the Job, so it must satisfy the 63-character label bound too.
+    """
+    name = f"{prefix}{orchide_priority}"
+    if len(name) > 63 or not _K8S_LABEL_RE.match(name):
+        raise ValueError(
+            f"priority-class prefix {prefix!r} yields invalid name {name!r}: must be an "
+            "RFC 1123 label (lowercase alphanumeric and '-', starting and ending "
+            "alphanumeric) of at most 63 characters"
+        )
+    return name
 
 
 def render_workload_priority_classes(
@@ -668,7 +690,25 @@ def render_kueue_job(
     return job
 
 
-DEFAULT_POLICY_BUNDLE = "configs/policies"
+def _default_policy_bundle() -> str:
+    """Locate the shipped Rego bundle without depending on the process CWD.
+
+    The artifact commands default to the ``opa`` engine, so a bundle path that
+    only resolves from the repository root makes the default path fail whenever
+    the tool runs from anywhere else. Prefer a bundle packaged beside the module,
+    then the checkout's ``configs/policies``, and fall back to the relative path
+    so an explicit ``--bundle`` and the historical behaviour still work.
+    """
+    packaged = Path(__file__).resolve().parent / "policies"
+    if packaged.is_dir():
+        return str(packaged)
+    checkout = Path(__file__).resolve().parents[2] / "configs" / "policies"
+    if checkout.is_dir():
+        return str(checkout)
+    return "configs/policies"
+
+
+DEFAULT_POLICY_BUNDLE = _default_policy_bundle()
 DEFAULT_POLICY_DECISION = "data.orbitalmission"
 
 

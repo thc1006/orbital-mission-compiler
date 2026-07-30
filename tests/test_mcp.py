@@ -59,10 +59,21 @@ def test_compile_plan_tool(server):
 
 
 def test_render_argo_tool(server):
-    """render_argo MCP tool should return file names and count."""
+    """render_argo MCP tool should return usable manifests, not stale names.
+
+    The tool renders into a temporary directory that is removed before it
+    returns, so handing back only file names would leave the caller holding
+    paths that no longer exist.
+    """
+    import yaml as _yaml
+
     result = _call(server, "render_argo", {"path": SAMPLE_PLAN})
     assert result["count"] >= 1
-    assert len(result["files"]) >= 1
+    assert len(result["manifests"]) == result["count"]
+    for manifest in result["manifests"]:
+        doc = next(d for d in _yaml.safe_load_all(manifest["yaml"]) if d)
+        assert doc["apiVersion"] == "argoproj.io/v1alpha1"
+        assert doc["kind"] in {"Workflow", "ResourceClaimTemplate"} or doc["kind"] == "Workflow"
 
 
 # ── fail-closed admission gate (deny path) ────────────────────────────
@@ -89,7 +100,8 @@ def test_compile_plan_denied_blocks_by_default(server):
     assert "intent_count" not in result  # nothing was compiled
 
 
-def test_compile_plan_unsafe_skip_compiles_denied(server):
+def test_compile_plan_unsafe_skip_compiles_denied(server, monkeypatch):
+    monkeypatch.setenv("ORBITAL_MCP_ALLOW_POLICY_BYPASS", "1")
     result = _call(server, "compile_plan", {"path": DENIED_PLAN, "unsafe_skip_policy": True})
     assert result["status"] == "ok"
     assert result["intent_count"] >= 1
@@ -103,10 +115,24 @@ def test_render_argo_denied_blocks_by_default(server):
     assert "files" not in result  # no artifact produced
 
 
-def test_render_argo_unsafe_skip_renders_denied(server):
+def test_render_argo_unsafe_skip_renders_denied(server, monkeypatch):
+    monkeypatch.setenv("ORBITAL_MCP_ALLOW_POLICY_BYPASS", "1")
     result = _call(server, "render_argo", {"path": DENIED_PLAN, "unsafe_skip_policy": True})
     assert result["status"] == "ok"
     assert result["count"] >= 1
+
+
+def test_agent_cannot_bypass_the_gate_without_the_operator_switch(server):
+    """The calling agent is untrusted, so the bypass must be an operator switch.
+
+    A tool argument is reachable by anything that can shape a tool call,
+    including injected text, so honouring it unconditionally would let a prompt
+    turn off the admission gate.
+    """
+    for tool, key in (("render_argo", "violations"), ("compile_plan", "violations")):
+        result = _call(server, tool, {"path": DENIED_PLAN, "unsafe_skip_policy": True})
+        assert result["status"] == "denied", f"{tool} honoured the bypass unasked"
+        assert result[key]
 
 
 # ── explain_policy tool ──────────────────────────────────────────────

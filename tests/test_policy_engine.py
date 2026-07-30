@@ -10,6 +10,7 @@ CLOSED — raise ``PolicyEngineUnavailableError``, never silently downgrade or s
 """
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -174,3 +175,23 @@ def test_cmd_policy_exits_2_when_the_decision_is_undecidable(monkeypatch, capsys
         cli.main()
     assert se.value.code == 2, "undecidable must be distinct from denied (1) and allowed (0)"
     assert "undecidable" in capsys.readouterr().err
+
+
+# ── Bundle resolution must not depend on the process CWD (P1-7) ──────────
+
+
+def test_default_bundle_resolves_from_any_working_directory(tmp_path, monkeypatch):
+    """The artifact commands default to the opa engine, so a CWD-relative bundle
+    makes the default path fail whenever the tool runs outside the checkout."""
+    import os
+    import subprocess
+
+    out = tmp_path / "o.json"
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
+    proc = subprocess.run(
+        [sys.executable, "-m", "orbital_mission_compiler.cli", "compile",
+         "--input", str(Path(VALID).resolve()), "--output", str(out)],
+        cwd=tmp_path, env=env, capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert out.exists()

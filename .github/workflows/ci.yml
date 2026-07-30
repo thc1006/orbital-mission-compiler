@@ -136,8 +136,46 @@ jobs:
             if [ -n "$skip" ]; then
               continue
             fi
-            bash scripts/argo_smoke.sh "$plan"
+            # A fresh directory per plan: a shared one lets a previous plan's
+            # output satisfy the manifest check, so a plan that silently rendered
+            # nothing would still pass.
+            plan_out="$(mktemp -d)"
+            bash scripts/argo_smoke.sh "$plan" "$plan_out"
+            produced="$(find "$plan_out" -name '*.yaml' | wc -l)"
+            if [ "$produced" -eq 0 ]; then
+              echo "FAIL: $base rendered no manifest" >&2
+              exit 1
+            fi
+            rm -rf "$plan_out"
           done
+
+          # The flagship path of this change: exercise --dra-fallback end to end
+          # and check the multi-doc invariants a plain render cannot show.
+          dra_out="$(mktemp -d)"
+          python3 -m orbital_mission_compiler.cli render-argo \
+            --input configs/mission_plans/sample_gpu_cpu_fallback.yaml \
+            --output-dir "$dra_out" --namespace dra-smoke-ns --dra-fallback
+          python3 - "$dra_out" <<'PYDRA'
+          import sys, pathlib, yaml
+          docs = []
+          for p in pathlib.Path(sys.argv[1]).glob("*.yaml"):
+              docs += [d for d in yaml.safe_load_all(p.read_text()) if d]
+          kinds = {d["kind"] for d in docs}
+          assert {"ResourceClaimTemplate", "Workflow"} <= kinds, kinds
+          ns = {d["metadata"].get("namespace") for d in docs}
+          assert ns == {"dra-smoke-ns"}, f"namespaces disagree: {ns}"
+          ids = [(d["apiVersion"], d["kind"], d["metadata"].get("namespace"),
+                  d["metadata"]["name"]) for d in docs]
+          assert len(ids) == len(set(ids)), f"duplicate object identity: {ids}"
+          rct = next(d for d in docs if d["kind"] == "ResourceClaimTemplate")
+          req = rct["spec"]["spec"]["devices"]["requests"][0]
+          assert "firstAvailable" in req, req
+          wf = next(d for d in docs if d["kind"] == "Workflow")
+          wired = [t for t in wf["spec"]["templates"] if "podSpecPatch" in t]
+          assert wired, "no template consumes the claim"
+          print(f"DRA smoke OK: {len(docs)} docs, namespace dra-smoke-ns, {len(wired)} wired")
+          PYDRA
+          rm -rf "$dra_out"
           for deny in "${DENY_FIXTURES[@]}"; do
             echo "Asserting render-argo refuses the deny fixture: $deny"
             out="$(mktemp -d)"

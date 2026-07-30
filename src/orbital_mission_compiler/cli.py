@@ -88,10 +88,13 @@ def build_parser() -> argparse.ArgumentParser:
     kueue_p.add_argument(
         "--dra-fallback",
         action="store_true",
-        help="Render a DRA firstAvailable claim (scheduler-level accelerator->CPU "
-        "fallback) for steps that declare a driver-backed fallback_resource_class, "
-        "instead of the runtime env-var switch. Requires the CPU DRA driver; the "
-        "resulting claim is not Kueue quota-counted (only 'exactly' claims are).",
+        help="Additionally emit the scheduler-route DRA firstAvailable claim "
+        "(accelerator->CPU) for steps that declare a driver-backed "
+        "fallback_resource_class. The Job itself still references the 'exactly' "
+        "GPU claim, because Kueue rejects a firstAvailable request as "
+        "inadmissible and quota-counts only 'exactly'. The firstAvailable "
+        "template is therefore for a non-Kueue consumer; 'render-argo "
+        "--dra-fallback' emits it wired to a Workflow that uses it.",
     )
     kueue_p.add_argument(
         "--priority-class",
@@ -119,8 +122,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     policy_p = sub.add_parser("policy", help="Evaluate policy pack with OPA if available")
     policy_p.add_argument("--input", required=True)
-    policy_p.add_argument("--bundle", default="configs/policies")
-    policy_p.add_argument("--decision", default="data.orbitalmission")
+    policy_p.add_argument("--bundle", default=DEFAULT_POLICY_BUNDLE)
+    policy_p.add_argument("--decision", default=DEFAULT_POLICY_DECISION)
     policy_p.set_defaults(func=cmd_policy)
 
     return parser

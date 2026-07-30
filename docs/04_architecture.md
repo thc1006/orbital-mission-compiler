@@ -56,7 +56,7 @@ Schema validation (Pydantic) and policy validation (OPA/Rego) intentionally over
 | Service needs ≥1 step | `Field(min_length=1)` | Rule 9 denies |
 | Invalid landscape_type | — | Rule 10 denies |
 
-Design intent: schema catches structural errors at parse time. Policy catches semantic errors that require cross-field reasoning. Where both layers enforce the same rule, the earlier layer (schema) prevents bad data from entering the pipeline, and the later layer (policy) catches data that bypasses schema validation (e.g., raw JSON sent directly to OPA).
+Design intent: schema catches structural errors at parse time. Policy catches semantic errors that require cross-field reasoning. Where both layers enforce the same rule, the earlier layer (schema) prevents bad data from entering the pipeline, and the later layer (policy) catches data that bypasses schema validation (e.g., raw JSON sent directly to OPA). The Rego guards on that bypass path are deliberately scoped to CONTAINER structure: they fail closed when `events`, a service's `steps`, or the objects inside them are not of the expected shape, so a malformed container cannot suppress the rules that walk it. They are not a reimplementation of the schema's field-level type checking, so a hand-crafted payload sent straight to OPA can still carry a field type Pydantic would have rejected. The schema remains the field-level authority; every supported entrypoint parses through it.
 
 ### Fail-closed enforcement
 

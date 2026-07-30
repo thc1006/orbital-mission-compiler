@@ -24,6 +24,29 @@ from orbital_mission_compiler.compiler import (
 )
 from orbital_mission_compiler.policy import eval_policy
 
+# Which engine the MCP tools enforce with. The CLI defaults to the authoritative
+# Rego bundle; a server that quietly used the in-process mirror would give an
+# agent a different verdict from the command line for the same plan, which is a
+# second authority in a fail-closed system. Set ORBITAL_MCP_POLICY_ENGINE=opa to
+# make the server match the CLI; baseline stays the default because an MCP server
+# is often run where no opa binary is installed.
+MCP_POLICY_ENGINE = os.environ.get("ORBITAL_MCP_POLICY_ENGINE", "baseline")
+
+# The threat model treats the calling agent as an untrusted client, so the policy
+# bypass is an operator switch rather than a tool argument: an argument is
+# reachable by anything that can shape a tool call, including injected text.
+# Set ORBITAL_MCP_ALLOW_POLICY_BYPASS=1 on a development server to honour it.
+ALLOW_POLICY_BYPASS_ENV = "ORBITAL_MCP_ALLOW_POLICY_BYPASS"
+
+
+def _bypass_requested(unsafe_skip_policy: bool) -> bool:
+    """Honour a bypass request only when the operator enabled it on the server.
+
+    Read at call time rather than at import: the switch belongs to whoever runs
+    the server, and a value captured at import would depend on module load order.
+    """
+    return unsafe_skip_policy and os.environ.get(ALLOW_POLICY_BYPASS_ENV) == "1"
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _ALLOWED_PLANS = (_REPO_ROOT / "configs" / "mission_plans").resolve()
 _ALLOWED_BUNDLES = (_REPO_ROOT / "configs" / "policies").resolve()
@@ -105,9 +128,9 @@ def build_server() -> Any:
         ``unsafe_skip_policy=True`` (dev only)."""
         safe_path = _validate_plan_path(path)
         plan = load_mission_plan(safe_path)
-        if not unsafe_skip_policy:
+        if not _bypass_requested(unsafe_skip_policy):
             try:
-                enforce_policy_or_raise(plan)
+                enforce_policy_or_raise(plan, engine=MCP_POLICY_ENGINE)
             except PolicyViolationError as exc:
                 return {"status": "denied", "mission_id": plan.mission_id, "violations": exc.violations}
         intents = compile_plan_to_intents(plan)
@@ -126,9 +149,20 @@ def build_server() -> Any:
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 files = write_individual_workflows(
-                    safe_path, tmpdir, enforce_policy=not unsafe_skip_policy
+                    safe_path, tmpdir, enforce_policy=not _bypass_requested(unsafe_skip_policy),
+                    policy_engine=MCP_POLICY_ENGINE,
                 )
-                return {"status": "ok", "files": [f.name for f in files], "count": len(files)}
+                # Return the rendered YAML, not the paths: the temporary
+                # directory is removed on the way out of this block, so a caller
+                # given only the names would hold references to files that no
+                # longer exist.
+                return {
+                    "status": "ok",
+                    "count": len(files),
+                    "manifests": [
+                        {"name": f.name, "yaml": f.read_text(encoding="utf-8")} for f in files
+                    ],
+                }
         except PolicyViolationError as exc:
             return {"status": "denied", "violations": exc.violations}
 

@@ -9,6 +9,7 @@ Issue #53: formal priority mapping with tests.
 import pytest
 
 from orbital_mission_compiler.compiler import (
+    _priority_class_name,
     compile_plan_to_intents,
     load_mission_plan,
     render_argo_workflow,
@@ -195,3 +196,31 @@ class TestKueueCliPriorityClass:
         self._run(tmp_path, monkeypatch)
         job = self._load_job(tmp_path)
         assert "kueue.x-k8s.io/priority-class" not in job["metadata"].get("labels", {})
+
+
+# ── WorkloadPriorityClass prefix validation (PR #77 external review, P2-2) ──
+
+
+class TestPriorityClassPrefixValidation:
+    """A custom prefix must be rejected at render time, not on apply.
+
+    The generated string is both a cluster-scoped object name and a label value
+    on the Job, so an invalid or overlong prefix otherwise produces YAML that
+    only fails once it reaches the API server.
+    """
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            "THIS_IS_INVALID/",  # uppercase, underscore and a slash
+            "has space-",
+            "-leading-dash",
+            "x" * 70,  # exceeds the 63-character label bound
+        ],
+    )
+    def test_invalid_prefix_is_rejected(self, prefix):
+        with pytest.raises(ValueError, match="RFC 1123 label"):
+            _priority_class_name(1, prefix=prefix)
+
+    def test_valid_prefix_is_accepted(self):
+        assert _priority_class_name(1, prefix="mysat-").startswith("mysat-")
