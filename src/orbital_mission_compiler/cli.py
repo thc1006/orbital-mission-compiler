@@ -425,6 +425,12 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         "status": "ok", "files": [str(p) for p in published], "lint": "passed",
         "lint_output": output.strip(),
     }
+    if staging.exists():
+        # Reported rather than swallowed: the render succeeded, but a staging
+        # directory left inside the operator's output is theirs to clean up and
+        # they can only do that if they are told.
+        result["staging_left_behind"] = str(staging)
+        print(f"warning: could not remove the staging directory {staging}", file=sys.stderr)
     # Leftovers are reported against the published set, so the staging round trip
     # does not make every previous artifact look stale. They were part of the lint
     # above, so this is about what to apply, not about whether it is valid.
