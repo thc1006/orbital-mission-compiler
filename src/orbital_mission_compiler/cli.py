@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
 
 from .compiler import (
+    ArgoLintUnavailable,
     DEFAULT_POLICY_BUNDLE,
     DEFAULT_POLICY_DECISION,
     PolicyEngineUnavailableError,
@@ -23,6 +27,8 @@ from .compiler import (
     atomic_write,
     preflight_unique,
     preflight_writable,
+    resolve_argo_bin,
+    argo_lint_path,
     stale_rendered_artifacts,
     render_workload_priority_classes,
     typed_violations_from_decision,
@@ -140,6 +146,21 @@ def build_parser() -> argparse.ArgumentParser:
         "defaults to 'orbital-demo' there.",
     )
     render_p.add_argument(
+        "--argo-lint",
+        action="store_true",
+        help="After rendering, run the official 'argo lint' as a fail-closed gate. "
+        "Manifests are staged and published only if lint passes, so a rejected "
+        "render leaves the output directory unchanged. A lint failure exits 1; "
+        "the gate being unable to run at all -- CLI absent, timeout, no manifest "
+        "to lint -- exits 2. Off by default, so the CLI stays optional locally.",
+    )
+    render_p.add_argument(
+        "--argo-bin",
+        default="argo",
+        help="Argo CLI executable used by --argo-lint (name on PATH or a path). "
+        "Its version sets the lint semantics applied.",
+    )
+    render_p.add_argument(
         "--service-account",
         default=None,
         help="Stamp spec.serviceAccountName on the rendered Workflow. Needed when "
@@ -212,18 +233,87 @@ def cmd_compile(args: argparse.Namespace) -> None:
     print(json.dumps({"status": "ok", "workflows": len(payload["workflows"])}, indent=2))
 
 
-def cmd_render_argo(args: argparse.Namespace) -> None:
-    # Passed straight through: the writer supplies a namespace for a DRA bundle,
-    # whose two documents have to share one, and leaves an ordinary render
+def _render_argo(args: argparse.Namespace, output_dir: str | Path) -> list[Path]:
+    # args.namespace goes straight through: the writer supplies one for a DRA
+    # bundle, whose two documents have to share it, and leaves an ordinary render
     # namespace-less so it is chosen when the manifest is applied.
-    written = write_individual_workflows(
-        args.input, args.output_dir, enforce_policy=not args.unsafe_skip_policy,
+    return write_individual_workflows(
+        args.input, output_dir, enforce_policy=not args.unsafe_skip_policy,
         policy_engine=args.policy_engine, bundle=args.bundle, decision=args.decision,
         dra_fallback=args.dra_fallback, namespace=args.namespace,
         service_account=args.service_account,
     )
+
+
+def cmd_render_argo(args: argparse.Namespace) -> None:
+    if args.argo_lint:
+        _render_argo_with_lint_gate(args)
+        return
+    written = _render_argo(args, args.output_dir)
     result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
     _report_stale(result, args.output_dir, written, args.prune)
+    print(json.dumps(result, indent=2))
+
+
+def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
+    """Render, lint, and publish only if the linter accepts.
+
+    Resolve the CLI before rendering. Checking it afterwards is reachable only
+    through a non-empty render, and a plan is allowed to render nothing: a
+    download-only plan is schema-valid and passes the policy layer, so an empty
+    render would report a passing lint that never ran and skip the availability
+    check with it.
+    """
+    try:
+        resolve_argo_bin(args.argo_bin)
+    except ArgoLintUnavailable as exc:
+        print(json.dumps({"status": "error", "lint": "unavailable", "message": str(exc)}, indent=2))
+        raise SystemExit(2) from exc
+
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Render into a staging directory beside the output, lint there, and publish
+    # only on success. Writing first and reporting the failure afterwards leaves
+    # manifests no lint stage accepted sitting where a caller that ignores the
+    # exit code will apply them, and they may already have replaced a render
+    # that did pass. The sibling keeps the publish a same-filesystem rename.
+    staging = Path(tempfile.mkdtemp(prefix=".argo-lint-staging-", dir=out_dir.parent))
+    try:
+        written = _render_argo(args, staging)
+        if not written:
+            print(json.dumps({
+                "status": "error", "lint": "not-run", "reason": "no-manifests",
+                "message": "the plan rendered no Argo Workflow, so nothing was linted",
+            }, indent=2))
+            raise SystemExit(2)
+        rc, output = argo_lint_path(staging, argo_bin=args.argo_bin)
+        if rc != 0:
+            print(json.dumps({
+                "status": "lint-failed", "files": [],
+                "lint_output": output.strip(),
+                "message": f"argo lint rejected the rendered manifests; "
+                           f"{out_dir} was left unchanged",
+            }, indent=2))
+            raise SystemExit(1)
+        # Publish. Each rename is atomic; the set is not, so a crash mid-publish
+        # can leave a partial set, which is why the lint verdict is taken first.
+        published = []
+        for path in written:
+            target = out_dir / path.name
+            os.replace(path, target)
+            published.append(target)
+    except ArgoLintUnavailable as exc:
+        print(json.dumps({"status": "error", "lint": "unavailable", "message": str(exc)}, indent=2))
+        raise SystemExit(2) from exc
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    result: dict[str, object] = {
+        "status": "ok", "files": [str(p) for p in published], "lint": "passed",
+        "lint_output": output.strip(),
+    }
+    # Leftovers are reported against the published set, so the staging round trip
+    # does not make every previous artifact look stale.
+    _report_stale(result, args.output_dir, published, args.prune)
     print(json.dumps(result, indent=2))
 
 

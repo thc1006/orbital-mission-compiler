@@ -5,6 +5,8 @@ import hashlib
 import logging
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 from importlib import resources
 from datetime import datetime, timezone
@@ -1715,6 +1717,79 @@ def write_individual_workflows(
             atomic_write(out, yaml.safe_dump(docs[0], sort_keys=False))
         written.append(out)
     return written
+
+
+class ArgoLintUnavailable(RuntimeError):
+    """The lint gate could not produce a verdict.
+
+    Distinct from a manifest that fails lint. A missing or unrunnable CLI, a
+    timeout, or a process killed by a signal all mean no verdict exists, and
+    reporting any of them as "this manifest is invalid" would be a claim the
+    gate never actually made.
+    """
+
+
+ARGO_LINT_TIMEOUT_SECONDS = 120
+
+
+def resolve_argo_bin(argo_bin: str = "argo") -> str:
+    """Resolve the Argo CLI to an executable path, or fail closed.
+
+    ``shutil.which`` accepts both a bare name on ``PATH`` and an explicit path,
+    and checks the executable bit, so a missing or non-executable binary is
+    reported as an unavailable gate rather than a lint failure.
+    """
+    exe = shutil.which(argo_bin)
+    if exe is None:
+        raise ArgoLintUnavailable(
+            f"the Argo CLI {argo_bin!r} was not found on PATH or is not executable"
+        )
+    return exe
+
+
+def argo_lint_path(
+    target: str | Path,
+    argo_bin: str = "argo",
+    timeout: int = ARGO_LINT_TIMEOUT_SECONDS,
+) -> tuple[int, str]:
+    """Run the official ``argo lint`` over a directory of rendered manifests.
+
+    Returns ``(exit_code, combined_output)``; raises ``ArgoLintUnavailable``
+    when no verdict could be obtained.
+
+    Layer (iii) of the layered defensive validation: a static lint of the
+    rendered Argo YAML, distinct from schema (i) and policy (ii), catching
+    manifest-level errors the renderer introduced.
+
+    ``--offline`` makes this a pure client-side check with no cluster
+    connection; plain ``argo lint`` requires a kubeconfig, and the rendered
+    workflows are self-contained. A directory is passed rather than each file,
+    because the argument list is unbounded in the number of rendered workflows,
+    and because linting the directory also covers anything already sitting in it.
+
+    Only Argo kinds are linted. ``argo lint`` ignores documents of other kinds,
+    so in a ``--dra-fallback`` bundle the Workflow is checked and the
+    ResourceClaimTemplate is not.
+    """
+    exe = resolve_argo_bin(argo_bin)
+    try:
+        proc = subprocess.run(
+            [exe, "lint", "--offline", "--no-color", "-o", "simple", str(target)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ArgoLintUnavailable(f"argo lint timed out after {timeout}s") from exc
+    except OSError as exc:
+        # Argument list too long, exec format error, and anything else that
+        # prevents the process from running at all.
+        raise ArgoLintUnavailable(f"could not run {exe!r}: {exc}") from exc
+    if proc.returncode < 0:
+        raise ArgoLintUnavailable(
+            f"argo lint was terminated by signal {-proc.returncode}"
+        )
+    return proc.returncode, proc.stdout + proc.stderr
 
 
 def compile_file(
