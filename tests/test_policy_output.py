@@ -67,3 +67,52 @@ def test_policy_returns_valid_json_with_real_opa():
     assert rc == 0
     parsed = json.loads(out)
     assert "result" in parsed
+
+
+# ── `policy` CLI subcommand is a real admission gate ─────────────────
+# OPA's own exit code is 0 even for a denied plan; the command must gate on the
+# DECISION. These fail if cmd_policy regresses to exiting on the subprocess rc.
+
+VALID_PLAN = "configs/mission_plans/sample_gpu_cpu_fallback.yaml"
+DENIED_PLAN = "configs/mission_plans/demo_gpu_no_fallback.yaml"  # Rule 4
+
+
+@pytest.mark.skipif(not opa_available(), reason="OPA CLI not installed")
+def test_cmd_policy_exits_nonzero_on_denied_plan(monkeypatch):
+    import sys
+
+    from orbital_mission_compiler.cli import main
+
+    monkeypatch.setattr(sys, "argv", ["prog", "policy", "--input", DENIED_PLAN])
+    with pytest.raises(SystemExit) as se:
+        main()
+    assert se.value.code == 1
+
+
+@pytest.mark.skipif(not opa_available(), reason="OPA CLI not installed")
+def test_cmd_policy_exits_zero_on_valid_plan(monkeypatch):
+    import sys
+
+    from orbital_mission_compiler.cli import main
+
+    monkeypatch.setattr(sys, "argv", ["prog", "policy", "--input", VALID_PLAN])
+    with pytest.raises(SystemExit) as se:
+        main()
+    assert se.value.code == 0
+
+
+@pytest.mark.skipif(not opa_available(), reason="OPA CLI not installed")
+def test_opa_smoke_script_gates_on_decision():
+    """scripts/opa_smoke.sh must exit non-zero on a denied plan (its whole point:
+    let the policy RESULT, not just 'did OPA run', control the exit code)."""
+    import os
+    import shutil
+    import subprocess
+
+    opa_bin = shutil.which("opa")
+    assert opa_bin
+    env = {**os.environ, "PATH": os.path.dirname(opa_bin) + os.pathsep + os.environ["PATH"]}
+    ok = subprocess.run(["bash", "scripts/opa_smoke.sh", VALID_PLAN], env=env, capture_output=True)
+    assert ok.returncode == 0, ok.stderr.decode()
+    denied = subprocess.run(["bash", "scripts/opa_smoke.sh", DENIED_PLAN], env=env, capture_output=True)
+    assert denied.returncode != 0, "opa_smoke did not gate on a denied plan"

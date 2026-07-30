@@ -576,14 +576,24 @@ def render_kueue_job(
 
 
 class PolicyViolationError(ValueError):
-    """Raised when policy enforcement is on and the plan violates a policy rule.
+    """Raised when the plan violates a policy rule and enforcement is active.
 
-    With enforcement enabled the compile/render pipeline is fail-closed: no
-    artifact is produced for a plan the policy layer would deny. Enforcement uses
-    the in-process, OPA-equivalent baseline (``baseline_validator``), so it needs
-    no external ``opa`` CLI and runs in CI; the auditable OPA path remains
-    available via the ``policy`` CLI subcommand. Enforcement is opt-in so the
-    layers stay independently runnable (Section II-B).
+    The file-level compile/render entrypoints are **fail-closed by default**: no
+    artifact is produced for a plan the policy layer would deny. This realizes the
+    paper's admission-gate claim -- "the compiler enforces four independent checks
+    on every mission plan before any artifact is admitted to a cluster" (Sec. II).
+    Enforcement uses the in-process, OPA-equivalent baseline (``baseline_validator``),
+    so the gate needs no external ``opa`` CLI, always runs (a missing ``opa`` binary
+    cannot silently disable it), and runs in CI; the auditable OPA path remains
+    available via the ``policy`` CLI subcommand.
+
+    The four stages remain *independent modules* (Sec. VI): the enforcement-free
+    primitives -- ``compile_plan_to_intents``, ``render_argo_workflow``,
+    ``render_kueue_job``, ``baseline_validator.evaluate`` -- are still callable in
+    isolation for ablation, benchmarking, and standalone audit. Only the file-level
+    entrypoints (and the CLI/MCP that drive them) gate by default; each exposes an
+    explicit ``enforce_policy=False`` / ``--unsafe-skip-policy`` opt-out, matching
+    the paper's own caveat that a fully bypassed pipeline carries no guarantee.
     """
 
     def __init__(self, violations: list[str]) -> None:
@@ -604,7 +614,7 @@ def enforce_policy_or_raise(plan: MissionPlan) -> None:
 
 
 def render_workflows_for_file(
-    input_path: str | Path, enforce_policy: bool = False
+    input_path: str | Path, enforce_policy: bool = True
 ) -> list[dict[str, Any]]:
     plan = load_mission_plan(input_path)
     if enforce_policy:
@@ -614,7 +624,7 @@ def render_workflows_for_file(
 
 
 def write_individual_workflows(
-    input_path: str | Path, output_dir: str | Path, enforce_policy: bool = False
+    input_path: str | Path, output_dir: str | Path, enforce_policy: bool = True
 ) -> list[Path]:
     workflows = render_workflows_for_file(input_path, enforce_policy=enforce_policy)
     out_dir = Path(output_dir)
@@ -628,7 +638,7 @@ def write_individual_workflows(
 
 
 def compile_file(
-    input_path: str | Path, output_path: str | Path, enforce_policy: bool = False
+    input_path: str | Path, output_path: str | Path, enforce_policy: bool = True
 ) -> dict[str, Any]:
     plan = load_mission_plan(input_path)
     if enforce_policy:

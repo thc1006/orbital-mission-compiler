@@ -10,10 +10,13 @@ try:
 except ImportError:
     FastMCP = None  # type: ignore[assignment,misc]
 
+from orbital_mission_compiler import baseline_validator
 from orbital_mission_compiler.compiler import (
+    PolicyViolationError,
     analyze_timeline_conflicts,
-    load_mission_plan,
     compile_plan_to_intents,
+    enforce_policy_or_raise,
+    load_mission_plan,
     write_individual_workflows,
 )
 from orbital_mission_compiler.policy import eval_policy
@@ -71,27 +74,58 @@ def build_server() -> Any:
 
     @server.tool
     def validate_plan(path: str) -> dict[str, Any]:
+        """Report BOTH schema validity and policy admissibility for a plan.
+
+        Non-blocking: it tells the caller whether the plan would pass the admission
+        gate (``policy_allowed``) and lists any ``violations``, so an agent sees the
+        full picture before calling ``compile_plan``/``render_argo`` (which fail
+        closed on a denied plan by default).
+        """
         safe_path = _validate_plan_path(path)
         plan = load_mission_plan(safe_path)
-        return {"mission_id": plan.mission_id, "events": len(plan.events), "status": "validated"}
+        violations = baseline_validator.evaluate(plan.model_dump(mode="json"))
+        return {
+            "mission_id": plan.mission_id,
+            "events": len(plan.events),
+            "schema": "valid",
+            "policy_allowed": not violations,
+            "violations": violations,
+            "status": "validated" if not violations else "policy_denied",
+        }
 
     @server.tool
-    def compile_plan(path: str) -> dict[str, Any]:
+    def compile_plan(path: str, unsafe_skip_policy: bool = False) -> dict[str, Any]:
+        """Compile a plan to workflow intents. Fail-closed: a policy-denied plan
+        yields ``status: "denied"`` with its violations and no compilation, unless
+        ``unsafe_skip_policy=True`` (dev only)."""
         safe_path = _validate_plan_path(path)
         plan = load_mission_plan(safe_path)
+        if not unsafe_skip_policy:
+            try:
+                enforce_policy_or_raise(plan)
+            except PolicyViolationError as exc:
+                return {"status": "denied", "mission_id": plan.mission_id, "violations": exc.violations}
         intents = compile_plan_to_intents(plan)
         return {
+            "status": "ok",
             "mission_id": plan.mission_id,
             "intent_count": len(intents),
             "services": [intent.service_id for intent in intents],
         }
 
     @server.tool
-    def render_argo(path: str) -> dict[str, Any]:
+    def render_argo(path: str, unsafe_skip_policy: bool = False) -> dict[str, Any]:
+        """Render Argo Workflow manifests. Fail-closed: no artifact is produced for
+        a policy-denied plan (``status: "denied"``) unless ``unsafe_skip_policy=True``."""
         safe_path = _validate_plan_path(path)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            files = write_individual_workflows(safe_path, tmpdir)
-            return {"files": [f.name for f in files], "count": len(files)}
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                files = write_individual_workflows(
+                    safe_path, tmpdir, enforce_policy=not unsafe_skip_policy
+                )
+                return {"status": "ok", "files": [f.name for f in files], "count": len(files)}
+        except PolicyViolationError as exc:
+            return {"status": "denied", "violations": exc.violations}
 
     @server.tool
     def explain_policy(

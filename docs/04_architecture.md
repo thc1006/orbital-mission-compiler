@@ -58,6 +58,10 @@ Schema validation (Pydantic) and policy validation (OPA/Rego) intentionally over
 
 Design intent: schema catches structural errors at parse time. Policy catches semantic errors that require cross-field reasoning. Where both layers enforce the same rule, the earlier layer (schema) prevents bad data from entering the pipeline, and the later layer (policy) catches data that bypasses schema validation (e.g., raw JSON sent directly to OPA).
 
+### Fail-closed enforcement
+
+The policy layer is a real admission gate, not just an available check: the file-level entrypoints (`compile_file`, `write_individual_workflows`, `render_workflows_for_file`), the CLI `compile` / `render-argo` / `render-kueue` commands, and the MCP `compile_plan` / `render_argo` tools **fail closed by default** — a plan the policy layer would deny produces no artifact and a non-zero exit / `denied` result. The gate uses the in-process, OPA-equivalent baseline (`baseline_validator`), so it always runs even when the `opa` binary is absent and cannot be silently disabled. The four stages nonetheless remain independent modules — the enforcement-free primitives (`compile_plan_to_intents`, `render_argo_workflow`, `render_kueue_job`, `baseline_validator.evaluate`) are callable in isolation for ablation, benchmarking, and standalone audit — and an explicit `enforce_policy=False` / `--unsafe-skip-policy` / `unsafe_skip_policy=True` opt-out bypasses the gate for development, forfeiting the pre-uplink guarantee. The standalone `policy` subcommand and `scripts/opa_smoke.sh` gate on the OPA decision itself (non-zero exit on any deny via `--fail-defined`), so OPA-side CI also fails closed.
+
 ## Relationship to ORCHIDE
 
 ```

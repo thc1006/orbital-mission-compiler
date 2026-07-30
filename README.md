@@ -91,6 +91,10 @@ Mission Plan YAML
 
 This repo produces rendered YAML artifacts. It does not deploy to or control a live cluster. See [docs/04_architecture.md](docs/04_architecture.md) for the full source-to-ORCHIDE-slide mapping.
 
+### Fail-closed admission gate
+
+The policy layer runs on **every** plan before any artifact is produced. The CLI `compile` / `render-argo` / `render-kueue` commands and the MCP `compile_plan` / `render_argo` tools are **fail-closed by default**: a plan that violates a policy rule yields no artifact and a non-zero exit (CLI) or a `{"status": "denied", ...}` result (MCP). The gate uses the in-process, OPA-equivalent baseline, so it always runs even without the `opa` CLI installed. The four stages remain independent modules callable in isolation (schema, policy, IR, renderer); an explicit `--unsafe-skip-policy` flag (CLI) / `unsafe_skip_policy=True` argument (MCP) bypasses the gate for development and forfeits the pre-uplink guarantee. The standalone `policy` subcommand and `opa_smoke.sh` also gate on the decision (non-zero exit on any deny), so they are usable in CI.
+
 ## Project structure
 
 ```

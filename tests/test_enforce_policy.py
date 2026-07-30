@@ -1,14 +1,19 @@
-"""Effective tests for opt-in policy enforcement in the pipeline (P0-1).
+"""Effective tests for the fail-closed policy admission gate.
 
-Enforcement is fail-closed: with enforce_policy=True a plan the policy layer would
-deny produces NO artifact and a non-zero CLI exit. It is opt-in, so the default path
-still renders (the four stages stay independently runnable, Section II-B).
+The file-level compile/render entrypoints (and the CLI/MCP that drive them) are
+fail-closed BY DEFAULT: a plan the policy layer would deny produces NO artifact and
+a non-zero CLI exit. This realizes the paper's claim that "the compiler enforces
+four independent checks on every mission plan before any artifact is admitted."
+An explicit escape hatch (enforce_policy=False / --unsafe-skip-policy) preserves the
+composable-stage use, matching the paper's own bypass caveat.
 
 Every test here is designed to FAIL if the implementation regresses:
-- the block test asserts the surfaced violations EQUAL the policy layer's output
+- the block tests assert the surfaced violations EQUAL the policy layer's output
   (a stub that raised an empty error would fail),
-- the default test asserts a denied plan still renders (an always-on regression fails),
-- the compile_file test asserts NO output file is written (a write-then-raise fails).
+- the default-blocks tests assert a denied plan does NOT render by default (an
+  opt-in / fail-open regression fails here),
+- the compile_file test asserts NO output file is written (a write-then-raise fails),
+- the skip tests assert the explicit opt-out still renders a denied plan.
 """
 
 import sys
@@ -51,10 +56,18 @@ def test_enforce_blocks_and_surfaces_the_real_violation():
     assert "detect-ships" in str(exc.value)
 
 
-def test_default_still_renders_a_denied_plan():
-    # Opt-in guarantee: without enforcement the denied plan still renders. An
-    # always-enforce regression would fail here.
-    workflows = render_workflows_for_file(DENIED)
+def test_default_blocks_a_denied_plan():
+    # Fail-closed default: the denied plan does NOT render unless explicitly skipped.
+    # An opt-in / fail-open regression would fail here.
+    with pytest.raises(PolicyViolationError) as exc:
+        render_workflows_for_file(DENIED)
+    assert exc.value.violations == _policy_violations(DENIED)
+
+
+def test_explicit_skip_renders_a_denied_plan():
+    # The escape hatch (enforce_policy=False) preserves the composable-stage use:
+    # a caller that explicitly opts out still renders a denied plan.
+    workflows = render_workflows_for_file(DENIED, enforce_policy=False)
     assert len(workflows) >= 1
 
 
@@ -82,24 +95,30 @@ def test_enforce_helper_is_noop_for_valid_plan():
     enforce_policy_or_raise(load_mission_plan(VALID))  # must not raise
 
 
-def test_cli_enforce_denied_exits_nonzero(tmp_path, capsys, monkeypatch):
+def test_cli_denied_blocks_by_default(tmp_path, capsys, monkeypatch):
     from orbital_mission_compiler.cli import main
 
+    # No flag: the CLI is fail-closed by default -> exit 1, no artifact.
     out = tmp_path / "cli-out.json"
     monkeypatch.setattr(
-        sys, "argv", ["prog", "compile", "--input", DENIED, "--output", str(out), "--enforce-policy"]
+        sys, "argv", ["prog", "compile", "--input", DENIED, "--output", str(out)]
     )
     with pytest.raises(SystemExit) as se:
         main()
     assert se.value.code == 1
-    assert "denied" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "denied" in err
+    assert "--unsafe-skip-policy" in err  # the denial surfaces the opt-out
     assert not out.exists()  # no artifact on denial
 
 
-def test_cli_no_enforce_denied_still_succeeds(tmp_path, capsys, monkeypatch):
+def test_cli_unsafe_skip_policy_renders_denied(tmp_path, capsys, monkeypatch):
     from orbital_mission_compiler.cli import main
 
+    # Explicit opt-out: the denied plan compiles and writes an artifact.
     out = tmp_path / "cli-out2.json"
-    monkeypatch.setattr(sys, "argv", ["prog", "compile", "--input", DENIED, "--output", str(out)])
-    main()  # no enforcement -> no SystemExit
+    monkeypatch.setattr(
+        sys, "argv", ["prog", "compile", "--input", DENIED, "--output", str(out), "--unsafe-skip-policy"]
+    )
+    main()  # opt-out -> no SystemExit
     assert out.exists()

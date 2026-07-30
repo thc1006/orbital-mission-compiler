@@ -65,6 +65,50 @@ def test_render_argo_tool(server):
     assert len(result["files"]) >= 1
 
 
+# ── fail-closed admission gate (deny path) ────────────────────────────
+
+DENIED_PLAN = "demo_gpu_no_fallback.yaml"  # GPU step, no fallback -> Rule 4
+
+
+def test_validate_plan_reports_policy_denial(server):
+    """validate_plan must surface policy status, not just schema validity, so an
+    agent sees a denied plan before it tries to compile."""
+    result = _call(server, "validate_plan", {"path": DENIED_PLAN})
+    assert result["schema"] == "valid"
+    assert result["policy_allowed"] is False
+    assert any("fallback_resource_class" in v for v in result["violations"])
+    assert result["status"] == "policy_denied"
+
+
+def test_compile_plan_denied_blocks_by_default(server):
+    """Fail-closed: an agent calling compile_plan on a denied plan gets a denial
+    and NO compilation -- it cannot skip the gate the way it could skip explain_policy."""
+    result = _call(server, "compile_plan", {"path": DENIED_PLAN})
+    assert result["status"] == "denied"
+    assert any("fallback_resource_class" in v for v in result["violations"])
+    assert "intent_count" not in result  # nothing was compiled
+
+
+def test_compile_plan_unsafe_skip_compiles_denied(server):
+    result = _call(server, "compile_plan", {"path": DENIED_PLAN, "unsafe_skip_policy": True})
+    assert result["status"] == "ok"
+    assert result["intent_count"] >= 1
+
+
+def test_render_argo_denied_blocks_by_default(server):
+    """Fail-closed: no Argo artifact is produced for a denied plan by default."""
+    result = _call(server, "render_argo", {"path": DENIED_PLAN})
+    assert result["status"] == "denied"
+    assert any("fallback_resource_class" in v for v in result["violations"])
+    assert "files" not in result  # no artifact produced
+
+
+def test_render_argo_unsafe_skip_renders_denied(server):
+    result = _call(server, "render_argo", {"path": DENIED_PLAN, "unsafe_skip_policy": True})
+    assert result["status"] == "ok"
+    assert result["count"] >= 1
+
+
 # ── explain_policy tool ──────────────────────────────────────────────
 
 
