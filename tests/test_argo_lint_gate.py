@@ -21,7 +21,11 @@ from pathlib import Path
 import pytest
 
 from orbital_mission_compiler.cli import build_parser, cmd_render_argo
-from orbital_mission_compiler.compiler import ArgoLintUnavailable, argo_lint_path
+from orbital_mission_compiler.compiler import (
+    ArgoLintUnavailable,
+    PolicyViolationError,
+    argo_lint_path,
+)
 
 VALID_PLAN = "configs/mission_plans/sample_maritime_surveillance.yaml"
 ARGO_AVAILABLE = subprocess.run(  # noqa: S603
@@ -42,6 +46,31 @@ def _fake_argo(tmp_path: Path, exit_code: int, name: str = "argo", body: str = "
     )
     exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
     return exe
+
+
+
+def _multi_service_plan(tmp_path: Path, service_ids) -> Path:
+    services = "".join(
+        f"      - service_id: {sid}\n"
+        f"        priority: 50\n"
+        f"        steps:\n"
+        f"          - name: s\n"
+        f"            image: busybox:1.36\n"
+        f"            resource_class: cpu\n"
+        for sid in service_ids
+    )
+    plan = tmp_path / f"plan-{len(list(service_ids))}.yaml"
+    plan.write_text(
+        "mission_id: m\n"
+        "events:\n"
+        "  - timestamp: '2026-08-01T00:00:00Z'\n"
+        "    event_type: acquisition\n"
+        "    instrument: cam\n"
+        "    duration_seconds: 60\n"
+        "    services:\n" + services,
+        encoding="utf-8",
+    )
+    return plan
 
 
 def _run(tmp_path, monkeypatch, *extra, out_name="out"):
@@ -300,3 +329,216 @@ def test_real_argo_rejects_a_broken_manifest(tmp_path):
             os.environ["KUBECONFIG"] = env_kubeconfig
     assert rc != 0, output
     assert "does-not-exist" in output
+
+
+# ── the publish boundary ─────────────────────────────────────────────
+
+
+def test_a_failure_part_way_through_publishing_rolls_the_whole_set_back(tmp_path, monkeypatch, capsys):
+    """Each rename is atomic; the set a caller applies is not.
+
+    Without a rollback the directory ends up holding some files from this render
+    and some from the last one, each individually lint-clean, with nothing
+    recording that it is not any one render's output. Service "a" is new here and
+    "b"/"c" already exist, so the rollback has to both remove what it added and
+    restore what it displaced -- restoring alone would leave the new file behind.
+    """
+    plan = _multi_service_plan(tmp_path, ["a", "b", "c"])
+    out = tmp_path / "out"
+    out.mkdir()
+    previous = {}
+    for sid in ("b", "c"):
+        name = f"m-{sid}-2026-08-01t00-00-00z.yaml"
+        (out / name).write_text(f"# previous {name}\n", encoding="utf-8")
+        previous[name] = (out / name).read_text(encoding="utf-8")
+    new_name = "m-a-2026-08-01t00-00-00z.yaml"
+
+    exe = _fake_argo(tmp_path, 0)
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def failing_replace(src, dst):
+        # a: publish (1). b: displace (2), publish (3). c: displace (4) -> fail,
+        # so by then a brand-new file and a replaced file are both in place.
+        calls["n"] += 1
+        if calls["n"] == 4:
+            raise OSError(13, "Permission denied")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    args = build_parser().parse_args([
+        "render-argo", "--input", str(plan), "--output-dir", str(out),
+        "--argo-lint", "--argo-bin", str(exe),
+    ])
+    with pytest.raises(SystemExit) as exc:
+        cmd_render_argo(args)
+    assert exc.value.code == 2
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "error" and data["reason"] == "publish-failed"
+
+    monkeypatch.undo()
+    for name, body in previous.items():
+        assert (out / name).read_text(encoding="utf-8") == body, f"{name} was not restored"
+    assert not (out / new_name).exists(), "a file this render added survived the rollback"
+    assert sorted(p.name for p in out.glob("*.yaml")) == sorted(previous)
+
+
+def test_a_rejected_lint_does_not_create_an_output_directory(tmp_path, monkeypatch, capsys):
+    """A path that did not exist before a denied or rejected run must not exist
+    after it: creating it is a change to the directory the gate promises to
+    leave alone."""
+    exe = _fake_argo(tmp_path, 1, body='echo "rejected"')
+    out = tmp_path / "never" / "created"
+    args = build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--argo-lint", "--argo-bin", str(exe),
+    ])
+    with pytest.raises(SystemExit) as exc:
+        cmd_render_argo(args)
+    assert exc.value.code == 1
+    assert not out.exists(), "the output directory was created for a rejected render"
+    assert not (tmp_path / "never").exists()
+
+
+def test_a_policy_denial_is_reported_as_itself_not_as_a_missing_linter(tmp_path, capsys):
+    """Rendering runs before the CLI is resolved, so a denied plan reports its
+    typed violations rather than being masked by an absent linter."""
+    out = tmp_path / "out"
+    args = build_parser().parse_args([
+        "render-argo", "--input", "configs/mission_plans/demo_gpu_no_fallback.yaml",
+        "--output-dir", str(out), "--argo-lint", "--argo-bin", "argo-nope-xyz",
+    ])
+    with pytest.raises(PolicyViolationError):
+        cmd_render_argo(args)
+    assert not out.exists()
+
+
+def test_stale_yaml_in_the_destination_is_part_of_the_verdict(tmp_path, monkeypatch, capsys):
+    """`lint: passed` describes the directory a caller applies, not just the
+    files this render happened to produce.
+
+    The repository's own smoke globs the whole output directory, so a broken
+    workflow left from an earlier plan would be applied alongside a render that
+    reported success.
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "left-over.yaml").write_text("apiVersion: argoproj.io/v1alpha1\nkind: Workflow\n", encoding="utf-8")
+
+    # A linter that rejects only when the leftover is present in what it is given.
+    exe = tmp_path / "argo"
+    exe.write_text(
+        "#!/bin/sh\n"
+        'dir="$4"\n'
+        'for a in "$@"; do dir="$a"; done\n'
+        'if [ -f "$dir/left-over.yaml" ]; then echo "left-over.yaml is invalid"; exit 1; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+
+    args = build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--argo-lint", "--argo-bin", str(exe),
+    ])
+    with pytest.raises(SystemExit) as exc:
+        cmd_render_argo(args)
+    assert exc.value.code == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["status"] == "lint-failed"
+    assert "left-over" in data["lint_output"]
+    # And the leftover is not republished or removed by the gate.
+    assert (out / "left-over.yaml").exists()
+    assert sorted(p.name for p in out.glob("*.yaml")) == ["left-over.yaml"]
+
+
+@pytest.mark.parametrize("code", [2, 126, 127, 3])
+def test_a_return_code_that_is_not_a_verdict_is_unavailable(tmp_path, code):
+    """Argo reports a lint result it judged with status 1. A wrapper that could
+    not be run, or a runtime failure, says nothing about the manifests."""
+    exe = _fake_argo(tmp_path, code)
+    target = tmp_path / "m"
+    target.mkdir()
+    with pytest.raises(ArgoLintUnavailable, match="not a lint verdict"):
+        argo_lint_path(target, argo_bin=str(exe))
+
+
+def test_concurrent_publishes_do_not_interleave(tmp_path):
+    """Two renders publishing into one directory must not leave a mixture.
+
+    The critical section is held open deliberately: without the lock both
+    threads enter it together and the recorded order shows it, which is the
+    condition that lets their files interleave in the first place.
+    """
+    import threading
+    import time
+
+    from orbital_mission_compiler.cli import _publish, _publish_lock
+
+    out = tmp_path / "out"
+    order: list[str] = []
+    barrier = threading.Barrier(2)
+
+    def publish(tag: str) -> None:
+        staging = tmp_path / f"stage-{tag}"
+        staging.mkdir()
+        for i in range(3):
+            (staging / f"f{i}.yaml").write_text(f"{tag}\n", encoding="utf-8")
+        barrier.wait()
+        with _publish_lock(out):
+            order.append(f"{tag}-start")
+            time.sleep(0.2)
+            _publish(sorted(staging.glob("*.yaml")), out)
+            order.append(f"{tag}-end")
+
+    threads = [threading.Thread(target=publish, args=(t,)) for t in ("A", "B")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert order in (
+        ["A-start", "A-end", "B-start", "B-end"],
+        ["B-start", "B-end", "A-start", "A-end"],
+    ), f"the critical sections overlapped: {order}"
+    contents = {p.read_text(encoding="utf-8").strip() for p in out.glob("*.yaml")}
+    assert len(contents) == 1, f"the directory holds a mixture: {contents}"
+
+
+def test_the_gate_publishes_under_the_lock(tmp_path, capsys):
+    """Holding the lock has to block the gate.
+
+    The lock existing and the gate taking it are different claims: a test that
+    calls the lock itself proves the primitive works, not that publishing goes
+    through it.
+    """
+    import threading
+    import time
+
+    from orbital_mission_compiler.cli import _publish_lock
+
+    out = tmp_path / "out"
+    exe = _fake_argo(tmp_path, 0)
+    args = build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--argo-lint", "--argo-bin", str(exe),
+    ])
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            cmd_render_argo(args)
+        finally:
+            done.set()
+
+    with _publish_lock(out):
+        worker = threading.Thread(target=run)
+        worker.start()
+        # Long enough for the render and the lint, which are not under the lock.
+        time.sleep(1.0)
+        published_while_held = sorted(p.name for p in out.glob("*.yaml")) if out.is_dir() else []
+        assert not published_while_held, f"published while the lock was held: {published_while_held}"
+        assert not done.is_set()
+    worker.join(timeout=20)
+    assert done.is_set(), "the gate never finished after the lock was released"
+    assert list(out.glob("*.yaml")), "nothing was published after the lock was released"

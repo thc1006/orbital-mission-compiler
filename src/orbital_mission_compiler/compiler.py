@@ -1751,6 +1751,7 @@ def argo_lint_path(
     target: str | Path,
     argo_bin: str = "argo",
     timeout: int = ARGO_LINT_TIMEOUT_SECONDS,
+    resolved: str | None = None,
 ) -> tuple[int, str]:
     """Run the official ``argo lint`` over a directory of rendered manifests.
 
@@ -1771,7 +1772,7 @@ def argo_lint_path(
     so in a ``--dra-fallback`` bundle the Workflow is checked and the
     ResourceClaimTemplate is not.
     """
-    exe = resolve_argo_bin(argo_bin)
+    exe = resolved or resolve_argo_bin(argo_bin)
     try:
         proc = subprocess.run(
             [exe, "lint", "--offline", "--no-color", "-o", "simple", str(target)],
@@ -1788,6 +1789,21 @@ def argo_lint_path(
     if proc.returncode < 0:
         raise ArgoLintUnavailable(
             f"argo lint was terminated by signal {-proc.returncode}"
+        )
+    # Argo reports a lint result it judged with exit status 1. Anything else
+    # non-zero did not come from a lint verdict -- 126 and 127 are a wrapper that
+    # could not be executed or found, and other values are an invocation or
+    # runtime failure -- so it is not evidence about the manifests.
+    #
+    # Status 1 is itself broader than "these manifests are invalid": v4.0.1
+    # returns it for a missing path, unparseable YAML and an empty directory too
+    # (verified against the pinned CLI). Those are all reasons a caller must not
+    # publish, so they are reported as a failed verdict with the linter's own
+    # message rather than being guessed apart.
+    if proc.returncode not in (0, 1):
+        raise ArgoLintUnavailable(
+            f"argo lint exited {proc.returncode}, which is not a lint verdict: "
+            f"{(proc.stdout + proc.stderr).strip()[:400]}"
         )
     return proc.returncode, proc.stdout + proc.stderr
 

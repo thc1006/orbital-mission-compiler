@@ -115,6 +115,13 @@
   which class each one is checked against.
 
 ### Added
+- `render-argo --argo-lint`, an opt-in gate that renders into a staging directory,
+  lints the set the output directory will hold, and publishes only if the linter
+  accepts. Publishing is all-or-nothing: displaced files are kept aside until the
+  whole set lands and restored if it does not, and concurrent publishes into one
+  directory are serialised. A lint verdict exits 1; a gate that could not run --
+  CLI absent, timeout, signal, an exit status that is not a verdict, or nothing
+  rendered to lint -- exits 2.
 - `--prune` on `render-argo` and `render-kueue`. A render writes what the plan
   describes; it does not empty the output directory, so after a plan shrinks the
   manifests for what is gone stay behind and `kubectl apply -f <dir>` redeploys

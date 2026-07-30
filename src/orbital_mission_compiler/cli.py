@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
+import hashlib
 import json
 import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import yaml
@@ -255,53 +259,163 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2))
 
 
-def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
-    """Render, lint, and publish only if the linter accepts.
+def _nearest_existing_ancestor(path: Path) -> Path:
+    """The closest existing directory at or above ``path``.
 
-    Resolve the CLI before rendering. Checking it afterwards is reachable only
-    through a non-empty render, and a plan is allowed to render nothing: a
-    download-only plan is schema-valid and passes the policy layer, so an empty
-    render would report a passing lint that never ran and skip the availability
-    check with it.
+    Staging goes here so publishing is a same-filesystem rename, without having
+    to create the output directory first: a denied plan or a rejected lint must
+    leave a path that did not exist before the command exactly as absent. When
+    the output directory does exist this is the directory itself, which is
+    deliberate -- an output directory that is a mount point has a parent on a
+    different filesystem, and a rename across that boundary cannot work.
     """
-    try:
-        resolve_argo_bin(args.argo_bin)
-    except ArgoLintUnavailable as exc:
-        print(json.dumps({"status": "error", "lint": "unavailable", "message": str(exc)}, indent=2))
-        raise SystemExit(2) from exc
+    current = path.absolute()
+    while not current.is_dir():
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return current
 
-    out_dir = Path(args.output_dir)
+
+@contextlib.contextmanager
+def _publish_lock(out_dir: Path) -> Iterator[None]:
+    """Serialise publishing into one output directory.
+
+    Two renders publishing at once interleave their files and the directory ends
+    up holding some of each, with nothing recording that. The lock lives beside
+    the output rather than inside it, so taking it does not create the directory
+    a failed run has to leave absent.
+    """
+    # Keyed by the output path but kept in the system temp directory, for two
+    # reasons. It has to be somewhere that exists whether or not the output
+    # directory does -- anchoring it to the nearest existing ancestor would give
+    # two processes different lock files when one of them runs before the
+    # directory is created and the other after, which is exactly when they would
+    # collide. And a lock file is not something to leave in an operator's output.
+    digest = hashlib.sha256(str(out_dir.absolute()).encode("utf-8")).hexdigest()[:16]
+    lock_path = Path(tempfile.gettempdir()) / f"orbital-publish-{digest}.lock"
+    handle = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        os.close(handle)
+
+
+def _publish(staged: list[Path], out_dir: Path) -> list[Path]:
+    """Move a rendered set into the output directory, all of it or none of it.
+
+    Each rename is atomic on its own, but the set is what a caller applies. A
+    failure part-way through would leave the directory holding some files from
+    this render and some from the last one, and nothing would say so. Whatever a
+    rename displaces is kept aside until the whole set lands, and put back if it
+    does not; directories this call created are removed again on the way out.
+    """
+    created_dirs: list[Path] = []
+    probe = out_dir.absolute()
+    while not probe.is_dir():
+        created_dirs.append(probe)
+        probe = probe.parent
+    backup_dir = Path(tempfile.mkdtemp(prefix=".orbital-publish-backup-", dir=probe))
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Render into a staging directory beside the output, lint there, and publish
-    # only on success. Writing first and reporting the failure afterwards leaves
-    # manifests no lint stage accepted sitting where a caller that ignores the
-    # exit code will apply them, and they may already have replaced a render
-    # that did pass. The sibling keeps the publish a same-filesystem rename.
-    staging = Path(tempfile.mkdtemp(prefix=".argo-lint-staging-", dir=out_dir.parent))
+
+    displaced: dict[Path, Path] = {}
+    published: list[Path] = []
+    try:
+        for path in staged:
+            target = out_dir / path.name
+            if target.exists():
+                kept = backup_dir / target.name
+                os.replace(target, kept)
+                displaced[target] = kept
+            os.replace(path, target)
+            published.append(target)
+    except OSError:
+        for target in published:
+            with contextlib.suppress(OSError):
+                target.unlink()
+        for target, kept in displaced.items():
+            with contextlib.suppress(OSError):
+                os.replace(kept, target)
+        for created in created_dirs:
+            with contextlib.suppress(OSError):
+                created.rmdir()
+        raise
+    finally:
+        shutil.rmtree(backup_dir, ignore_errors=True)
+    return published
+
+
+def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
+    """Render, lint, and publish only if the linter accepts the whole set.
+
+    Order matters. Rendering comes first, so a schema or policy failure is
+    reported as itself instead of being masked by a missing linter. The CLI is
+    resolved before the empty-render check, because a plan is allowed to render
+    nothing -- a download-only plan is schema-valid and passes the policy layer --
+    and an empty render must not be able to report a lint that never ran.
+    """
+    out_dir = Path(args.output_dir)
+    staging = Path(tempfile.mkdtemp(
+        prefix=".argo-lint-staging-", dir=_nearest_existing_ancestor(out_dir)
+    ))
+    carried: list[Path] = []
     try:
         written = _render_argo(args, staging)
+
+        try:
+            resolved = resolve_argo_bin(args.argo_bin)
+        except ArgoLintUnavailable as exc:
+            print(json.dumps({"status": "error", "lint": "unavailable", "message": str(exc)}, indent=2))
+            raise SystemExit(2) from exc
+
         if not written:
             print(json.dumps({
                 "status": "error", "lint": "not-run", "reason": "no-manifests",
                 "message": "the plan rendered no Argo Workflow, so nothing was linted",
             }, indent=2))
             raise SystemExit(2)
-        rc, output = argo_lint_path(staging, argo_bin=args.argo_bin)
+
+        # Lint what the directory will actually hold. Staging carries only this
+        # render, but a file already in the output that this plan no longer
+        # produces survives the publish, and `kubectl apply -f <dir>` takes it
+        # along. Copying those in makes the verdict cover the set a caller
+        # applies; the copies are dropped again before publishing, so this does
+        # not rewrite files the render does not own.
+        staged_names = {path.name for path in written}
+        if out_dir.is_dir():
+            for existing in sorted(out_dir.glob("*.yaml")):
+                if existing.name in staged_names or not existing.is_file():
+                    continue
+                copy = staging / existing.name
+                shutil.copy2(existing, copy)
+                carried.append(copy)
+
+        rc, output = argo_lint_path(staging, argo_bin=args.argo_bin, resolved=resolved)
+        for copy in carried:
+            copy.unlink()
+        carried = []
         if rc != 0:
             print(json.dumps({
                 "status": "lint-failed", "files": [],
                 "lint_output": output.strip(),
-                "message": f"argo lint rejected the rendered manifests; "
-                           f"{out_dir} was left unchanged",
+                "message": f"argo lint rejected the manifests this render would leave in "
+                           f"{out_dir}; it was left unchanged",
             }, indent=2))
             raise SystemExit(1)
-        # Publish. Each rename is atomic; the set is not, so a crash mid-publish
-        # can leave a partial set, which is why the lint verdict is taken first.
-        published = []
-        for path in written:
-            target = out_dir / path.name
-            os.replace(path, target)
-            published.append(target)
+
+        try:
+            with _publish_lock(out_dir):
+                published = _publish(written, out_dir)
+        except OSError as exc:
+            print(json.dumps({
+                "status": "error", "lint": "passed", "reason": "publish-failed",
+                "message": f"the manifests passed lint but could not be published to "
+                           f"{out_dir}, which was rolled back to its previous contents: {exc}",
+            }, indent=2))
+            raise SystemExit(2) from exc
     except ArgoLintUnavailable as exc:
         print(json.dumps({"status": "error", "lint": "unavailable", "message": str(exc)}, indent=2))
         raise SystemExit(2) from exc
@@ -312,7 +426,8 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         "lint_output": output.strip(),
     }
     # Leftovers are reported against the published set, so the staging round trip
-    # does not make every previous artifact look stale.
+    # does not make every previous artifact look stale. They were part of the lint
+    # above, so this is about what to apply, not about whether it is valid.
     _report_stale(result, args.output_dir, published, args.prune)
     print(json.dumps(result, indent=2))
 
