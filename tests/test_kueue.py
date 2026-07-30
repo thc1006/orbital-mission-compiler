@@ -123,6 +123,18 @@ def test_kueue_rejects_values_the_api_server_would_reject():
         ({"memory_request": "  "}, "memory_request"),
         ({"cpu_request": "one"}, "cpu_request"),
         ({"memory_request": "256 Mi"}, "memory_request"),
+        # A character-class approximation of the quantity grammar accepts all
+        # of these; resource.ParseQuantity accepts none of them. Checked by
+        # running the real parser over them.
+        ({"cpu_request": "."}, "cpu_request"),
+        ({"cpu_request": "1..2"}, "cpu_request"),
+        ({"cpu_request": "1e"}, "cpu_request"),
+        ({"cpu_request": "1e+"}, "cpu_request"),
+        ({"cpu_request": "1.2.3"}, "cpu_request"),
+        ({"cpu_request": "1m1"}, "cpu_request"),
+        ({"memory_request": "1K"}, "memory_request"),   # decimal kilo is lowercase
+        ({"memory_request": "1mi"}, "memory_request"),
+        ({"memory_request": "1i"}, "memory_request"),
         ({"namespace": "Orbital_Demo"}, "namespace"),
         ({"namespace": "-leading-dash"}, "namespace"),
         ({"queue_name": "queue name"}, "queue_name"),
@@ -134,6 +146,9 @@ def test_kueue_rejects_values_the_api_server_would_reject():
     # The shapes an operator actually uses stay accepted.
     for kwargs in (
         {"cpu_request": "500m"}, {"memory_request": "1Gi"}, {"cpu_request": "2"},
+        {"cpu_request": "0.5"}, {"cpu_request": "1.5"}, {"cpu_request": "100n"},
+        {"memory_request": "1e3"}, {"memory_request": "1Ki"}, {"memory_request": "1k"},
+        {"memory_request": "256Mi"}, {"memory_request": ".5Gi"},
         {"namespace": "dra-unified"}, {"queue_name": "orbital-demo-local"},
     ):
         render_kueue_job(intent, **kwargs)

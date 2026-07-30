@@ -42,9 +42,24 @@ def sanitize_k8s_name(name: str, max_len: int = 63) -> str:
 # verbatim, so they are checked instead.
 _RFC1123_LABEL_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 
-# resource.Quantity, per the Kubernetes API reference's serialization format:
+# resource.Quantity, transcribed from the grammar in the Kubernetes API
+# reference rather than approximated:
 # https://kubernetes.io/docs/reference/kubernetes-api/common-definitions/quantity/
-_QUANTITY_RE = re.compile(r"^[+-]?[0-9.]+([eEinumkKMGTP]*[-+]?[0-9]*)$")
+#
+#   <quantity>       ::= <signedNumber><suffix>
+#   <suffix>         ::= <binarySI> | <decimalExponent> | <decimalSI>
+#   <binarySI>       ::= Ki | Mi | Gi | Ti | Pi | Ei
+#   <decimalSI>      ::= m | "" | k | M | G | T | P | E   (plus n and u)
+#   <decimalExponent>::= ("e" | "E") <signedNumber>
+#   <unsignedNumber> ::= <digits> | <digits> "." <digits> | <digits> "." | "." <digits>
+#
+# A character-class approximation is not enough: one accepts ".", "1..2", "1e",
+# "1.2.3" and "1K", none of which resource.ParseQuantity accepts. Note the
+# asymmetry in the SI suffixes -- decimal kilo is a lowercase "k", while the
+# binary prefixes capitalise.
+_QUANTITY_RE = re.compile(
+    r"^[+-]?(\d+(\.\d*)?|\.\d+)((Ki|Mi|Gi|Ti|Pi|Ei)|[munkMGTPE]|([eE][+-]?\d+))?$"
+)
 
 
 def _require_k8s_label(value: str, field: str) -> str:
@@ -62,10 +77,21 @@ def _require_k8s_label(value: str, field: str) -> str:
 
 
 def _require_quantity(value: str, field: str) -> str:
-    """Reject a resource request the API server would not parse as a quantity."""
-    if not isinstance(value, str) or not _QUANTITY_RE.match(value.strip()) or not value.strip():
-        raise ValueError(f"{field} must be a Kubernetes quantity (e.g. '1', '500m', '256Mi'), got {value!r}")
-    return value.strip()
+    """Reject a resource request the API server would not parse as a quantity.
+
+    Matches the stripped value and emits the stripped value, so surrounding
+    whitespace is absorbed rather than rejected; what lands in the manifest is
+    still exactly what ``resource.ParseQuantity`` accepts. Slightly stricter than
+    that function at the degenerate end: it parses ``"."``, ``"m"`` and ``"+"``
+    as zero, and those are rejected here, since none of them is a resource
+    request anyone means to write.
+    """
+    text = value.strip() if isinstance(value, str) else value
+    if not isinstance(text, str) or not text or not _QUANTITY_RE.match(text):
+        raise ValueError(
+            f"{field} must be a Kubernetes quantity (e.g. '1', '500m', '256Mi'), got {value!r}"
+        )
+    return text
 
 
 def _collision_resistant_k8s_name(name: str, max_len: int = 63, hash_len: int = 8) -> str:
@@ -1044,7 +1070,7 @@ def enforce_policy_or_raise(
 
 
 def render_workflows_for_file(
-    input_path: str | Path,
+    input_path: str | Path | MissionPlan,
     enforce_policy: bool = True,
     *,
     policy_engine: str = "baseline",
@@ -1060,7 +1086,7 @@ def render_workflows_for_file(
     caller a manifest naming a template that this function never produced, and
     the reference would not resolve.
     """
-    plan = load_mission_plan(input_path)
+    plan = _load_or_accept_plan(input_path)
     if enforce_policy:
         enforce_policy_or_raise(plan, engine=policy_engine, bundle=bundle, decision=decision)
     intents = compile_plan_to_intents(plan)
@@ -1075,6 +1101,69 @@ def render_workflows_for_file(
             )
         )
     return objects
+
+
+def _load_or_accept_plan(source: str | Path | MissionPlan) -> MissionPlan:
+    """Accept a plan file or an already-loaded plan.
+
+    A caller that evaluated the policy layer itself has to be able to render the
+    exact object it judged. Handing the path back to the renderer means the file
+    is read twice, and a file that changes between the two reads gets the verdict
+    of the content that was reviewed applied to content that was not.
+    """
+    if isinstance(source, MissionPlan):
+        return source
+    return load_mission_plan(source)
+
+
+# Every object this compiler renders carries at least one label or annotation in
+# this namespace, which is how a leftover artifact is told from a file that
+# happened to be in the output directory.
+_OWNED_KEY_PREFIX = "orbital/"
+
+
+def _is_rendered_artifact(path: Path) -> bool:
+    """Whether this file looks like output a previous render of this tool wrote."""
+    try:
+        docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
+    except (OSError, yaml.YAMLError):
+        return False
+    for doc in docs:
+        if not isinstance(doc, dict):
+            continue
+        meta = doc.get("metadata")
+        if not isinstance(meta, dict):
+            continue
+        for section in ("labels", "annotations"):
+            values = meta.get(section)
+            if isinstance(values, dict) and any(
+                isinstance(k, str) and k.startswith(_OWNED_KEY_PREFIX) for k in values
+            ):
+                return True
+    return False
+
+
+def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> list[Path]:
+    """Artifacts from an earlier render that this one did not replace.
+
+    A render writes the files the current plan produces; it does not empty the
+    directory first. When a plan shrinks -- a service removed, an event dropped --
+    the manifests for what is gone stay behind, and the documented ``kubectl
+    apply -f <dir>`` redeploys exactly the workloads the plan no longer asks for.
+    The output is a complete set of what the plan describes, which is not the
+    same as the directory being a picture of it.
+
+    Only files carrying this tool's own label namespace are reported, so an
+    operator who keeps other manifests alongside is not told they are stale.
+    """
+    out = Path(output_dir)
+    if not out.is_dir():
+        return []
+    current = {p.resolve() for p in written}
+    return sorted(
+        p for p in out.glob("*.yaml")
+        if p.resolve() not in current and _is_rendered_artifact(p)
+    )
 
 
 def preflight_unique(paths: list[Path]) -> None:
@@ -1094,7 +1183,7 @@ def preflight_unique(paths: list[Path]) -> None:
 
 
 def write_individual_workflows(
-    input_path: str | Path,
+    input_path: str | Path | MissionPlan,
     output_dir: str | Path,
     enforce_policy: bool = True,
     *,
@@ -1122,7 +1211,7 @@ def write_individual_workflows(
     Pod resolves a template only within its own namespace, so a Workflow left to the
     caller's current context could land beside a template it cannot reference.
     """
-    plan = load_mission_plan(input_path)
+    plan = _load_or_accept_plan(input_path)
     if enforce_policy:
         enforce_policy_or_raise(plan, engine=policy_engine, bundle=bundle, decision=decision)
     intents = compile_plan_to_intents(plan)
@@ -1156,7 +1245,7 @@ def write_individual_workflows(
 
 
 def compile_file(
-    input_path: str | Path,
+    input_path: str | Path | MissionPlan,
     output_path: str | Path,
     enforce_policy: bool = True,
     *,
@@ -1164,7 +1253,7 @@ def compile_file(
     bundle: str = DEFAULT_POLICY_BUNDLE,
     decision: str = DEFAULT_POLICY_DECISION,
 ) -> dict[str, Any]:
-    plan = load_mission_plan(input_path)
+    plan = _load_or_accept_plan(input_path)
     if enforce_policy:
         enforce_policy_or_raise(plan, engine=policy_engine, bundle=bundle, decision=decision)
     intents = compile_plan_to_intents(plan)

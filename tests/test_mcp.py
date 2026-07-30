@@ -6,6 +6,7 @@ Issue #12.
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -218,3 +219,49 @@ def test_mcp_demo_workflow(server):
     fixed_val = json.loads(fixed["raw"])["result"][0]["expressions"][0]["value"]
     assert fixed_val["allow"] is True
     assert fixed_val["deny"] == []
+
+
+# ── the gate judges the bytes it renders ─────────────────────────────
+
+
+def test_render_argo_cannot_be_swapped_between_the_verdict_and_the_render(server, tmp_path, monkeypatch):
+    """The plan is read once, so a file replaced after the verdict is not rendered.
+
+    Reading the path for the policy decision and then handing the same path to
+    the writer reads it twice. A plan that passes on the first read and is
+    replaced before the second gets the approval earned by the reviewed content
+    applied to content nobody reviewed.
+    """
+    import orbital_mission_compiler.compiler as compiler_mod
+
+    allowed = Path("configs/mission_plans/demo_gpu_fallback_fixed.yaml").read_text(encoding="utf-8")
+    denied = Path("configs/mission_plans/demo_gpu_no_fallback.yaml").read_text(encoding="utf-8")
+
+    root = tmp_path / "plans"
+    root.mkdir()
+    target = root / "swap.yaml"
+    target.write_text(allowed, encoding="utf-8")
+    monkeypatch.setenv("ORBITAL_MCP_PLAN_ROOT", str(root))
+
+    reads: list[int] = []
+    real_load = compiler_mod.load_mission_plan
+
+    def counting_load(path):
+        reads.append(1)
+        plan = real_load(path)
+        # Swap in the plan the policy layer rejects, the way a writer that
+        # re-read the path would pick it up.
+        target.write_text(denied, encoding="utf-8")
+        return plan
+
+    monkeypatch.setattr(compiler_mod, "load_mission_plan", counting_load)
+    monkeypatch.setattr("orbital_mission_compiler.mcp.server.load_mission_plan", counting_load)
+
+    result = _call(server, "render_argo", {"path": "swap.yaml"})
+
+    assert result["status"] == "ok", result
+    assert len(reads) == 1, f"the plan file was read {len(reads)} times"
+    # What was rendered is the approved content: it declares a fallback, so the
+    # step carries the fallback env-var pair the denied plan cannot produce.
+    rendered = "\n".join(m["yaml"] for m in result["manifests"])
+    assert "ORBITAL_FALLBACK_RESOURCE_CLASS" in rendered, rendered[:400]

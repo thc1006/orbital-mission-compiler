@@ -20,11 +20,22 @@
   `kubectl apply`.
 
 ### Added
+- `--prune` on `render-argo` and `render-kueue`. A render writes what the plan
+  describes; it does not empty the output directory, so after a plan shrinks the
+  manifests for what is gone stay behind and `kubectl apply -f <dir>` redeploys
+  them. They are now reported under `stale` and removed only when asked, and only
+  when they carry this tool's own labels.
 - `render-argo --service-account`, for the kubectl-apply path: `argo submit
   --serviceaccount` cannot be used on the multi-doc `--dra-fallback` bundle,
   because `argo submit` drops the ResourceClaimTemplate document.
 
 ### Fixed
+- The MCP `render_argo` tool reads the plan once. It judged the file and then
+  handed the path to the writer, which read it again, so a file replaced between
+  the two reads was rendered under a verdict reached on the content it replaced.
+- Kubernetes quantity validation follows the documented `resource.Quantity`
+  grammar rather than a character class, which accepted `.`, `1..2`, `1e`,
+  `1.2.3` and `1K`. Checked differentially against `resource.ParseQuantity`.
 - The MCP `render_argo` tool now fails closed with `policy_engine_unavailable`
   like the other tools, instead of calling the renderer directly and surfacing a
   raw exception.

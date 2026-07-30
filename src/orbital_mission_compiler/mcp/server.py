@@ -194,21 +194,26 @@ def build_server() -> Any:
         """Render Argo Workflow manifests. Fail-closed: no artifact is produced for
         a policy-denied plan (``status: "denied"``) unless ``unsafe_skip_policy=True``."""
         safe_path = _validate_plan_path(path)
+        # Read the file once. Judging the path and then handing the path to the
+        # writer reads it twice, so a file swapped in between would be rendered
+        # under a verdict reached on the content it replaced.
+        plan = load_mission_plan(safe_path)
         if not _bypass_requested(unsafe_skip_policy):
             # Same evaluator as validate_plan and compile_plan: passing the engine
             # name into the writer instead meant an invalid value escaped from
             # here as a raw exception while the other tools returned a structured
             # result for it.
             try:
-                violations = _server_policy_violations(load_mission_plan(safe_path))
+                violations = _server_policy_violations(plan)
             except PolicyUndecidable as exc:
                 return _undecidable(exc)
             if violations:
                 return {"status": "denied", "violations": violations}
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                # The verdict above is the gate; the writer does not re-evaluate.
-                files = write_individual_workflows(safe_path, tmpdir, enforce_policy=False)
+                # The verdict above is the gate, on this exact object; the writer
+                # does not re-read the file and does not re-evaluate.
+                files = write_individual_workflows(plan, tmpdir, enforce_policy=False)
                 # Return the rendered YAML, not the paths: the temporary
                 # directory is removed on the way out of this block, so a caller
                 # given only the names would hold references to files that no

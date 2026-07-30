@@ -163,3 +163,98 @@ def test_main_compile(tmp_path, capsys, monkeypatch):
     data = json.loads(captured.out)
     assert data["status"] == "ok"
     assert out.exists()
+
+
+# ── a complete output set is not a picture of the directory ───────────
+
+
+def _shrink_plan(tmp_path, service_ids):
+    services = "\n".join(
+        f"      - service_id: {sid}\n"
+        f"        priority: 50\n"
+        f"        steps:\n"
+        f"          - name: s\n"
+        f"            image: busybox:1.36\n"
+        f"            resource_class: cpu\n"
+        for sid in service_ids
+    )
+    plan = tmp_path / f"plan-{len(service_ids)}.yaml"
+    plan.write_text(
+        "mission_id: m\n"
+        "events:\n"
+        "  - timestamp: '2026-08-01T00:00:00Z'\n"
+        "    event_type: acquisition\n"
+        "    instrument: cam\n"
+        "    duration_seconds: 60\n"
+        "    services:\n" + services,
+        encoding="utf-8",
+    )
+    return plan
+
+
+def test_a_shrunk_plan_reports_the_artifacts_it_no_longer_covers(tmp_path, capsys):
+    """A render writes what the plan describes; it does not empty the directory.
+
+    After a service is removed its manifest stays behind, and the documented
+    `kubectl apply -f <dir>` redeploys exactly the workload the plan no longer
+    asks for. The render cannot silently present that directory as its output.
+    """
+    out = tmp_path / "out"
+    big = build_parser().parse_args([
+        "render-argo", "--input", str(_shrink_plan(tmp_path, ["a", "b", "c"])),
+        "--output-dir", str(out),
+    ])
+    cmd_render_argo(big)
+    first = json.loads(capsys.readouterr().out)
+    assert len(first["files"]) == 3 and "stale" not in first
+
+    small = build_parser().parse_args([
+        "render-argo", "--input", str(_shrink_plan(tmp_path, ["a"])),
+        "--output-dir", str(out),
+    ])
+    cmd_render_argo(small)
+    captured = capsys.readouterr()
+    second = json.loads(captured.out)
+    assert len(second["files"]) == 1
+    assert len(second["stale"]) == 2, second
+    assert "--prune" in captured.err
+    # Left in place: removing a file is the operator's call, not a side effect.
+    assert len(list(out.glob("*.yaml"))) == 3
+
+
+def test_prune_removes_only_this_tools_leftovers(tmp_path, capsys):
+    out = tmp_path / "out"
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", str(_shrink_plan(tmp_path, ["a", "b", "c"])),
+        "--output-dir", str(out),
+    ]))
+    capsys.readouterr()
+    # An unrelated manifest an operator keeps alongside the rendered output.
+    theirs = out / "their-own.yaml"
+    theirs.write_text("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: keep\n", encoding="utf-8")
+
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", str(_shrink_plan(tmp_path, ["a"])),
+        "--output-dir", str(out), "--prune",
+    ]))
+    result = json.loads(capsys.readouterr().out)
+    assert len(result["pruned"]) == 2
+    assert "stale" not in result
+    remaining = sorted(p.name for p in out.glob("*.yaml"))
+    assert theirs.name in remaining, remaining
+    assert len(remaining) == 2, remaining
+
+
+def test_render_kueue_reports_its_own_leftovers(tmp_path, capsys):
+    out = tmp_path / "kout"
+    cmd_render_kueue(build_parser().parse_args([
+        "render-kueue", "--input", str(_shrink_plan(tmp_path, ["a", "b"])),
+        "--output-dir", str(out),
+    ]))
+    capsys.readouterr()
+    cmd_render_kueue(build_parser().parse_args([
+        "render-kueue", "--input", str(_shrink_plan(tmp_path, ["a"])),
+        "--output-dir", str(out),
+    ]))
+    result = json.loads(capsys.readouterr().out)
+    assert len(result["stale"]) == 1, result

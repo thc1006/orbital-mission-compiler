@@ -20,6 +20,7 @@ from .compiler import (
     render_resource_claim_templates,
     DRA_ROUTE_LABEL,
     preflight_unique,
+    stale_rendered_artifacts,
     render_workload_priority_classes,
     typed_violations_from_decision,
     write_individual_workflows,
@@ -40,6 +41,34 @@ _POLICY_ENGINE_HELP = (
     "external reviewer runs; it fails closed if opa is unavailable. 'baseline' uses the "
     "proven-equivalent in-process mirror (no opa subprocess), for offline use."
 )
+
+
+_PRUNE_HELP = (
+    "Delete artifacts in the output directory that an earlier render of this tool "
+    "wrote and this one did not replace. Without it they are reported under "
+    "'stale' and left in place: a render writes what the plan describes, it does "
+    "not empty the directory, so after a plan shrinks 'kubectl apply -f <dir>' "
+    "would redeploy the workloads the plan no longer asks for. Only files carrying "
+    "this tool's own labels are considered."
+)
+
+
+def _report_stale(result: dict[str, object], output_dir: str, written: list[Path], prune: bool) -> None:
+    stale = stale_rendered_artifacts(output_dir, written)
+    if not stale:
+        return
+    if prune:
+        for path in stale:
+            path.unlink()
+        result["pruned"] = [str(p) for p in stale]
+        return
+    result["stale"] = [str(p) for p in stale]
+    print(
+        f"warning: {len(stale)} artifact(s) in {output_dir} are left over from an "
+        f"earlier render and were not replaced; applying the directory would "
+        f"redeploy them. Re-run with --prune to remove them.",
+        file=sys.stderr,
+    )
 
 
 def _add_policy_args(p: argparse.ArgumentParser) -> None:
@@ -74,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
         "Off by default (runtime env-var switch). The firstAvailable claim is a "
         "scheduler-route artifact and is not Kueue quota-counted.",
     )
+    render_p.add_argument("--prune", action="store_true", help=_PRUNE_HELP)
     render_p.add_argument("--namespace", default="orbital-demo")
     render_p.add_argument(
         "--service-account",
@@ -93,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     kueue_p = sub.add_parser("render-kueue", help="Render Kueue-compatible Job manifests")
     kueue_p.add_argument("--input", required=True)
     kueue_p.add_argument("--output-dir", required=True)
+    kueue_p.add_argument("--prune", action="store_true", help=_PRUNE_HELP)
     kueue_p.add_argument("--queue", default="orbital-demo-local")
     kueue_p.add_argument("--namespace", default="orbital-demo")
     kueue_p.add_argument(
@@ -154,7 +185,9 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
         dra_fallback=args.dra_fallback, namespace=args.namespace,
         service_account=args.service_account,
     )
-    print(json.dumps({"status": "ok", "files": [str(p) for p in written]}, indent=2))
+    result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
+    _report_stale(result, args.output_dir, written, args.prune)
+    print(json.dumps(result, indent=2))
 
 
 def cmd_inspect(args: argparse.Namespace) -> None:
@@ -220,8 +253,10 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
     written = []
     for out, text in planned:
         out.write_text(text, encoding="utf-8")
-        written.append(str(out))
-    print(json.dumps({"status": "ok", "files": written}))
+        written.append(out)
+    result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
+    _report_stale(result, args.output_dir, written, args.prune)
+    print(json.dumps(result))
 
 
 def cmd_policy(args: argparse.Namespace) -> None:
