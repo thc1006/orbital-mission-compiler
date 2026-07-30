@@ -45,7 +45,7 @@ The compiler operates across four trust boundaries:
 
 | ID | STRIDE Category | Threat | Attack Vector | Existing Mitigation | Residual Risk |
 |---|---|---|---|---|---|
-| T1 | **Tampering** | YAML deserialization attack (billion laughs / alias bomb) | Crafted YAML with recursive anchors or entity expansion | `yaml.safe_load` used consistently (CWE-502); Pydantic typed validation post-parse | No explicit document size limit; `safe_load` prevents code execution but large documents may exhaust memory |
+| T1 | **Tampering** | YAML deserialization attack (billion laughs / alias bomb) | Crafted YAML with recursive anchors or entity expansion | plans load through `_StrictLoader`, a `yaml.SafeLoader` subclass that also rejects duplicate mapping keys (`compiler.py` `load_mission_plan`); no unsafe loader is used | No explicit document size limit; `safe_load` prevents code execution but large documents may exhaust memory |
 | T2 | **Tampering** | OPA policy bypass via crafted input | Input fields engineered to satisfy policy rules while violating semantic intent | Schema + Policy dual-layer validation (12 error categories in ablation study); defense-in-depth on 5 overlapping rules | Novel field combinations outside tested corpus may bypass rules; policy coverage depends on rule completeness |
 | T3 | **Tampering** | MCP path traversal | `../../etc/passwd` in plan path argument to MCP tools | CWE-22: multi-layer validation — rejects absolute paths, `..` components, directory components; symlink-safe `resolve()` + `relative_to()` boundary check | Plan paths are confined to a single root, but that root is now configurable via `ORBITAL_MCP_PLAN_ROOT` (the checkout layout is only the default, and does not exist for an installed wheel). The boundary check is as strong as before; what changed is that the trust placed in the directory is the operator's to establish — see the assumptions below |
 | T4 | **Denial of Service** | OPA subprocess hang or resource exhaustion | Pathological Rego evaluation or extremely large input payload | CWE-400: 30-second timeout (`OPA_TIMEOUT_SECONDS`); subprocess killed on expiry | No memory limit on OPA process; no rate limiting on MCP tool invocations |
@@ -64,7 +64,7 @@ The compiler implements hardening for the following CWEs. Test coverage is summa
 
 | CWE | Name | Mitigation | Location | Tests |
 |---|---|---|---|---|
-| CWE-22 | Path Traversal | Multi-layer validation: no `..`, no absolute, bare filenames, symlink-safe resolve | `src/orbital_mission_compiler/mcp/server.py:33-59` | `test_mcp_security.py` (6 tests) |
+| CWE-22 | Path Traversal | Multi-layer validation: no `..`, no absolute, bare filenames, symlink-safe resolve | `src/orbital_mission_compiler/mcp/server.py `_is_within` / `_validate_plan_path`` | `test_mcp_security.py` (6 tests) |
 | CWE-209 | Error Message Info Disclosure | stdout prioritized over stderr for OPA output | `src/orbital_mission_compiler/policy.py:39-42` | `test_policy_security.py` (1 test) |
 | CWE-250 | Unnecessary Privileges | Non-root `USER appuser` in Dockerfile | `Dockerfile` (`USER appuser`) | CI runs as non-root |
 | CWE-377 | Insecure Temporary File | `mktemp` + `trap` cleanup; Python `tempfile.TemporaryDirectory` | `scripts/opa_smoke.sh:12-13`, `src/orbital_mission_compiler/mcp/server.py` | Scripts + context managers |

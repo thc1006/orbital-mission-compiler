@@ -135,7 +135,7 @@ All changes follow test-first development. See [AGENTS.md](AGENTS.md) for TDD ru
 
 ```bash
 make verify      # File structure + syntax check
-make test        # Unit tests with coverage
+make test        # Unit tests
 make eval        # Golden translation evals
 make lint        # Ruff linter
 ```

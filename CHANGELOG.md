@@ -29,9 +29,9 @@
 - A mission plan with a duplicate YAML mapping key is rejected rather than resolved
   to the last value.
 - Operator-supplied `--namespace`, `--queue`, `--service-account` and the Kueue
-  cpu/memory requests are validated against the RFC 1123 label and `resource.Quantity`
-  formats before rendering, instead of being copied into the manifest and failing at
-  `kubectl apply`.
+  cpu/memory requests are validated before rendering, instead of being copied into
+  the manifest and failing at `kubectl apply`. See the name-class entry above for
+  which class each one is checked against.
 
 ### Added
 - `--prune` on `render-argo` and `render-kueue`. A render writes what the plan

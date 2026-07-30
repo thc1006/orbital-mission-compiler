@@ -44,9 +44,12 @@ Captured environment: `manifests/k8s/kueue/dra-unified/results-v0.18.3-20260716/
    `python -m orbital_mission_compiler.cli render-kueue --input
    configs/mission_plans/sample_gpu_cpu_fallback.yaml --output-dir /tmp/out
    --namespace dra-unified --queue dra-unified-lq --dra-fallback`
-   -> two files: `*-kueue.yaml` (the `exactly` GPU RCT + the Job that references
-   it, never `firstAvailable`) and `*-scheduler-fallback.yaml` (the
-   `firstAvailable` claim, for the plain-Pod/Argo route Kueue does not admit).
+   -> at **v0.5.0**, one `*-kueue.yaml` per intent holding the `firstAvailable`
+   RCT, the `exactly` GPU RCT and the Job, which references the `exactly` claim
+   and never `firstAvailable`. That is what this table's commit produces; if you
+   are on a later `main`, the scheduler-route claim is written separately as
+   `*-scheduler-fallback.yaml`, because nothing in the Kueue bundle referenced
+   it. The Job's claim reference is the same either way.
 
 ## Honest notes
 

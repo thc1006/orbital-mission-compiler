@@ -7,10 +7,14 @@ The user explicitly asked for agentic workflow support. This repo therefore incl
 - command snippets under `.claude/commands/`.
 
 ## Intended usage
-- `validate_plan(path)` — schema-level mission plan validation
+- `validate_plan(path)` — reports both schema validity and policy admissibility, so a denied plan is visible before anything is compiled
 - `compile_plan(path)` — compile plan and summarize generated intents
 - `render_argo(path)` — render Argo Workflow manifests
 - `explain_policy(path)` — evaluate OPA policy against a plan
+- `diff_plans(a, b)` — structural diff between two plans
+- `check_timeline_conflicts(path)` — overlapping acquisition windows
+
+`compile_plan` and `render_argo` are fail-closed: a policy-denied plan produces no artifact and returns the typed violations. The directory the server reads plans from is `ORBITAL_MCP_PLAN_ROOT` (the checkout layout is only its default).
 
 ## Positioning among space MCP servers
 As of April 2026, 15+ space-related MCP servers exist (Orbit-MCP, IO Aerospace, NASA API, STK, Copernicus, etc.), but all focus on data reading (orbit calculations, imagery access). This project's MCP server is the only one that performs workflow production — compiling mission plans into deployable K8s artifacts with policy validation. See docs/13_market_positioning.md for the full landscape.

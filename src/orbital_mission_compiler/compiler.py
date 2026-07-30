@@ -36,10 +36,11 @@ def sanitize_k8s_name(name: str, max_len: int = 63) -> str:
     return s[:max_len].rstrip("-") or "step"
 
 
-# An RFC 1123 DNS label, which is what a namespace, a LocalQueue name and a
-# ServiceAccount name each have to be. Names the compiler derives from a plan are
-# sanitized; these arrive from the operator and are copied into the manifest
-# verbatim, so they are checked instead.
+# An RFC 1123 DNS label: lowercase alphanumerics and '-', at most 63 characters,
+# no dots. A Namespace name is one of these. A ServiceAccount and a LocalQueue
+# are not -- see _RFC1123_SUBDOMAIN_RE below. Names the compiler derives from a
+# plan are sanitized; these arrive from the operator and are copied into the
+# manifest verbatim, so they are checked instead.
 _RFC1123_LABEL_RE = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 
 # resource.Quantity, transcribed from the grammar in the Kubernetes API
