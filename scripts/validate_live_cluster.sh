@@ -191,10 +191,15 @@ if command -v argo >/dev/null 2>&1; then
   shopt -u nullglob
   if [ ${#files[@]} -eq 0 ]; then
     report FAIL "No YAML files to lint"
-  elif argo lint "${files[@]}" >/dev/null 2>&1; then
+  # Not --offline here, unlike the portable smoke: this script runs against a
+  # live cluster it has already checked access to, so the cluster-aware lint is
+  # the stronger one. The output is kept, because "Argo lint failed" with the
+  # diagnostics discarded is not something an operator can act on.
+  elif ARGO_LINT_LOG="$(argo lint "${files[@]}" 2>&1)"; then
     report PASS "Argo lint passed"
   else
     report FAIL "Argo lint failed"
+    echo "${ARGO_LINT_LOG}" >&2
   fi
 fi
 

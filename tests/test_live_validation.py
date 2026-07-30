@@ -120,12 +120,17 @@ class TestValidationArgoRendering:
         reason="argo CLI not available",
     )
     def test_argo_lint_passes(self):
-        """Rendered Argo YAML passes official argo lint."""
+        """Rendered Argo YAML passes official argo lint.
+
+        `--offline` because this asserts something about the manifest, not about
+        a cluster: without it the CLI looks for a kubeconfig and the test fails
+        wherever there is no cluster, which is everywhere this suite runs in CI.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             written = write_individual_workflows(VALIDATION_PLAN, tmpdir)
             for path in written:
                 result = subprocess.run(
-                    ["argo", "lint", str(path)],
+                    ["argo", "lint", "--offline", "--no-color", str(path)],
                     capture_output=True,
                     text=True,
                     timeout=30,

@@ -96,7 +96,9 @@ jobs:
 
       - name: Unit tests with coverage
         run: |
-          python3 -m pytest -q --cov=orbital_mission_compiler --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+          # -rs lists why anything skipped, so a test quietly opting out of this
+          # job is visible in the log rather than folded into a count.
+          python3 -m pytest -q -rs --cov=orbital_mission_compiler --cov-report=term-missing --cov-report=xml --cov-fail-under=70
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
