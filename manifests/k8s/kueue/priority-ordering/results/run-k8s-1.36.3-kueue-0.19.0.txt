@@ -1,0 +1,24 @@
+=== 0. prerequisites ===
+[PASS] kubectl available
+[PASS] Kueue controller present
+=== 1. apply namespace + ClusterQueue (cpu=1) + LocalQueue ===
+[PASS] queue applied
+=== 2. emit + apply the WorkloadPriorityClasses from the compiler ===
+[PASS] WorkloadPriorityClasses applied
+[PASS] mission-critical + mission-normal exist
+=== 3. render HIGH (priority 90) and LOW (priority 50) Jobs ===
+=== 4. blocker holds the cpu=1 quota ===
+[PASS] blocker admitted (holds quota)
+=== 5. submit LOW first, then HIGH (reverse of priority) ===
+  LOW  job=prio-low-low-2026-04-15t10-00-00z-pvrpv workload=job-prio-low-low-2026-04-15t10-00-00z-pvrpv-1ef60 priority=200
+  HIGH job=prio-high-high-2026-04-15t10-00-00z-485l9 workload=job-prio-high-high-2026-04-15t10-00-00z-485l9-0cb24 priority=400
+=== 6. both PENDING while blocker holds quota ===
+[PASS] LOW and HIGH both pending under full quota
+=== 7. free quota (delete blocker); the higher-priority pending workload wins ===
+  first admitted after quota freed: HIGH (LOW status at that moment: n/a)
+[PASS] HIGH (mission-critical, submitted LAST) admitted before LOW -> priority drove ordering
+
+=== Summary ===
+PASS: 8  FAIL: 0
+RESULT: PASS
+=== cleanup ===

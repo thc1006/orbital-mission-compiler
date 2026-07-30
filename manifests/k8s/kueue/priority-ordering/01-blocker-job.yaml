@@ -1,0 +1,29 @@
+# Blocker: a cpu=1 Job that holds the ClusterQueue's entire CPU quota so the two
+# mission Jobs both stay PENDING. Deleting it frees the quota; Kueue then admits
+# the higher-priority pending workload first. It carries no priority-class (Kueue
+# default priority 0), which is irrelevant here -- it is admitted simply because it
+# arrives while the quota is free.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: prio-blocker
+  namespace: mission-prio
+  labels:
+    kueue.x-k8s.io/queue-name: mission-prio-lq
+spec:
+  parallelism: 1
+  completions: 1
+  suspend: true
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: blocker
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args: ["echo blocking; sleep 3600"]
+          resources:
+            requests:
+              cpu: "1"
+              memory: 256Mi

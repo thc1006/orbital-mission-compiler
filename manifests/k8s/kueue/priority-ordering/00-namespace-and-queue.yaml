@@ -1,0 +1,38 @@
+# Isolated queue for the priority-ordering experiment. The ClusterQueue's CPU
+# nominalQuota is 1, so exactly one cpu=1 Job is admissible at a time -- CPU is the
+# binding constraint. No preemption is configured, so the proof is pure queue
+# sorting: when quota frees, Kueue admits the highest-priority PENDING workload,
+# independent of submission order.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mission-prio
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: mission-prio-flavor
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: mission-prio-cq
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: mission-prio-flavor
+          resources:
+            - name: cpu
+              nominalQuota: "1"
+            - name: memory
+              nominalQuota: 2Gi
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: mission-prio-lq
+  namespace: mission-prio
+spec:
+  clusterQueue: mission-prio-cq
