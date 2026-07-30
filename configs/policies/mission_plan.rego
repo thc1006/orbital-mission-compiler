@@ -4,24 +4,53 @@ import rego.v1
 
 default allow := false
 
-deny contains msg if {
-  object.get(input, "mission_id", null) == null
-  msg := "mission_id must not be empty"
+# Structured policy decisions. Each violation carries the deny message plus the
+# machine-readable severity tier (T1-T4) and provenance (A = author-imposed,
+# D = ORCHIDE-derived) from the paper's loss-event taxonomy (Table III), so a
+# consumer gets a typed decision instead of an opaque string. The plain-string
+# `deny` set (below) is the message projection of `violations`, so the accept/
+# reject decision is byte-identical to the pre-refactor policy.
+
+# Per-rule severity tier and provenance, authoritative from Table III:
+# T1{1,2}, T2{4,6}, T3{7,8}, T4{3,5,9,10}.
+_rule_meta := {
+  1: {"severity": "T1", "provenance": "A"},
+  2: {"severity": "T1", "provenance": "A"},
+  3: {"severity": "T4", "provenance": "D"},
+  4: {"severity": "T2", "provenance": "A"},
+  5: {"severity": "T4", "provenance": "A"},
+  6: {"severity": "T2", "provenance": "A"},
+  7: {"severity": "T3", "provenance": "D"},
+  8: {"severity": "T3", "provenance": "D"},
+  9: {"severity": "T4", "provenance": "A"},
+  10: {"severity": "T4", "provenance": "D"},
 }
 
-deny contains msg if {
+_viol(rule, msg) := {
+  "rule": rule,
+  "severity": _rule_meta[rule].severity,
+  "provenance": _rule_meta[rule].provenance,
+  "message": msg,
+}
+
+# Rule 1: mission_id must not be null/absent or a blank string.
+violations contains _viol(1, "mission_id must not be empty") if {
+  object.get(input, "mission_id", null) == null
+}
+
+violations contains _viol(1, "mission_id must not be empty") if {
   mission_id := object.get(input, "mission_id", "")
   is_string(mission_id)
   trim_space(mission_id) == ""
-  msg := "mission_id must not be empty"
 }
 
-deny contains msg if {
+# Rule 2: the plan must contain at least one event.
+violations contains _viol(2, "mission plan must contain at least one event") if {
   count(input.events) == 0
-  msg := "mission plan must contain at least one event"
 }
 
-deny contains msg if {
+# Rule 3: an acquisition event must declare at least one service.
+violations contains _viol(3, msg) if {
   some i
   event := input.events[i]
   event.event_type == "acquisition"
@@ -38,7 +67,7 @@ deny contains msg if {
 _accelerator_bound(step) if step.resource_class == "gpu"
 _accelerator_bound(step) if step.resource_class == "fpga"
 
-deny contains msg if {
+violations contains _viol(4, msg) if {
   some i, j, k
   step := input.events[i].services[j].steps[k]
   _accelerator_bound(step)
@@ -51,7 +80,7 @@ _missing_fallback(step) if not step.fallback_resource_class
 _missing_fallback(step) if step.fallback_resource_class == null
 
 # Rule 5: service priority must not be zero (slide 9: priorities are 1-4)
-deny contains msg if {
+violations contains _viol(5, msg) if {
   some i, j
   svc := input.events[i].services[j]
   svc.priority == 0
@@ -59,7 +88,7 @@ deny contains msg if {
 }
 
 # Rule 6: needs_acceleration on CPU is contradictory
-deny contains msg if {
+violations contains _viol(6, msg) if {
   some i, j, k
   step := input.events[i].services[j].steps[k]
   step.resource_class == "cpu"
@@ -68,7 +97,7 @@ deny contains msg if {
 }
 
 # Rule 7: download events must not carry AI services (slide 9: DOWNLOAD has no WORKFLOW)
-deny contains msg if {
+violations contains _viol(7, msg) if {
   some i
   event := input.events[i]
   event.event_type == "download"
@@ -77,7 +106,7 @@ deny contains msg if {
 }
 
 # Rule 8: download events require ground visibility (slide 9: DOWNLOAD VISI=1)
-deny contains msg if {
+violations contains _viol(8, msg) if {
   some i
   event := input.events[i]
   event.event_type == "download"
@@ -86,7 +115,7 @@ deny contains msg if {
 }
 
 # Rule 9: every service must have at least one step
-deny contains msg if {
+violations contains _viol(9, msg) if {
   some i, j
   svc := input.events[i].services[j]
   count(svc.steps) == 0
@@ -97,7 +126,7 @@ deny contains msg if {
 # (slide 9: O=ocean, L=land). The field is optional, so a null or absent
 # value is permitted; only a PRESENT unrecognized value denies.
 #
-# Two deny clauses give complete, layered coverage of "present unrecognized":
+# Two clauses give complete, layered coverage of "present unrecognized":
 #   (a) a present non-{ocean,land} STRING (e.g. "desert"); and
 #   (b) a present NON-string (e.g. a number) -- only reachable on the
 #       raw-JSON schema-bypass path, since Pydantic rejects non-strings at
@@ -110,7 +139,7 @@ deny contains msg if {
 valid_landscape_types := {"ocean", "land"}
 
 # (a) present, string, but not a recognized value
-deny contains msg if {
+violations contains _viol(10, msg) if {
   some i, j
   svc := input.events[i].services[j]
   is_string(svc.landscape_type)
@@ -119,12 +148,19 @@ deny contains msg if {
 }
 
 # (b) present, but not a string (raw-JSON-bypass defense-in-depth)
-deny contains msg if {
+violations contains _viol(10, msg) if {
   some i, j
   svc := input.events[i].services[j]
   svc.landscape_type != null
   not is_string(svc.landscape_type)
   msg := sprintf("service %q has a non-string landscape_type (expected a string: ocean or land)", [svc.service_id])
+}
+
+# deny is the message projection of violations -- byte-identical to the
+# pre-refactor policy, so downstream consumers and goldens are unaffected.
+deny contains msg if {
+  some v in violations
+  msg := v.message
 }
 
 allow if count(deny) == 0
