@@ -119,6 +119,23 @@ def test_explain_policy_tool(server):
     assert "raw" in result
 
 
+def test_explain_policy_surfaces_typed_violations(server):
+    """An agent must get the rule id, tier and provenance, not only raw text.
+
+    The tool used to hand back the OPA output verbatim, so the safety
+    categories the policy computes were unreachable from the agent side.
+    """
+    result = _call(server, "explain_policy", {"path": DENIED_PLAN})
+    assert result.get("denied") is True
+    assert result["violations"], "a denied plan must report at least one violation"
+    for v in result["violations"]:
+        assert set(v) == {"rule", "rule_id", "severity", "provenance", "path", "message"}
+        assert v["severity"] in {"T1", "T2", "T3", "T4"}
+        assert v["rule_id"].startswith("OMP-")
+    # `raw` stays available for debugging.
+    assert result["raw"]
+
+
 # ── build_server registers all tools ──────────────────────────────────
 
 

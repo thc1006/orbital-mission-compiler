@@ -27,8 +27,14 @@ _rule_meta := {
 	10: {"severity": "T4", "provenance": "D"},
 }
 
+# Stable identifier for consumers that key on the rule rather than reading the
+# message. Mirrors baseline_validator.rule_id: `OMP-004` for numbered rules, and
+# one shared id for the structural guard, which is not a numbered paper rule.
+_rule_id(rule) := sprintf("OMP-%03d", [rule])
+
 _viol(rule, msg, path) := {
 	"rule": rule,
+	"rule_id": _rule_id(rule),
 	"severity": _rule_meta[rule].severity,
 	"provenance": _rule_meta[rule].provenance,
 	"path": path,
@@ -36,7 +42,14 @@ _viol(rule, msg, path) := {
 }
 
 # Structural fail-closed guard for malformed raw-JSON input (rule = null, T1/A).
-_sviol(msg, path) := {"rule": null, "severity": "T1", "provenance": "A", "path": path, "message": msg}
+_sviol(msg, path) := {
+	"rule": null,
+	"rule_id": "OMP-STRUCTURAL",
+	"severity": "T1",
+	"provenance": "A",
+	"path": path,
+	"message": msg,
+}
 
 # Normalized length of a services/steps container, mirroring the Python baseline's
 # `_as_list`: an absent or JSON `null` value counts as 0 (treated as empty, so the

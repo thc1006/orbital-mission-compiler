@@ -76,7 +76,14 @@ def _canon(viols: list[dict]) -> list:
     including path keeps distinct occurrences distinct."""
     # rule may be None (structural guards); map to -1 so mixed lists sort.
     return sorted(
-        ((-1 if v["rule"] is None else v["rule"]), v["severity"], v["provenance"], v["path"], v["message"])
+        (
+            (-1 if v["rule"] is None else v["rule"]),
+            v["rule_id"],
+            v["severity"],
+            v["provenance"],
+            v["path"],
+            v["message"],
+        )
         for v in viols
     )
 
@@ -94,8 +101,11 @@ def test_every_violation_has_the_full_typed_shape():
     seen_rules = set()
     for case in _CORPUS:
         for v in baseline_validator.violations(case["plan"]):
-            assert set(v) == {"rule", "severity", "provenance", "path", "message"}
+            assert set(v) == {"rule", "rule_id", "severity", "provenance", "path", "message"}
             assert v["severity"] in {"T1", "T2", "T3", "T4"}
+            # rule_id is the stable key external consumers match on, so it must
+            # agree with the rule number rather than drift from it.
+            assert v["rule_id"] == baseline_validator.rule_id(v["rule"])
             assert v["provenance"] in {"A", "D"}
             assert isinstance(v["message"], str) and v["message"]
             assert isinstance(v["path"], str) and v["path"].startswith("/")

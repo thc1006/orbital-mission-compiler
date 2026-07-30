@@ -93,7 +93,7 @@ This repo produces rendered YAML artifacts. It does not deploy to or control a l
 
 ### Fail-closed admission gate
 
-The policy layer runs on **every** plan before any artifact is produced. The CLI `compile` / `render-argo` / `render-kueue` commands and the MCP `compile_plan` / `render_argo` tools are **fail-closed by default**: a plan that violates a policy rule yields no artifact and a non-zero exit (CLI) or a `{"status": "denied", ...}` result (MCP), with the typed violations (`rule`/`severity`/`provenance`/`path`/`message`) surfaced for triage.
+The policy layer runs on **every** plan before any artifact is produced. The CLI `compile` / `render-argo` / `render-kueue` commands and the MCP `compile_plan` / `render_argo` tools are **fail-closed by default**: a plan that violates a policy rule yields no artifact and a non-zero exit (CLI) or a `{"status": "denied", ...}` result (MCP), with the typed violations (`rule`/`rule_id`/`severity`/`provenance`/`path`/`message`) surfaced for triage.
 
 Two interchangeable policy engines back the gate, selected with `--policy-engine`:
 

@@ -19,6 +19,7 @@ from .compiler import (
     render_kueue_job,
     render_resource_claim_templates,
     render_workload_priority_classes,
+    typed_violations_from_decision,
     write_individual_workflows,
     sanitize_k8s_name,
     ORCHIDE_PRIORITY_CLASS_PREFIX,
@@ -213,9 +214,13 @@ def cmd_policy(args: argparse.Namespace) -> None:
     elif isinstance(value, bool):
         denied = not value
     if denied:
-        deny = value.get("deny", []) if isinstance(value, dict) else []
+        # Report the typed violations the policy already computed (rule_id,
+        # severity tier, provenance, JSON-Pointer path), not the plain-string
+        # deny projection, so CI and other consumers can act on the category
+        # rather than parse the message.
+        typed = typed_violations_from_decision(value) or []
         print(
-            json.dumps({"status": "denied", "violations": deny}),
+            json.dumps({"status": "denied", "violations": typed}),
             file=sys.stderr,
         )
         raise SystemExit(1)

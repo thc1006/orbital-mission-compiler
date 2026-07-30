@@ -691,6 +691,37 @@ class PolicyViolationError(ValueError):
         )
 
 
+def typed_violations_from_decision(value: Any) -> list[dict[str, Any]] | None:
+    """Return the typed violations carried by an OPA decision value.
+
+    Returns the ``violations`` set when the decision carries one. A custom
+    ``--decision`` that exposes only the plain-string ``deny`` set is projected
+    onto the same shape, conservatively tagged as a structural violation, so
+    every consumer sees one schema rather than sometimes a string and sometimes
+    an object. Returns ``None`` when the value carries neither, which the caller
+    treats as an unusable decision.
+    """
+    if not isinstance(value, dict):
+        return None
+    if "violations" in value:
+        return list(value["violations"])
+    if "deny" in value:
+        from .baseline_validator import STRUCTURAL_RULE_ID
+
+        return [
+            {
+                "rule": None,
+                "rule_id": STRUCTURAL_RULE_ID,
+                "severity": "T1",
+                "provenance": "A",
+                "path": "",
+                "message": m,
+            }
+            for m in value.get("deny", [])
+        ]
+    return None
+
+
 def evaluate_policy_decision(
     plan: dict[str, Any],
     *,
@@ -731,18 +762,12 @@ def evaluate_policy_decision(
             raise PolicyEngineUnavailableError(
                 f"opa returned an unparseable decision: {out[:200]}"
             ) from exc
-        if isinstance(value, dict) and "violations" in value:
-            return list(value["violations"])
-        # Custom --decision without a typed `violations` set: fall back to the deny
-        # message set (untyped) so enforcement still fails closed on any deny.
-        if isinstance(value, dict) and "deny" in value:
-            return [
-                {"rule": None, "severity": "T1", "provenance": "A", "path": "", "message": m}
-                for m in value.get("deny", [])
-            ]
-        raise PolicyEngineUnavailableError(
-            f"opa decision {decision!r} did not return a violations/deny set"
-        )
+        typed = typed_violations_from_decision(value)
+        if typed is None:
+            raise PolicyEngineUnavailableError(
+                f"opa decision {decision!r} did not return a violations/deny set"
+            )
+        return typed
     raise ValueError(f"unknown policy engine: {engine!r} (expected 'opa' or 'baseline')")
 
 

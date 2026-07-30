@@ -90,6 +90,33 @@ def test_cmd_policy_exits_nonzero_on_denied_plan(monkeypatch):
 
 
 @pytest.mark.skipif(not opa_available(), reason="OPA CLI not installed")
+def test_cmd_policy_denial_reports_typed_violations(monkeypatch, capsys):
+    """The denial payload must carry the categories the policy already computed.
+
+    It previously emitted the plain-string `deny` projection under a
+    `violations` key, which left CI with nothing to act on but the prose.
+    """
+    import json as _json
+    import sys
+
+    from orbital_mission_compiler.cli import main
+
+    monkeypatch.setattr(sys, "argv", ["prog", "policy", "--input", DENIED_PLAN])
+    with pytest.raises(SystemExit) as se:
+        main()
+    assert se.value.code == 1
+
+    payload = _json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert payload["status"] == "denied"
+    assert payload["violations"], "a denied plan must report at least one violation"
+    for v in payload["violations"]:
+        assert set(v) == {"rule", "rule_id", "severity", "provenance", "path", "message"}
+        assert v["severity"] in {"T1", "T2", "T3", "T4"}
+        assert v["provenance"] in {"A", "D"}
+        assert v["rule_id"].startswith("OMP-")
+
+
+@pytest.mark.skipif(not opa_available(), reason="OPA CLI not installed")
 def test_cmd_policy_exits_zero_on_valid_plan(monkeypatch):
     import sys
 

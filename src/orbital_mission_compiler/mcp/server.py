@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -17,6 +18,7 @@ from orbital_mission_compiler.compiler import (
     compile_plan_to_intents,
     enforce_policy_or_raise,
     load_mission_plan,
+    typed_violations_from_decision,
     write_individual_workflows,
 )
 from orbital_mission_compiler.policy import eval_policy
@@ -137,7 +139,19 @@ def build_server() -> Any:
         safe_bundle = _validate_bundle_path(bundle)
         plan = load_mission_plan(safe_path)
         rc, out = eval_policy(str(safe_bundle), plan.model_dump(mode="json"), decision)
-        return {"exit_code": rc, "raw": out}
+        result: dict[str, Any] = {"exit_code": rc, "raw": out}
+        # Surface the typed violations so an agent can reason over the rule id,
+        # severity tier and provenance instead of parsing the raw OPA text.
+        # `raw` stays for debugging and for a custom decision that carries neither.
+        try:
+            value = json.loads(out)["result"][0]["expressions"][0]["value"]
+        except (ValueError, KeyError, IndexError, TypeError):
+            return result
+        typed = typed_violations_from_decision(value)
+        if typed is not None:
+            result["violations"] = typed
+            result["denied"] = bool(typed)
+        return result
 
     @server.tool
     def diff_plans(path_a: str, path_b: str) -> dict[str, Any]:

@@ -46,11 +46,22 @@ _RULE_META: dict[int, tuple[str, str]] = {
 }
 _STRUCTURAL_META = ("T1", "A")
 
+# Stable identifier for consumers that key on the rule rather than reading the
+# message: `OMP-004` for numbered rules, and one shared id for the structural
+# fail-closed guard, which is not a numbered rule from the paper's table.
+STRUCTURAL_RULE_ID = "OMP-STRUCTURAL"
+
+
+def rule_id(rule: int | None) -> str:
+    """Return the stable string id for a rule number (``None`` = structural guard)."""
+    return STRUCTURAL_RULE_ID if rule is None else f"OMP-{rule:03d}"
+
 
 def _viol(rule: int | None, message: str, path: str) -> dict[str, Any]:
     severity, provenance = _RULE_META[rule] if rule is not None else _STRUCTURAL_META
     return {
         "rule": rule,
+        "rule_id": rule_id(rule),
         "severity": severity,
         "provenance": provenance,
         "path": path,

@@ -112,10 +112,10 @@ def test_cli_baseline_engine_compiles_without_opa(tmp_path, monkeypatch):
 
 
 def test_enforce_error_carries_typed_violations():
-    # #7: the typed {rule,severity,provenance,path,message} must survive the
-    # enforcement boundary, not be flattened to strings.
+    # #7: the typed {rule,rule_id,severity,provenance,path,message} must survive
+    # the enforcement boundary, not be flattened to strings.
     with pytest.raises(compiler.PolicyViolationError) as exc:
         compiler.enforce_policy_or_raise(load_mission_plan(DENIED), engine="baseline")
     v = exc.value.violations[0]
-    assert set(v) == {"rule", "severity", "provenance", "path", "message"}
+    assert set(v) == {"rule", "rule_id", "severity", "provenance", "path", "message"}
     assert exc.value.messages == [x["message"] for x in exc.value.violations]
