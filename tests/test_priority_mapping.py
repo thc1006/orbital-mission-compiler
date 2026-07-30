@@ -119,8 +119,8 @@ class TestKueueWorkloadPriorityClass:
         plan = load_mission_plan("configs/mission_plans/sample_gpu_cpu_fallback.yaml")
         intent = compile_plan_to_intents(plan)[0]
         job = render_kueue_job(intent, priority_class=True)
-        # priority 75 -> ORCHIDE tier 2 -> orbital-orchide-2
-        assert job["metadata"]["labels"]["kueue.x-k8s.io/priority-class"] == "orbital-orchide-2"
+        # priority 75 -> ORCHIDE tier 2 -> orbital-mission-high
+        assert job["metadata"]["labels"]["kueue.x-k8s.io/priority-class"] == "orbital-mission-high"
 
     def test_priority_class_off_by_default(self):
         # Default off: the referenced WorkloadPriorityClass must exist first
@@ -138,9 +138,19 @@ class TestKueueWorkloadPriorityClass:
         assert all(w["apiVersion"] == "kueue.x-k8s.io/v1beta2" for w in wpcs)
         by_name = {w["metadata"]["name"]: w["value"] for w in wpcs}
         # ORCHIDE 1 is highest priority -> highest Kueue value; strictly monotone.
-        assert by_name["orbital-orchide-1"] > by_name["orbital-orchide-2"]
-        assert by_name["orbital-orchide-2"] > by_name["orbital-orchide-3"]
-        assert by_name["orbital-orchide-3"] > by_name["orbital-orchide-4"]
+        assert by_name["orbital-mission-critical"] > by_name["orbital-mission-high"]
+        assert by_name["orbital-mission-high"] > by_name["orbital-mission-normal"]
+        assert by_name["orbital-mission-normal"] > by_name["orbital-mission-low"]
+
+    def test_higher_mission_priority_maps_to_higher_kueue_value(self):
+        # The invariant the live queue-ordering proof (scripts/validate_kueue_priority.sh)
+        # depends on: a higher mission priority renders a priority-class whose
+        # WorkloadPriorityClass value is strictly higher, so Kueue sorts it ahead.
+        value = {w["metadata"]["name"]: w["value"] for w in render_workload_priority_classes()}
+        high = _priority_class_name(scale_priority_orchide(90))  # -> orbital-mission-critical
+        low = _priority_class_name(scale_priority_orchide(50))   # -> orbital-mission-normal
+        assert high == "orbital-mission-critical" and low == "orbital-mission-normal"
+        assert value[high] > value[low]
 
 
 # ── WorkloadPriorityClass is reachable from the CLI (#6) ─────────────────
@@ -180,7 +190,7 @@ class TestKueueCliPriorityClass:
     def test_priority_class_labels_the_job(self, tmp_path, monkeypatch):
         self._run(tmp_path, monkeypatch, "--priority-class")
         job = self._load_job(tmp_path)
-        assert job["metadata"]["labels"]["kueue.x-k8s.io/priority-class"] == "orbital-orchide-2"
+        assert job["metadata"]["labels"]["kueue.x-k8s.io/priority-class"] == "orbital-mission-high"
 
     def test_custom_prefix_flows_to_classes_and_label(self, tmp_path, monkeypatch):
         import yaml
@@ -188,9 +198,11 @@ class TestKueueCliPriorityClass:
         self._run(tmp_path, monkeypatch, "--priority-class", "--emit-priority-classes",
                   "--priority-class-prefix", "mysat-")
         job = self._load_job(tmp_path)
-        assert job["metadata"]["labels"]["kueue.x-k8s.io/priority-class"] == "mysat-2"
+        assert job["metadata"]["labels"]["kueue.x-k8s.io/priority-class"] == "mysat-mission-high"
         wpc = [d for d in yaml.safe_load_all((tmp_path / "workload-priority-classes.yaml").read_text()) if d]
-        assert {d["metadata"]["name"] for d in wpc} == {f"mysat-{t}" for t in (1, 2, 3, 4)}
+        assert {d["metadata"]["name"] for d in wpc} == {
+            f"mysat-{n}" for n in ("mission-critical", "mission-high", "mission-normal", "mission-low")
+        }
 
     def test_no_priority_class_label_by_default(self, tmp_path, monkeypatch):
         self._run(tmp_path, monkeypatch)
@@ -224,3 +236,30 @@ class TestPriorityClassPrefixValidation:
 
     def test_valid_prefix_is_accepted(self):
         assert _priority_class_name(1, prefix="mysat-").startswith("mysat-")
+
+
+def test_the_default_class_names_are_project_scoped():
+    """A WorkloadPriorityClass is cluster-scoped, so a generic name is not ours to take.
+
+    "mission-critical" is a name another installation, or an operator, can reasonably
+    have created already, and emitting it would rewrite theirs. The prefix stays in the
+    default so the emitted set belongs to something; an installation that shares a
+    cluster with a second copy of this compiler can still set its own.
+    """
+    from orbital_mission_compiler.compiler import ORCHIDE_PRIORITY_CLASS_PREFIX
+
+    assert ORCHIDE_PRIORITY_CLASS_PREFIX
+    names = [w["metadata"]["name"] for w in render_workload_priority_classes()]
+    assert all(n.startswith(ORCHIDE_PRIORITY_CLASS_PREFIX) for n in names)
+    assert not any(n.startswith("mission-") for n in names)
+
+
+def test_the_mapping_version_moved_with_the_names():
+    """The constant's own comment says to bump it when the mapping changes.
+
+    A Job already in a cluster carries the version it was labelled with, so a stale
+    label is the only way to notice that the classes it references were renamed.
+    """
+    from orbital_mission_compiler.compiler import PRIORITY_CLASS_MAPPING_VERSION
+
+    assert PRIORITY_CLASS_MAPPING_VERSION == "v2"
