@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from orbital_mission_compiler.compiler import (
-    _dra_fallback_step,
+    _dra_fallback_steps,
     _rct_name_for_intent,
     compile_plan_to_intents,
     load_mission_plan,
@@ -64,7 +64,7 @@ def test_dra_fallback_wires_first_available_rct_two_halves():
 def test_fpga_step_is_not_wired():
     # FPGA has no DRA driver, so it does not qualify for a firstAvailable claim.
     intent = _intent(FPGA)
-    assert _dra_fallback_step(intent) is None
+    assert _dra_fallback_steps(intent) == []
     wf = render_argo_workflow(intent, dra_fallback=True)
     assert all("podSpecPatch" not in t for t in _step_templates(wf))
 
@@ -113,3 +113,101 @@ def test_argo_lint_accepts_dra_wired_workflow(tmp_path):
         ["argo", "lint", "--offline", str(wf_file)], capture_output=True, text=True
     )
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+# ── Review-driven regression cases (PR #77 external review) ──────────────
+
+
+def _synthetic_intent(steps, workflow_name="wf"):
+    """Build an intent directly so a case can bypass the sample-plan corpus."""
+    from orbital_mission_compiler.schemas import WorkflowIntent
+
+    return WorkflowIntent(
+        mission_id="m",
+        service_id="s",
+        priority=50,
+        workflow_name=workflow_name,
+        steps=steps,
+        resource_hints={"execution_mode": "sequential"},
+    )
+
+
+def _step(name, primary, fallback=None):
+    from orbital_mission_compiler.schemas import ResourceClass, WorkflowStep
+
+    return WorkflowStep(
+        name=name,
+        image="img:1",
+        resource_class=ResourceClass(primary),
+        fallback_resource_class=ResourceClass(fallback) if fallback else None,
+    )
+
+
+def test_rct_names_stay_distinct_at_the_length_budget():
+    """A long workflow name must not truncate the accel/gpu discriminator away.
+
+    Plain truncation to 62 characters drops the suffix once the name fills the
+    budget, so both templates would collapse to the same name and the second
+    would overwrite the first on apply, silently removing the fallback route.
+    """
+    long_name = "w" * 63
+    intent = _synthetic_intent([_step("a", "gpu", "cpu")], workflow_name=long_name)
+    accel = _rct_name_for_intent(intent, "accel")
+    gpu = _rct_name_for_intent(intent, "gpu")
+    assert accel != gpu
+    assert len(accel) <= 62 and len(gpu) <= 62
+
+
+def test_every_emitted_object_identity_is_unique(tmp_path):
+    """No two emitted documents may share (apiVersion, kind, namespace, name)."""
+    written = write_individual_workflows(
+        GPU_FALLBACK, tmp_path, enforce_policy=False, dra_fallback=True, namespace="ns-a"
+    )
+    identities = []
+    for path in written:
+        for doc in yaml.safe_load_all(path.read_text()):
+            if doc:
+                meta = doc.get("metadata", {})
+                identities.append(
+                    (doc.get("apiVersion"), doc.get("kind"), meta.get("namespace"), meta.get("name"))
+                )
+    assert len(identities) == len(set(identities)), identities
+
+
+def test_multi_doc_places_workflow_and_template_in_one_namespace(tmp_path):
+    """A Pod resolves a ResourceClaimTemplate only in its own namespace, so a
+    multi-doc file that advertises itself as applyable must agree on one."""
+    written = write_individual_workflows(
+        GPU_FALLBACK, tmp_path, enforce_policy=False, dra_fallback=True, namespace="mission-ns"
+    )
+    docs = [d for d in yaml.safe_load_all(written[0].read_text()) if d]
+    namespaces = {d["kind"]: d["metadata"].get("namespace") for d in docs}
+    assert namespaces["ResourceClaimTemplate"] == "mission-ns"
+    assert namespaces["Workflow"] == "mission-ns"
+
+
+@pytest.mark.parametrize("mode", ["sequential", "parallel"])
+def test_every_accelerator_step_is_wired_not_only_the_first(mode):
+    """Two GPU-to-CPU steps in one service must both get claim wiring.
+
+    Wiring only the first leaves the rest on the runtime-only path while the
+    render still reports success, which is the failure worth catching.
+    """
+    intent = _synthetic_intent([_step("a", "gpu", "cpu"), _step("b", "gpu", "cpu")])
+    intent.resource_hints["execution_mode"] = mode
+    wf = render_argo_workflow(intent, dra_fallback=True)
+    wired = [
+        t
+        for t in wf["spec"]["templates"]
+        if "podSpecPatch" in t and t.get("container", {}).get("resources", {}).get("claims")
+    ]
+    assert len(wired) == 2, [t["name"] for t in wf["spec"]["templates"]]
+
+
+def test_cpu_primary_with_gpu_fallback_is_not_treated_as_accelerator_fallback():
+    """CPU-to-GPU would render "prefer CPU, else accelerator", the reverse of the
+    documented accelerator-with-fallback semantics, so it must not qualify."""
+    intent = _synthetic_intent([_step("a", "cpu", "gpu")])
+    assert _dra_fallback_steps(intent) == []
+    wf = render_argo_workflow(intent, dra_fallback=True)
+    assert all("podSpecPatch" not in t for t in wf["spec"]["templates"])

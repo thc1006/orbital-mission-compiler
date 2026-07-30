@@ -202,23 +202,30 @@ def cmd_policy(args: argparse.Namespace) -> None:
         raise SystemExit(rc)
     try:
         value = json.loads(out)["result"][0]["expressions"][0]["value"]
-    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
-        # Non-decision query (custom --decision) — nothing to gate on; report success.
-        raise SystemExit(0)
-    denied = False
-    if isinstance(value, dict):
-        if "allow" in value:
-            denied = not bool(value["allow"])
-        elif "deny" in value:
-            denied = len(value.get("deny") or []) > 0
-    elif isinstance(value, bool):
-        denied = not value
-    if denied:
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+        # An undefined or unparseable result is not an allow: this command is the
+        # standalone gate, so it must not report success for a decision it could
+        # not read. Exit 2 keeps "no usable decision" distinct from "denied" (1).
+        print(
+            json.dumps({"status": "error", "reason": "undecidable", "error": str(exc)}),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    try:
+        # Same strict parser the artifact gate uses, so the standalone command
+        # cannot admit a plan the compile/render path would reject.
+        typed = typed_violations_from_decision(value)
+    except PolicyEngineUnavailableError as exc:
+        print(
+            json.dumps({"status": "error", "reason": "policy_engine_unavailable", "error": str(exc)}),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if typed:
         # Report the typed violations the policy already computed (rule_id,
         # severity tier, provenance, JSON-Pointer path), not the plain-string
         # deny projection, so CI and other consumers can act on the category
         # rather than parse the message.
-        typed = typed_violations_from_decision(value) or []
         print(
             json.dumps({"status": "denied", "violations": typed}),
             file=sys.stderr,

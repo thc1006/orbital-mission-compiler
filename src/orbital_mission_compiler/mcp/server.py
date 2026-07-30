@@ -13,6 +13,7 @@ except ImportError:
 
 from orbital_mission_compiler import baseline_validator
 from orbital_mission_compiler.compiler import (
+    PolicyEngineUnavailableError,
     PolicyViolationError,
     analyze_timeline_conflicts,
     compile_plan_to_intents,
@@ -147,10 +148,16 @@ def build_server() -> Any:
             value = json.loads(out)["result"][0]["expressions"][0]["value"]
         except (ValueError, KeyError, IndexError, TypeError):
             return result
-        typed = typed_violations_from_decision(value)
-        if typed is not None:
-            result["violations"] = typed
-            result["denied"] = bool(typed)
+        try:
+            typed = typed_violations_from_decision(value)
+        except PolicyEngineUnavailableError as exc:
+            # A decision this gate cannot trust is reported as undecidable rather
+            # than as an empty violation list, which an agent would read as allowed.
+            result["denied"] = None
+            result["error"] = str(exc)
+            return result
+        result["violations"] = typed
+        result["denied"] = bool(typed)
         return result
 
     @server.tool

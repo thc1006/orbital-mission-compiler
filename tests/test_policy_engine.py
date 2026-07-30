@@ -119,3 +119,58 @@ def test_enforce_error_carries_typed_violations():
     v = exc.value.violations[0]
     assert set(v) == {"rule", "rule_id", "severity", "provenance", "path", "message"}
     assert exc.value.messages == [x["message"] for x in exc.value.violations]
+
+
+# ── Strict decision parsing (PR #77 external review, P1-2 / P1-3) ────────
+
+
+@pytest.mark.parametrize(
+    "value, why",
+    [
+        ({"allow": False, "violations": []}, "denied but lists nothing"),
+        ({"allow": True, "violations": [{"rule": 4, "rule_id": "OMP-004", "severity": "T2",
+                                         "provenance": "A", "path": "/x", "message": "m"}]},
+         "allowed while listing a violation"),
+        ({"violations": ""}, "violations is not a list"),
+        ({"violations": ["a bare string"]}, "violation is not a typed object"),
+        ({"violations": [{"message": "m"}]}, "violation missing typed fields"),
+        ({"allow": "false"}, "allow is a string, and bool('false') is True"),
+        ({"deny": "blocked"}, "deny is not a list"),
+        ({"result": "something else"}, "carries neither violations nor deny"),
+        ("not-an-object", "decision is not an object"),
+    ],
+)
+def test_untrustworthy_decision_fails_closed(value, why):
+    """An unreadable or self-contradictory decision must never read as "allowed".
+
+    Returning an empty violation list for these would admit the plan, which is
+    the one outcome a fail-closed gate must not reach by accident.
+    """
+    with pytest.raises(compiler.PolicyEngineUnavailableError):
+        compiler.typed_violations_from_decision(value)
+
+
+def test_consistent_decisions_are_accepted():
+    allowed = compiler.typed_violations_from_decision({"allow": True, "violations": []})
+    assert allowed == []
+    viol = {"rule": 4, "rule_id": "OMP-004", "severity": "T2",
+            "provenance": "A", "path": "/x", "message": "m"}
+    denied = compiler.typed_violations_from_decision({"allow": False, "violations": [viol]})
+    assert denied == [viol]
+    # A custom decision exposing only the deny set is projected onto the same shape.
+    projected = compiler.typed_violations_from_decision({"deny": ["blocked"]})
+    assert len(projected) == 1 and projected[0]["message"] == "blocked"
+
+
+def test_cmd_policy_exits_2_when_the_decision_is_undecidable(monkeypatch, capsys):
+    """The standalone gate must not report success for a result it cannot read."""
+    import sys
+
+    from orbital_mission_compiler import cli
+
+    monkeypatch.setattr(cli, "eval_policy", lambda *a, **k: (0, "not json at all"))
+    monkeypatch.setattr(sys, "argv", ["prog", "policy", "--input", VALID])
+    with pytest.raises(SystemExit) as se:
+        cli.main()
+    assert se.value.code == 2, "undecidable must be distinct from denied (1) and allowed (0)"
+    assert "undecidable" in capsys.readouterr().err

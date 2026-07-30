@@ -218,6 +218,7 @@ def render_argo_workflow(
     intent: WorkflowIntent,
     *,
     dra_fallback: bool = False,
+    namespace: str | None = None,
 ) -> dict[str, Any]:
     """Render an Argo Workflow for the intent's steps.
 
@@ -230,8 +231,13 @@ def render_argo_workflow(
     decision on the Argo/plain-Pod route -- the end-to-end scheduler fallback rather
     than an orphan claim template. Pair with ``_first_available_rct`` (emitted
     alongside by ``write_individual_workflows``) so the reference resolves.
+
+    ``namespace``, when given, is stamped on the Workflow. A ResourceClaimTemplate
+    is namespaced and a Pod can only reference one in its own namespace, so the
+    multi-doc output has to place both objects in the same namespace to be
+    applyable without an external ``kubectl -n``.
     """
-    fallback_step = _dra_fallback_step(intent) if dra_fallback else None
+    fallback_step_ids = {id(s) for s in _dra_fallback_steps(intent)} if dra_fallback else set()
     templates = []
     dag_tasks = []
     for idx, step in enumerate(intent.steps):
@@ -277,7 +283,7 @@ def render_argo_workflow(
         # scheduler decision rather than the runtime env-var switch. Two halves:
         # the container binding is a native CRD field (structural), the pod-level
         # resourceClaims entry has no Template field so it goes via podSpecPatch.
-        if fallback_step is not None and step is fallback_step:
+        if id(step) in fallback_step_ids:
             claim = "compute"
             template["container"].setdefault("resources", {})["claims"] = [{"name": claim}]
             template["podSpecPatch"] = _argo_dra_pod_spec_patch(
@@ -324,33 +330,48 @@ def render_argo_workflow(
             "templates": [{"name": "main", "dag": {"tasks": dag_tasks}}, *templates],
         },
     }
+    if namespace is not None:
+        workflow["metadata"]["namespace"] = namespace  # type: ignore[index]
     return workflow
 
 
 def _rct_name_for_intent(intent: WorkflowIntent, device: str) -> str:
-    """Deterministic ResourceClaimTemplate name for a given intent and device type."""
-    return sanitize_k8s_name(f"{intent.workflow_name}-{device}-claim", max_len=62)
+    """Deterministic ResourceClaimTemplate name for a given intent and device type.
 
-
-def _dra_fallback_step(intent: WorkflowIntent) -> WorkflowStep | None:
-    """First step expressing a driver-backed accelerator-with-fallback preference.
-
-    Returns the step whose ``resource_class`` and ``fallback_resource_class`` are
-    BOTH mapped in ``DRA_DEVICE_CLASS`` (and distinct) -- i.e. one renderable as a
-    DRA ``firstAvailable`` request. A step whose primary or fallback class has no
-    DRA driver (FPGA) does not qualify and keeps the legacy path.
+    Hashes rather than truncates: plain truncation drops the ``device``
+    discriminator once the workflow name fills the budget, so the
+    ``firstAvailable`` and ``exactly`` templates a ``--dra-fallback`` render emits
+    together would collapse to the same name and overwrite one another on apply.
     """
-    for step in intent.steps:
-        primary = step.resource_class
-        fallback = step.fallback_resource_class
-        if (
-            fallback is not None
-            and primary in DRA_DEVICE_CLASS
-            and fallback in DRA_DEVICE_CLASS
-            and primary != fallback
-        ):
-            return step
-    return None
+    return _collision_resistant_k8s_name(f"{intent.workflow_name}-{device}-claim", max_len=62)
+
+
+# The accelerator-to-CPU directions renderable as a DRA firstAvailable request.
+# An explicit allowlist rather than "both classes have a driver and differ": the
+# latter also accepts CPU primary with GPU fallback, which renders a request that
+# prefers CPU and falls back to the accelerator -- the reverse of the
+# accelerator-with-fallback semantics the flag and the docs describe. Add a pair
+# here when a new accelerator gains a driver.
+DRA_FALLBACK_DIRECTIONS: frozenset[tuple[ResourceClass, ResourceClass]] = frozenset(
+    {(ResourceClass.GPU, ResourceClass.CPU)}
+)
+
+
+def _dra_fallback_steps(intent: WorkflowIntent) -> list[WorkflowStep]:
+    """Every step expressing a driver-backed accelerator-to-CPU fallback.
+
+    Returns all qualifying steps, not just the first: a service may declare
+    several accelerator steps, and wiring only one leaves the rest on the
+    runtime-only path while the render reports success. A step whose direction is
+    not in ``DRA_FALLBACK_DIRECTIONS`` (FPGA, which has no driver, or a reversed
+    CPU-to-GPU pair) does not qualify and keeps the legacy path.
+    """
+    return [
+        step
+        for step in intent.steps
+        if step.fallback_resource_class is not None
+        and (step.resource_class, step.fallback_resource_class) in DRA_FALLBACK_DIRECTIONS
+    ]
 
 
 def _first_available_rct(intent: WorkflowIntent, namespace: str) -> dict[str, Any] | None:
@@ -361,9 +382,12 @@ def _first_available_rct(intent: WorkflowIntent, namespace: str) -> dict[str, An
     is the artifact the Argo/plain-Pod (non-Kueue) route consumes; Kueue admission
     rejects ``firstAvailable`` and uses the ``exactly`` claim instead.
     """
-    step = _dra_fallback_step(intent)
-    if step is None:
+    steps = _dra_fallback_steps(intent)
+    if not steps:
         return None
+    # Every qualifying step shares the same direction (DRA_FALLBACK_DIRECTIONS), so
+    # one template serves them all: each Pod that references it gets its own claim.
+    step = steps[0]
     primary = step.resource_class
     fallback = cast(ResourceClass, step.fallback_resource_class)
     return {
@@ -566,7 +590,7 @@ def render_kueue_job(
     # (which Kueue quota-counts). The scheduler-level firstAvailable GPU->CPU fallback
     # is available only off the Kueue admission path: a plain Pod / scheduler route
     # consumes the firstAvailable RCT that render_resource_claim_templates emits.
-    if dra_fallback and dra_enabled and requires_gpu and _dra_fallback_step(intent) is not None:
+    if dra_fallback and dra_enabled and requires_gpu and _dra_fallback_steps(intent):
         logger.warning(
             "DRA firstAvailable fallback is not admissible under Kueue; the Kueue "
             "Job uses an exactly gpu.nvidia.com claim. Use the scheduler route "
@@ -691,24 +715,56 @@ class PolicyViolationError(ValueError):
         )
 
 
-def typed_violations_from_decision(value: Any) -> list[dict[str, Any]] | None:
-    """Return the typed violations carried by an OPA decision value.
+_VIOLATION_KEYS = {"rule", "rule_id", "severity", "provenance", "path", "message"}
 
-    Returns the ``violations`` set when the decision carries one. A custom
-    ``--decision`` that exposes only the plain-string ``deny`` set is projected
-    onto the same shape, conservatively tagged as a structural violation, so
-    every consumer sees one schema rather than sometimes a string and sometimes
-    an object. Returns ``None`` when the value carries neither, which the caller
-    treats as an unusable decision.
+
+def typed_violations_from_decision(value: Any) -> list[dict[str, Any]]:
+    """Return the typed violations carried by an OPA decision value, or fail closed.
+
+    A decision is only usable if its shape can be trusted, so this validates
+    rather than probing for a key. Anything it cannot read as a decision, or that
+    contradicts itself, raises ``PolicyEngineUnavailableError``: returning an
+    empty list for an unreadable decision would admit the plan, which is the one
+    outcome a fail-closed gate must never reach by accident. Ill-typed or
+    contradictory results such as ``{"allow": false, "violations": []}`` or
+    ``{"violations": ""}`` are therefore rejected, not silently admitted.
+
+    A custom ``--decision`` exposing only the plain-string ``deny`` set is
+    projected onto the typed shape, so every consumer sees one schema.
     """
     if not isinstance(value, dict):
-        return None
+        raise PolicyEngineUnavailableError(
+            f"policy decision is not an object (got {type(value).__name__}); refusing to admit"
+        )
+
+    allow = value.get("allow")
+    if "allow" in value and not isinstance(allow, bool):
+        raise PolicyEngineUnavailableError(
+            f"policy decision field 'allow' must be a boolean, got {allow!r}"
+        )
+
+    violations: list[dict[str, Any]] | None = None
     if "violations" in value:
-        return list(value["violations"])
-    if "deny" in value:
+        raw = value["violations"]
+        if not isinstance(raw, list):
+            raise PolicyEngineUnavailableError(
+                f"policy decision field 'violations' must be a list, got {type(raw).__name__}"
+            )
+        for item in raw:
+            if not isinstance(item, dict) or not _VIOLATION_KEYS.issubset(item):
+                raise PolicyEngineUnavailableError(
+                    f"policy decision carries a violation without the typed shape: {item!r}"
+                )
+        violations = list(raw)
+    elif "deny" in value:
         from .baseline_validator import STRUCTURAL_RULE_ID
 
-        return [
+        deny = value["deny"]
+        if not isinstance(deny, list) or not all(isinstance(m, str) for m in deny):
+            raise PolicyEngineUnavailableError(
+                f"policy decision field 'deny' must be a list of strings, got {deny!r}"
+            )
+        violations = [
             {
                 "rule": None,
                 "rule_id": STRUCTURAL_RULE_ID,
@@ -717,9 +773,20 @@ def typed_violations_from_decision(value: Any) -> list[dict[str, Any]] | None:
                 "path": "",
                 "message": m,
             }
-            for m in value.get("deny", [])
+            for m in deny
         ]
-    return None
+    else:
+        raise PolicyEngineUnavailableError(
+            "policy decision carries neither a 'violations' nor a 'deny' set"
+        )
+
+    # A decision that says allowed while listing violations (or the reverse) is
+    # not a decision this gate can act on.
+    if isinstance(allow, bool) and allow == bool(violations):
+        raise PolicyEngineUnavailableError(
+            f"policy decision is contradictory: allow={allow} with {len(violations)} violation(s)"
+        )
+    return violations
 
 
 def evaluate_policy_decision(
@@ -762,12 +829,9 @@ def evaluate_policy_decision(
             raise PolicyEngineUnavailableError(
                 f"opa returned an unparseable decision: {out[:200]}"
             ) from exc
-        typed = typed_violations_from_decision(value)
-        if typed is None:
-            raise PolicyEngineUnavailableError(
-                f"opa decision {decision!r} did not return a violations/deny set"
-            )
-        return typed
+        # Raises PolicyEngineUnavailableError for a decision that cannot be
+        # trusted, so an unreadable result never reads as "no violations".
+        return typed_violations_from_decision(value)
     raise ValueError(f"unknown policy engine: {engine!r} (expected 'opa' or 'baseline')")
 
 
@@ -820,6 +884,10 @@ def write_individual_workflows(
     ``firstAvailable`` ResourceClaimTemplate followed by the DRA-wired Workflow that
     references it (via ``podSpecPatch``) -- so the claim template is no longer an
     orphan artifact and the file is applyable end-to-end.
+
+    Both documents carry ``namespace``. A ResourceClaimTemplate is namespaced and a
+    Pod resolves a template only within its own namespace, so a Workflow left to the
+    caller's current context could land beside a template it cannot reference.
     """
     plan = load_mission_plan(input_path)
     if enforce_policy:
@@ -829,7 +897,7 @@ def write_individual_workflows(
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for intent in intents:
-        workflow = render_argo_workflow(intent, dra_fallback=dra_fallback)
+        workflow = render_argo_workflow(intent, dra_fallback=dra_fallback, namespace=namespace)
         out = out_dir / f"{workflow['metadata']['name']}.yaml"
         rct = _first_available_rct(intent, namespace) if dra_fallback else None
         if rct is not None:
