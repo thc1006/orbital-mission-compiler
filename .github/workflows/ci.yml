@@ -89,6 +89,33 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
+      # The default policy path uses the packaged Rego bundle, and an editable
+      # install resolves it from the source tree either way. Build and install the
+      # real artifact so a bundle missing from the wheel is caught here rather
+      # than by whoever pip-installs it.
+      - name: Wheel install smoke (default policy path from a clean venv)
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet build
+          rm -rf dist
+          python3 -m build --wheel
+          python3 - <<'PYCHK'
+          import glob, zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          entries = zipfile.ZipFile(wheel).namelist()
+          assert "orbital_mission_compiler/policies/mission_plan.rego" in entries, entries
+          print(f"wheel ships the policy bundle: {wheel}")
+          PYCHK
+          python3 -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install --quiet dist/*.whl
+          workdir="$(mktemp -d)"
+          plan="$PWD/configs/mission_plans/sample_gpu_cpu_fallback.yaml"
+          cd "$workdir"
+          /tmp/wheel-venv/bin/python -m orbital_mission_compiler.cli compile \
+            --input "$plan" --output "$workdir/out.json"
+          test -s "$workdir/out.json"
+          echo "installed wheel resolved the default bundle from $workdir"
+
       - name: Golden evals
         run: python3 -m orbital_mission_compiler.eval_runner
 

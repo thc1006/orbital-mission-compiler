@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from importlib import resources
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -133,6 +134,26 @@ def detect_timeline_conflicts(plan: MissionPlan) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], analyze_timeline_conflicts(plan)["conflicts"])
 
 
+def _workflow_name(
+    mission_id: str, service_id: str, event_timestamp: str, used: dict[str, int]
+) -> str:
+    """Name an intent, disambiguating a repeated occurrence.
+
+    The schema does not require a service_id to be unique within an event or a
+    timestamp to be unique across events, so two occurrences can share
+    mission/service/timestamp. Both writers use this name as the output filename
+    and as the object name, so without a discriminator the second occurrence
+    would silently overwrite the first. The first occurrence keeps the plain
+    name, which is what existing goldens and manifests already carry.
+    """
+    base = f"{mission_id}-{service_id}-{event_timestamp}"
+    seen = used.get(base, 0)
+    used[base] = seen + 1
+    if seen:
+        base = f"{base}-{seen + 1}"
+    return _collision_resistant_k8s_name(base)
+
+
 def compile_plan_to_intents(
     plan: MissionPlan,
     check_conflicts: bool = False,
@@ -147,6 +168,7 @@ def compile_plan_to_intents(
         if len(conflicts) > 10:
             logger.warning("... and %d more conflicts (total: %d)", len(conflicts) - 10, len(conflicts))
     intents: list[WorkflowIntent] = []
+    used_names: dict[str, int] = {}
     skipped = 0
     for event in plan.events:
         if event.event_type.value != "acquisition":
@@ -179,8 +201,8 @@ def compile_plan_to_intents(
                     mission_id=plan.mission_id,
                     service_id=svc.service_id,
                     priority=svc.priority,
-                    workflow_name=_collision_resistant_k8s_name(
-                        f"{plan.mission_id}-{svc.service_id}-{event_timestamp}"
+                    workflow_name=_workflow_name(
+                        plan.mission_id, svc.service_id, event_timestamp, used_names
                     ),
                     steps=svc.steps,
                     resource_hints=hints,
@@ -699,9 +721,12 @@ def _default_policy_bundle() -> str:
     then the checkout's ``configs/policies``, and fall back to the relative path
     so an explicit ``--bundle`` and the historical behaviour still work.
     """
-    packaged = Path(__file__).resolve().parent / "policies"
-    if packaged.is_dir():
-        return str(packaged)
+    try:
+        packaged = resources.files("orbital_mission_compiler") / "policies"
+        if packaged.is_dir():
+            return str(packaged)
+    except (ModuleNotFoundError, TypeError):  # pragma: no cover - defensive
+        pass
     checkout = Path(__file__).resolve().parents[2] / "configs" / "policies"
     if checkout.is_dir():
         return str(checkout)
@@ -758,6 +783,32 @@ class PolicyViolationError(ValueError):
 _VIOLATION_KEYS = {"rule", "rule_id", "severity", "provenance", "path", "message"}
 
 
+def _validate_typed_violation(item: Any) -> None:
+    """Reject a violation whose fields are present but not usable.
+
+    Key presence alone is not enough: a non-string message, for example, only
+    surfaces later when the messages are joined for the error, as an unrelated
+    TypeError far from the decision that produced it.
+    """
+    if not isinstance(item, dict) or not _VIOLATION_KEYS.issubset(item):
+        raise PolicyEngineUnavailableError(
+            f"policy decision carries a violation without the typed shape: {item!r}"
+        )
+    checks: list[tuple[str, bool]] = [
+        ("rule", item["rule"] is None or isinstance(item["rule"], int)),
+        ("rule_id", isinstance(item["rule_id"], str) and bool(item["rule_id"])),
+        ("severity", item["severity"] in {"T1", "T2", "T3", "T4"}),
+        ("provenance", item["provenance"] in {"A", "D"}),
+        ("path", isinstance(item["path"], str)),
+        ("message", isinstance(item["message"], str) and bool(item["message"])),
+    ]
+    for field, ok in checks:
+        if not ok:
+            raise PolicyEngineUnavailableError(
+                f"policy decision violation has an unusable {field!r}: {item!r}"
+            )
+
+
 def typed_violations_from_decision(value: Any) -> list[dict[str, Any]]:
     """Return the typed violations carried by an OPA decision value, or fail closed.
 
@@ -783,6 +834,18 @@ def typed_violations_from_decision(value: Any) -> list[dict[str, Any]]:
             f"policy decision field 'allow' must be a boolean, got {allow!r}"
         )
 
+    # `deny` is validated whenever it is present, even alongside `violations`:
+    # parsing only one of them lets a decision that denies in the field this gate
+    # ignores read as allowed.
+    deny_messages: list[str] | None = None
+    if "deny" in value:
+        deny = value["deny"]
+        if not isinstance(deny, list) or not all(isinstance(m, str) for m in deny):
+            raise PolicyEngineUnavailableError(
+                f"policy decision field 'deny' must be a list of strings, got {deny!r}"
+            )
+        deny_messages = list(deny)
+
     violations: list[dict[str, Any]] | None = None
     if "violations" in value:
         raw = value["violations"]
@@ -791,19 +854,16 @@ def typed_violations_from_decision(value: Any) -> list[dict[str, Any]]:
                 f"policy decision field 'violations' must be a list, got {type(raw).__name__}"
             )
         for item in raw:
-            if not isinstance(item, dict) or not _VIOLATION_KEYS.issubset(item):
-                raise PolicyEngineUnavailableError(
-                    f"policy decision carries a violation without the typed shape: {item!r}"
-                )
+            _validate_typed_violation(item)
         violations = list(raw)
-    elif "deny" in value:
+        if deny_messages is not None and bool(deny_messages) != bool(violations):
+            raise PolicyEngineUnavailableError(
+                f"policy decision disagrees with itself: {len(deny_messages)} deny message(s) "
+                f"but {len(violations)} typed violation(s)"
+            )
+    elif deny_messages is not None:
         from .baseline_validator import STRUCTURAL_RULE_ID
 
-        deny = value["deny"]
-        if not isinstance(deny, list) or not all(isinstance(m, str) for m in deny):
-            raise PolicyEngineUnavailableError(
-                f"policy decision field 'deny' must be a list of strings, got {deny!r}"
-            )
         violations = [
             {
                 "rule": None,
@@ -813,7 +873,7 @@ def typed_violations_from_decision(value: Any) -> list[dict[str, Any]]:
                 "path": "",
                 "message": m,
             }
-            for m in deny
+            for m in deny_messages
         ]
     else:
         raise PolicyEngineUnavailableError(
@@ -898,12 +958,46 @@ def render_workflows_for_file(
     bundle: str = DEFAULT_POLICY_BUNDLE,
     decision: str = DEFAULT_POLICY_DECISION,
     dra_fallback: bool = False,
+    namespace: str = "orbital-demo",
 ) -> list[dict[str, Any]]:
+    """Render the Kubernetes objects for a plan file.
+
+    Under ``dra_fallback`` this returns the ResourceClaimTemplate ahead of each
+    Workflow that references it. Returning the Workflow alone would hand the
+    caller a manifest naming a template that this function never produced, and
+    the reference would not resolve.
+    """
     plan = load_mission_plan(input_path)
     if enforce_policy:
         enforce_policy_or_raise(plan, engine=policy_engine, bundle=bundle, decision=decision)
     intents = compile_plan_to_intents(plan)
-    return [render_argo_workflow(intent, dra_fallback=dra_fallback) for intent in intents]
+    objects: list[dict[str, Any]] = []
+    for intent in intents:
+        rct = _first_available_rct(intent, namespace) if dra_fallback else None
+        if rct is not None:
+            objects.append(rct)
+        objects.append(
+            render_argo_workflow(
+                intent, dra_fallback=dra_fallback, namespace=namespace if rct is not None else None
+            )
+        )
+    return objects
+
+
+def _preflight_unique(paths: list[Path]) -> None:
+    """Fail before writing when two renders would land on the same file.
+
+    Names are disambiguated at compile time, so a duplicate here means a naming
+    invariant broke. Catching it before the first write keeps the output
+    directory from ending up with one artifact silently replaced by another.
+    """
+    seen: set[Path] = set()
+    duplicates = sorted({p for p in paths if p in seen or seen.add(p)})  # type: ignore[func-returns-value]
+    if duplicates:
+        raise ValueError(
+            f"refusing to write: {len(duplicates)} output path(s) would be written twice: "
+            + ", ".join(str(p) for p in duplicates)
+        )
 
 
 def write_individual_workflows(
@@ -922,8 +1016,13 @@ def write_individual_workflows(
     With ``dra_fallback``, an intent whose accelerator-fallback step is
     driver-backed produces a **self-contained multi-doc file**: the scheduler-route
     ``firstAvailable`` ResourceClaimTemplate followed by the DRA-wired Workflow that
-    references it (via ``podSpecPatch``) -- so the claim template is no longer an
-    orphan artifact and the file is applyable end-to-end.
+    references it (via ``podSpecPatch``), so the claim template is not an orphan.
+
+    Apply it with ``kubectl apply -f``, which creates both documents. ``argo
+    submit`` will NOT work for this file: its parser keeps only ``Workflow``
+    kinds and logs the ResourceClaimTemplate as ignored, so the Workflow would be
+    created referencing a template that was never applied. Use ``kubectl apply``
+    for the bundle, or apply the template first and then submit the Workflow.
 
     Both documents carry ``namespace``. A ResourceClaimTemplate is namespaced and a
     Pod resolves a template only within its own namespace, so a Workflow left to the
@@ -936,16 +1035,25 @@ def write_individual_workflows(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
+    planned: list[tuple[Path, list[dict[str, Any]]]] = []
     for intent in intents:
-        workflow = render_argo_workflow(intent, dra_fallback=dra_fallback, namespace=namespace)
-        out = out_dir / f"{workflow['metadata']['name']}.yaml"
         rct = _first_available_rct(intent, namespace) if dra_fallback else None
-        if rct is not None:
-            out.write_text(
-                yaml.safe_dump_all([rct, workflow], sort_keys=False), encoding="utf-8"
-            )
+        # Stamp the namespace only when the template ships with the Workflow:
+        # the two must agree for the Pod to resolve it. A plain render keeps its
+        # previous namespace-less output, so a caller that selects the namespace
+        # at apply time (kubectl -n / argo submit -n) is unaffected.
+        workflow = render_argo_workflow(
+            intent, dra_fallback=dra_fallback, namespace=namespace if rct is not None else None
+        )
+        out = out_dir / f"{workflow['metadata']['name']}.yaml"
+        planned.append((out, [rct, workflow] if rct is not None else [workflow]))
+
+    _preflight_unique([path for path, _ in planned])
+    for out, docs in planned:
+        if len(docs) > 1:
+            out.write_text(yaml.safe_dump_all(docs, sort_keys=False), encoding="utf-8")
         else:
-            out.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+            out.write_text(yaml.safe_dump(docs[0], sort_keys=False), encoding="utf-8")
         written.append(out)
     return written
 

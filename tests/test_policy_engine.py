@@ -195,3 +195,26 @@ def test_default_bundle_resolves_from_any_working_directory(tmp_path, monkeypatc
     )
     assert proc.returncode == 0, proc.stderr
     assert out.exists()
+
+
+def test_installed_wheel_carries_the_policy_bundle(tmp_path):
+    """Build a wheel and check the Rego bundle ships inside the package.
+
+    The CLI defaults to the opa engine, so a wheel without the bundle leaves the
+    default path unusable anywhere outside a checkout. Resolving from the source
+    tree hides that, which is why this inspects the built artifact.
+    """
+    import subprocess
+    import zipfile
+
+    repo = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [sys.executable, "-m", "build", "--wheel", "--outdir", str(tmp_path), str(repo)],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        pytest.skip(f"wheel build unavailable in this environment: {proc.stderr[-200:]}")
+    wheels = list(tmp_path.glob("*.whl"))
+    assert wheels, "no wheel produced"
+    entries = zipfile.ZipFile(wheels[0]).namelist()
+    assert "orbital_mission_compiler/policies/mission_plan.rego" in entries, entries

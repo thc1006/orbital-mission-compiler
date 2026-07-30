@@ -11,13 +11,13 @@ try:
 except ImportError:
     FastMCP = None  # type: ignore[assignment,misc]
 
-from orbital_mission_compiler import baseline_validator
 from orbital_mission_compiler.compiler import (
+    DEFAULT_POLICY_BUNDLE,
     PolicyEngineUnavailableError,
+    evaluate_policy_decision,
     PolicyViolationError,
     analyze_timeline_conflicts,
     compile_plan_to_intents,
-    enforce_policy_or_raise,
     load_mission_plan,
     typed_violations_from_decision,
     write_individual_workflows,
@@ -49,7 +49,36 @@ def _bypass_requested(unsafe_skip_policy: bool) -> bool:
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _ALLOWED_PLANS = (_REPO_ROOT / "configs" / "mission_plans").resolve()
-_ALLOWED_BUNDLES = (_REPO_ROOT / "configs" / "policies").resolve()
+# Resolve through the same helper the CLI uses, so the sandbox root exists for an
+# installed package too; _REPO_ROOT only exists in a source checkout.
+_ALLOWED_BUNDLES = Path(DEFAULT_POLICY_BUNDLE).resolve()
+
+
+class PolicyUndecidable(Exception):
+    """The configured engine could not render a decision."""
+
+
+def _server_policy_violations(plan: Any) -> list[dict[str, Any]]:
+    """Evaluate a plan with the server's configured engine.
+
+    Every policy-facing tool goes through here. Reading the verdict from a
+    different engine per tool would let validate_plan report allowed while
+    compile_plan denies the same plan, which is two authorities in a system
+    whose whole claim is one fail-closed gate.
+    """
+    if MCP_POLICY_ENGINE not in ("opa", "baseline"):
+        raise PolicyUndecidable(
+            f"ORBITAL_MCP_POLICY_ENGINE must be 'opa' or 'baseline', got {MCP_POLICY_ENGINE!r}"
+        )
+    try:
+        return evaluate_policy_decision(plan.model_dump(mode="json"), engine=MCP_POLICY_ENGINE)
+    except PolicyEngineUnavailableError as exc:
+        raise PolicyUndecidable(str(exc)) from exc
+
+
+def _undecidable(exc: PolicyUndecidable, **extra: Any) -> dict[str, Any]:
+    """A structured result, so an agent sees a reason rather than a raw exception."""
+    return {"status": "error", "reason": "policy_engine_unavailable", "error": str(exc), **extra}
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -109,9 +138,13 @@ def build_server() -> Any:
         """
         safe_path = _validate_plan_path(path)
         plan = load_mission_plan(safe_path)
-        # Typed, occurrence-level violations {rule, severity, provenance, path, message}
-        # so an agent can triage without re-parsing prose.
-        violations = baseline_validator.violations(plan.model_dump(mode="json"))
+        # Typed, occurrence-level violations {rule, rule_id, severity, provenance,
+        # path, message} from the server's configured engine, so this verdict
+        # matches the one compile_plan and render_argo enforce.
+        try:
+            violations = _server_policy_violations(plan)
+        except PolicyUndecidable as exc:
+            return _undecidable(exc, mission_id=plan.mission_id)
         return {
             "mission_id": plan.mission_id,
             "events": len(plan.events),
@@ -130,9 +163,11 @@ def build_server() -> Any:
         plan = load_mission_plan(safe_path)
         if not _bypass_requested(unsafe_skip_policy):
             try:
-                enforce_policy_or_raise(plan, engine=MCP_POLICY_ENGINE)
-            except PolicyViolationError as exc:
-                return {"status": "denied", "mission_id": plan.mission_id, "violations": exc.violations}
+                violations = _server_policy_violations(plan)
+            except PolicyUndecidable as exc:
+                return _undecidable(exc, mission_id=plan.mission_id)
+            if violations:
+                return {"status": "denied", "mission_id": plan.mission_id, "violations": violations}
         intents = compile_plan_to_intents(plan)
         return {
             "status": "ok",
@@ -165,6 +200,8 @@ def build_server() -> Any:
                 }
         except PolicyViolationError as exc:
             return {"status": "denied", "violations": exc.violations}
+        except PolicyEngineUnavailableError as exc:
+            return _undecidable(PolicyUndecidable(str(exc)))
 
     @server.tool
     def explain_policy(

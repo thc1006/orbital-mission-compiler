@@ -132,6 +132,7 @@ mkdir -p "${ARGO_OUT}"
 ARGO_RENDER_LOG="${OUT_DIR}/argo-render.log"
 if PYTHONPATH="${PYTHONPATH:-src}" ${PYTHON_BIN} -m orbital_mission_compiler.cli render-argo \
     --input "${MISSION_FILE}" \
+    --namespace "${NAMESPACE}" \
     --output-dir "${ARGO_OUT}" >"${ARGO_RENDER_LOG}" 2>&1; then
   report PASS "Argo Workflow rendered"
 else

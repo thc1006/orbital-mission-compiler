@@ -31,6 +31,12 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The Rego bundle is the default policy the artifact commands enforce with, so it
+# has to ship inside the package: resolving it from the source tree works only
+# from a checkout, and the CLI defaults to the opa engine.
+[tool.setuptools.package-data]
+orbital_mission_compiler = ["policies/*.rego"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
