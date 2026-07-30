@@ -97,8 +97,11 @@ python -m orbital_mission_compiler.cli render-kueue \
   --input configs/mission_plans/demo_gpu_fallback_fixed.yaml \
   --output-dir out/dra-fallback --dra-fallback --namespace dra-unified
 ```
-Without `--dra-fallback` the compiler keeps the §V-D runtime env-var switch
-(portable default); the flag opts into the scheduler-level DRA claim. See
+This writes two files: `*-kueue.yaml` holds the `exactly` GPU claim and the Job
+admitted on it, and `*-scheduler-fallback.yaml` holds the `firstAvailable` claim
+for the non-Kueue route. Without `--dra-fallback` the compiler keeps the §V-D
+runtime env-var switch (portable default); the flag opts into the
+scheduler-level DRA claim. See
 `DRA_DEVICE_CLASS` in `src/orbital_mission_compiler/compiler.py`.
 
 ## Limitations (honest)

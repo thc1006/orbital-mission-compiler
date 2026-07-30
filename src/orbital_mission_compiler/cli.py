@@ -18,6 +18,8 @@ from .compiler import (
     compile_plan_to_intents,
     render_kueue_job,
     render_resource_claim_templates,
+    DRA_ROUTE_LABEL,
+    preflight_unique,
     render_workload_priority_classes,
     typed_violations_from_decision,
     write_individual_workflows,
@@ -73,6 +75,14 @@ def build_parser() -> argparse.ArgumentParser:
         "scheduler-route artifact and is not Kueue quota-counted.",
     )
     render_p.add_argument("--namespace", default="orbital-demo")
+    render_p.add_argument(
+        "--service-account",
+        default=None,
+        help="Stamp spec.serviceAccountName on the rendered Workflow. Needed when "
+        "the multi-doc --dra-fallback bundle is applied with kubectl, since "
+        "'argo submit --serviceaccount' cannot be used on it (argo submit drops "
+        "the ResourceClaimTemplate document).",
+    )
     _add_policy_args(render_p)
     render_p.set_defaults(func=cmd_render_argo)
 
@@ -142,6 +152,7 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
         args.input, args.output_dir, enforce_policy=not args.unsafe_skip_policy,
         policy_engine=args.policy_engine, bundle=args.bundle, decision=args.decision,
         dra_fallback=args.dra_fallback, namespace=args.namespace,
+        service_account=args.service_account,
     )
     print(json.dumps({"status": "ok", "files": [str(p) for p in written]}, indent=2))
 
@@ -162,12 +173,15 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
     intents = compile_plan_to_intents(plan)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    written = []
+    # Render everything first, then write: writing as we go leaves a partial set
+    # behind when a later intent fails, and a consumer cannot tell that apart
+    # from a complete render.
+    planned: list[tuple[Path, str]] = []
     if args.emit_priority_classes:
         wpc = render_workload_priority_classes(prefix=args.priority_class_prefix)
-        wpc_out = out_dir / "workload-priority-classes.yaml"
-        wpc_out.write_text(yaml.safe_dump_all(wpc, sort_keys=False), encoding="utf-8")
-        written.append(str(wpc_out))
+        planned.append(
+            (out_dir / "workload-priority-classes.yaml", yaml.safe_dump_all(wpc, sort_keys=False))
+        )
     for intent in intents:
         templates = render_resource_claim_templates(
             intent, namespace=args.namespace, dra_fallback=args.dra_fallback
@@ -180,10 +194,32 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
             priority_class=args.priority_class,
             priority_class_prefix=args.priority_class_prefix,
         )
-        docs = templates + [job]
         safe_name = sanitize_k8s_name(intent.workflow_name)
-        out = out_dir / f"{safe_name}-kueue.yaml"
-        out.write_text(yaml.safe_dump_all(docs, sort_keys=False), encoding="utf-8")
+        # Kueue admission rejects a firstAvailable claim, so the Job is admitted on
+        # the exactly claim and never references the firstAvailable one. Keeping
+        # both in a single file invites the reading that the admitted Job falls
+        # back, and applying that file creates a claim template nothing consumes.
+        # The scheduler-route claim goes to its own file, for a plain Pod or an
+        # Argo render to reference.
+        scheduler_route = [
+            t for t in templates
+            if t["metadata"].get("labels", {}).get(DRA_ROUTE_LABEL) == "scheduler"
+        ]
+        kueue_route = [t for t in templates if t not in scheduler_route]
+        planned.append((
+            out_dir / f"{safe_name}-kueue.yaml",
+            yaml.safe_dump_all(kueue_route + [job], sort_keys=False),
+        ))
+        if scheduler_route:
+            planned.append((
+                out_dir / f"{safe_name}-scheduler-fallback.yaml",
+                yaml.safe_dump_all(scheduler_route, sort_keys=False),
+            ))
+
+    preflight_unique([path for path, _ in planned])
+    written = []
+    for out, text in planned:
+        out.write_text(text, encoding="utf-8")
         written.append(str(out))
     print(json.dumps({"status": "ok", "files": written}))
 

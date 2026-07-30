@@ -20,8 +20,17 @@ print('Python manifest sanity check passed.')
 PYSMOKE
 
 if command -v argo >/dev/null 2>&1; then
-  echo "Running official Argo lint"
-  argo lint "${OUT_DIR}"/*.yaml
+  # --offline lints the local files against the CRD schema without contacting a
+  # cluster, which is what CI has. Without it the CLI tries to reach an API
+  # server and the smoke fails for a reason unrelated to the manifest.
+  echo "Running official Argo lint (offline)"
+  argo lint --offline "${OUT_DIR}"/*.yaml
+elif [ "${REQUIRE_ARGO_LINT:-0}" = "1" ]; then
+  # In CI the CLI is installed at a pinned version, so a missing binary means the
+  # install step regressed. Skipping there would report a passing smoke whose
+  # only real gate never ran.
+  echo "argo CLI not found and REQUIRE_ARGO_LINT=1: refusing to pass a smoke that did not lint." >&2
+  exit 1
 else
   echo "argo CLI not found; skipped argo lint."
 fi

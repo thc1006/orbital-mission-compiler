@@ -211,3 +211,84 @@ def test_cpu_primary_with_gpu_fallback_is_not_treated_as_accelerator_fallback():
     assert _dra_fallback_steps(intent) == []
     wf = render_argo_workflow(intent, dra_fallback=True)
     assert all("podSpecPatch" not in t for t in wf["spec"]["templates"])
+
+
+# ── Third review round: normalization collisions, deployment contract ────
+
+
+def test_ids_that_normalize_alike_get_distinct_names(tmp_path):
+    """Dedup has to happen after Kubernetes name normalization.
+
+    `foo_bar`, `foo.bar`, `FOO-BAR` and `foo-bar` are four distinct service ids
+    that all sanitize to the same label. Counting the raw id treats each as a
+    first occurrence, so they land on one object name and one filename, and three
+    of the four services are silently lost.
+    """
+    services = "\n".join(
+        f"      - service_id: {sid}\n"
+        f"        priority: 50\n"
+        f"        steps:\n"
+        f"          - name: s\n"
+        f"            image: i\n"
+        f"            resource_class: cpu\n"
+        for sid in ("foo_bar", "foo-bar", "foo.bar", "FOO-BAR")
+    )
+    plan = tmp_path / "collide.yaml"
+    plan.write_text(
+        "mission_id: m\n"
+        "events:\n"
+        "  - timestamp: '2026-08-01T00:00:00Z'\n"
+        "    event_type: acquisition\n"
+        "    instrument: cam\n"
+        "    services:\n" + services,
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+    written = write_individual_workflows(plan, out, enforce_policy=False)
+    assert len(written) == 4, written
+    assert len({p.name for p in written}) == 4, [p.name for p in written]
+    names = [
+        next(d for d in yaml.safe_load_all(p.read_text()) if d)["metadata"]["name"]
+        for p in written
+    ]
+    assert len(set(names)) == 4, names
+
+
+def test_service_account_is_stamped_for_the_kubectl_apply_path(tmp_path):
+    """`argo submit --serviceaccount` cannot be used on the multi-doc bundle,
+    because argo submit drops the ResourceClaimTemplate, so the account has to be
+    in the manifest for the documented kubectl apply path to run correctly."""
+    written = write_individual_workflows(
+        GPU_FALLBACK, tmp_path, enforce_policy=False, dra_fallback=True,
+        namespace="ns", service_account="orbital-workflow-runner",
+    )
+    docs = [d for d in yaml.safe_load_all(written[0].read_text()) if d]
+    wf = next(d for d in docs if d["kind"] == "Workflow")
+    assert wf["spec"]["serviceAccountName"] == "orbital-workflow-runner"
+
+
+def test_duplicate_yaml_keys_are_rejected(tmp_path):
+    """A plan that reads one way and loads another is not something to resolve
+    silently in a toolchain whose output is signed off before uplink."""
+    import pytest as _pytest
+
+    bad = tmp_path / "dup.yaml"
+    bad.write_text(
+        "mission_id: m\n"
+        "events:\n"
+        "  - timestamp: '2026-08-01T00:00:00Z'\n"
+        "    event_type: acquisition\n"
+        "    instrument: cam\n"
+        "    services:\n"
+        "      - service_id: s\n"
+        "        priority: 50\n"
+        "        steps:\n"
+        "          - name: a\n"
+        "            image: i\n"
+        "            resource_class: gpu\n"
+        "            fallback_resource_class: gpu\n"
+        "            fallback_resource_class: cpu\n",
+        encoding="utf-8",
+    )
+    with _pytest.raises(Exception, match="duplicate key"):
+        load_mission_plan(bad)

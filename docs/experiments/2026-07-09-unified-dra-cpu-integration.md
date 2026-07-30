@@ -89,7 +89,12 @@ admission-aware.
 `render-kueue --dra-fallback` (`cli.py`) makes `render_resource_claim_templates`
 emit a `firstAvailable` request for any step whose `resource_class` and
 `fallback_resource_class` are both driver-backed (`DRA_DEVICE_CLASS` = {GPU →
-gpu.nvidia.com, CPU → dra.cpu}). Default off preserves the §V-D env-var path
+gpu.nvidia.com, CPU → dra.cpu}). That claim goes to its own
+`<name>-scheduler-fallback.yaml`, not into the `<name>-kueue.yaml` bundle: Kueue
+admits the Job on the `exactly` claim and never references the `firstAvailable`
+one, so shipping both in one file reads as though the admitted Job falls back.
+Each rendered template carries `orbital/dra-route` (`scheduler` or `kueue`), so
+the applied object states which route may reference it. Default off preserves the §V-D env-var path
 (portable). No schema or policy change: Rego Rule 4 already requires accelerator
 steps to declare a fallback. FPGA is deliberately excluded (no FPGA DRA driver),
 so FPGA steps keep the legacy static-request path. Guarded by `TestFirstAvailable`

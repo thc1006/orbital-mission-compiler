@@ -89,7 +89,12 @@ def test_cmd_render_kueue(tmp_path, capsys):
 def test_cmd_render_kueue_dra_fallback_job_uses_exactly_not_first_available(tmp_path, capsys):
     """End-to-end: render-kueue --dra-fallback emits the scheduler-route
     firstAvailable RCT, but the Kueue Job references the exactly RCT. Kueue rejects
-    firstAvailable as Inadmissible, so the Job must never reference it."""
+    firstAvailable as Inadmissible, so the Job must never reference it.
+
+    The two claims also go to separate files. A single file holding both reads as
+    though the admitted Job falls back, and applying it creates a claim template
+    that nothing in the bundle consumes.
+    """
     args = build_parser().parse_args([
         "render-kueue",
         "--input", "configs/mission_plans/sample_gpu_cpu_fallback.yaml",
@@ -99,25 +104,40 @@ def test_cmd_render_kueue_dra_fallback_job_uses_exactly_not_first_available(tmp_
     cmd_render_kueue(args)
     data = json.loads(capsys.readouterr().out)
     assert data["status"] == "ok" and data["files"]
-    docs = list(yaml.safe_load_all(Path(data["files"][0]).read_text()))
-    rcts = [d for d in docs if d and d.get("kind") == "ResourceClaimTemplate"]
-    jobs = [d for d in docs if d and d.get("kind") == "Job"]
-    assert jobs, "expected a Kueue Job"
 
     def _has_fa(rct):
         return "firstAvailable" in rct["spec"]["spec"]["devices"]["requests"][0]
 
-    fa_names = {r["metadata"]["name"] for r in rcts if _has_fa(r)}
-    ex_names = {r["metadata"]["name"] for r in rcts if not _has_fa(r)}
+    def _load(path):
+        return [d for d in yaml.safe_load_all(Path(path).read_text()) if d]
+
+    kueue_files = [f for f in data["files"] if f.endswith("-kueue.yaml")]
+    sched_files = [f for f in data["files"] if f.endswith("-scheduler-fallback.yaml")]
+    assert kueue_files and sched_files, data["files"]
+
+    fa_names, ex_names = set(), set()
+    for f in sched_files:
+        docs = _load(f)
+        assert all(d["kind"] == "ResourceClaimTemplate" and _has_fa(d) for d in docs), docs
+        assert all(d["metadata"]["labels"]["orbital/dra-route"] == "scheduler" for d in docs)
+        fa_names |= {d["metadata"]["name"] for d in docs}
     assert fa_names, "expected a scheduler-route firstAvailable RCT"
+
+    for f in kueue_files:
+        docs = _load(f)
+        rcts = [d for d in docs if d["kind"] == "ResourceClaimTemplate"]
+        jobs = [d for d in docs if d["kind"] == "Job"]
+        assert jobs, "expected a Kueue Job"
+        assert not any(_has_fa(r) for r in rcts), "firstAvailable leaked into the Kueue bundle"
+        ex_names |= {r["metadata"]["name"] for r in rcts}
+        for job in jobs:
+            refs = {
+                c["resourceClaimTemplateName"]
+                for c in job["spec"]["template"]["spec"].get("resourceClaims", [])
+            }
+            assert refs & ex_names, "Kueue Job must reference the exactly RCT"
+            assert not (refs & fa_names), "Kueue Job must NOT reference a firstAvailable RCT"
     assert ex_names, "expected a Kueue-route exactly RCT"
-    for job in jobs:
-        refs = {
-            c["resourceClaimTemplateName"]
-            for c in job["spec"]["template"]["spec"].get("resourceClaims", [])
-        }
-        assert refs & ex_names, "Kueue Job must reference the exactly RCT"
-        assert not (refs & fa_names), "Kueue Job must NOT reference a firstAvailable RCT"
 
 
 def test_cmd_policy(capsys):

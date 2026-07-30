@@ -14,6 +14,8 @@ env:
   PYTHONPATH: src:.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   OPA_VERSION: v1.15.1
+  # Pinned in docs/07_installation_matrix.md alongside the live-cluster version.
+  ARGO_VERSION: v4.0.1
 
 jobs:
   verify:
@@ -157,7 +159,45 @@ jobs:
             echo "OK: $deny was rejected as expected"
           done
 
+      # The Argo smoke's only real gate is `argo lint`. Without the CLI the script
+      # prints "skipped argo lint" and the step still passes, so a rendered
+      # manifest that Argo would reject reads as a green smoke.
+      - name: Cache Argo CLI
+        uses: actions/cache@v4
+        id: argo-cache
+        with:
+          path: ~/.local/bin/argo
+          key: argo-${{ env.ARGO_VERSION }}-linux-amd64
+
+      - name: Install Argo CLI
+        if: steps.argo-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          mkdir -p "$HOME/.local/bin"
+          BASE="https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}"
+          curl -fSL -o "$TMP_DIR/argo-linux-amd64.gz" "${BASE}/argo-linux-amd64.gz"
+          curl -fSL -o "$TMP_DIR/checksums.txt" "${BASE}/argo-workflows-cli-checksums.txt"
+          (
+            cd "$TMP_DIR"
+            grep 'argo-linux-amd64.gz$' checksums.txt > expected.sha256
+            test -s expected.sha256
+            sha256sum -c expected.sha256
+          )
+          gunzip -f "$TMP_DIR/argo-linux-amd64.gz"
+          install -m 0755 "$TMP_DIR/argo-linux-amd64" "$HOME/.local/bin/argo"
+
+      - name: Add Argo to PATH and verify
+        run: |
+          set -euo pipefail
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/argo" version --short
+
       - name: Argo smoke (valid plans render, deny fixtures produce no artifact)
+        env:
+          # Fail rather than skip: see the cache step above.
+          REQUIRE_ARGO_LINT: "1"
         run: |
           # render-argo is fail-closed now, so the deny fixture produces no
           # artifact by design. Assert that rather than looping it in with the
@@ -212,6 +252,10 @@ jobs:
           assert wired, "no template consumes the claim"
           print(f"DRA smoke OK: {len(docs)} docs, namespace dra-smoke-ns, {len(wired)} wired")
           PYDRA
+          # The multi-doc bundle is the shape an operator applies, and it is the
+          # one the plain smoke never lints: argo lint reads the Workflow document
+          # out of it and ignores the ResourceClaimTemplate.
+          argo lint --offline "$dra_out"/*.yaml
           rm -rf "$dra_out"
           for deny in "${DENY_FIXTURES[@]}"; do
             echo "Asserting render-argo refuses the deny fixture: $deny"

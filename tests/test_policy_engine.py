@@ -218,3 +218,52 @@ def test_installed_wheel_carries_the_policy_bundle(tmp_path):
     assert wheels, "no wheel produced"
     entries = zipfile.ZipFile(wheels[0]).namelist()
     assert "orbital_mission_compiler/policies/mission_plan.rego" in entries, entries
+
+
+# ── decision self-consistency ─────────────────────────────────────────
+
+def _typed(message: str, rule: int = 4) -> dict:
+    return {
+        "rule": rule, "rule_id": "OMP-004", "severity": "T1",
+        "provenance": "A", "path": "events[0]", "message": message,
+    }
+
+
+def test_deny_and_violations_must_name_the_same_reasons():
+    """The bundle defines `deny` as the message projection of `violations`, so a
+    decision where the two disagree is not a decision this gate can act on.
+
+    Comparing only emptiness accepts a decision that denies for one reason in
+    `deny` and a different one in `violations`, and each consumer then reports
+    whichever field it happens to read.
+    """
+    from orbital_mission_compiler.compiler import (
+        PolicyEngineUnavailableError,
+        typed_violations_from_decision,
+    )
+
+    same = {"allow": False, "deny": ["gpu step needs a fallback"],
+            "violations": [_typed("gpu step needs a fallback")]}
+    assert len(typed_violations_from_decision(same)) == 1
+
+    for bad in (
+        {"allow": False, "deny": ["a different reason"], "violations": [_typed("gpu step needs a fallback")]},
+        {"allow": False, "deny": ["one", "two"], "violations": [_typed("one")]},
+        {"allow": False, "deny": [], "violations": [_typed("one")]},
+    ):
+        with pytest.raises(PolicyEngineUnavailableError, match="disagrees with itself"):
+            typed_violations_from_decision(bad)
+
+
+def test_boolean_rule_number_is_not_a_rule_number():
+    """`True` passes an isinstance(int) check in Python and would be reported as
+    rule 1, so a decision carrying it is rejected rather than renumbered."""
+    from orbital_mission_compiler.compiler import (
+        PolicyEngineUnavailableError,
+        typed_violations_from_decision,
+    )
+
+    item = _typed("gpu step needs a fallback")
+    item["rule"] = True
+    with pytest.raises(PolicyEngineUnavailableError, match="unusable 'rule'"):
+        typed_violations_from_decision({"allow": False, "violations": [item]})

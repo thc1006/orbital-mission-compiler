@@ -135,6 +135,25 @@ def test_agent_cannot_bypass_the_gate_without_the_operator_switch(server):
         assert result[key]
 
 
+def test_every_tool_fails_closed_when_the_engine_cannot_decide(server, monkeypatch):
+    """An engine that cannot run is not evidence that a plan is safe.
+
+    Each artifact-producing tool reaches the evaluator by its own path, so each
+    needs its own check: render_argo used to call the renderer directly, which
+    both skipped the shared evaluator and surfaced a raw exception rather than a
+    decision an agent can act on.
+    """
+    from orbital_mission_compiler.mcp import server as server_module
+
+    monkeypatch.setattr(server_module, "MCP_POLICY_ENGINE", "bogus")
+    for tool in ("validate_plan", "compile_plan", "render_argo"):
+        result = _call(server, tool, {"path": SAMPLE_PLAN})
+        assert result["status"] == "error", tool
+        assert result["reason"] == "policy_engine_unavailable", tool
+        # Nothing compiled, nothing rendered.
+        assert "intent_count" not in result and "manifests" not in result, tool
+
+
 # ── explain_policy tool ──────────────────────────────────────────────
 
 

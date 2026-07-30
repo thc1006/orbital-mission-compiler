@@ -13,6 +13,7 @@ except ImportError:
 
 from orbital_mission_compiler.compiler import (
     DEFAULT_POLICY_BUNDLE,
+    DEFAULT_POLICY_DECISION,
     PolicyEngineUnavailableError,
     evaluate_policy_decision,
     PolicyViolationError,
@@ -48,7 +49,18 @@ def _bypass_requested(unsafe_skip_policy: bool) -> bool:
     return unsafe_skip_policy and os.environ.get(ALLOW_POLICY_BYPASS_ENV) == "1"
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-_ALLOWED_PLANS = (_REPO_ROOT / "configs" / "mission_plans").resolve()
+
+# Where the server is allowed to read mission plans from. The checkout layout is
+# the default, but it does not exist once the package is installed from a wheel,
+# so an operator running the packaged server points this at their own directory.
+PLAN_ROOT_ENV = "ORBITAL_MCP_PLAN_ROOT"
+
+
+def _plan_root() -> Path:
+    configured = os.environ.get(PLAN_ROOT_ENV)
+    if configured:
+        return Path(configured).resolve()
+    return (_REPO_ROOT / "configs" / "mission_plans").resolve()
 # Resolve through the same helper the CLI uses, so the sandbox root exists for an
 # installed package too; _REPO_ROOT only exists in a source checkout.
 _ALLOWED_BUNDLES = Path(DEFAULT_POLICY_BUNDLE).resolve()
@@ -98,8 +110,9 @@ def _validate_plan_path(path: str) -> Path:
     # Only accept bare filenames — reject paths with directory components
     if candidate != Path(candidate.name):
         raise ValueError(f"Path outside allowed directory: {path}")
-    resolved = (_ALLOWED_PLANS / candidate.name).resolve()
-    if not _is_within(resolved, _ALLOWED_PLANS):
+    root = _plan_root()
+    resolved = (root / candidate.name).resolve()
+    if not _is_within(resolved, root):
         raise ValueError(f"Path outside allowed directory: {path}")
     if not resolved.exists():
         raise ValueError(f"Plan file not found: {path}")
@@ -181,12 +194,21 @@ def build_server() -> Any:
         """Render Argo Workflow manifests. Fail-closed: no artifact is produced for
         a policy-denied plan (``status: "denied"``) unless ``unsafe_skip_policy=True``."""
         safe_path = _validate_plan_path(path)
+        if not _bypass_requested(unsafe_skip_policy):
+            # Same evaluator as validate_plan and compile_plan: passing the engine
+            # name into the writer instead meant an invalid value escaped from
+            # here as a raw exception while the other tools returned a structured
+            # result for it.
+            try:
+                violations = _server_policy_violations(load_mission_plan(safe_path))
+            except PolicyUndecidable as exc:
+                return _undecidable(exc)
+            if violations:
+                return {"status": "denied", "violations": violations}
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                files = write_individual_workflows(
-                    safe_path, tmpdir, enforce_policy=not _bypass_requested(unsafe_skip_policy),
-                    policy_engine=MCP_POLICY_ENGINE,
-                )
+                # The verdict above is the gate; the writer does not re-evaluate.
+                files = write_individual_workflows(safe_path, tmpdir, enforce_policy=False)
                 # Return the rendered YAML, not the paths: the temporary
                 # directory is removed on the way out of this block, so a caller
                 # given only the names would hold references to files that no
@@ -205,7 +227,7 @@ def build_server() -> Any:
 
     @server.tool
     def explain_policy(
-        path: str, bundle: str = "configs/policies", decision: str = "data.orbitalmission"
+        path: str, bundle: str = DEFAULT_POLICY_BUNDLE, decision: str = DEFAULT_POLICY_DECISION
     ) -> dict[str, Any]:
         safe_path = _validate_plan_path(path)
         safe_bundle = _validate_bundle_path(bundle)

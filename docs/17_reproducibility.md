@@ -44,7 +44,9 @@ Captured environment: `manifests/k8s/kueue/dra-unified/results-v0.18.3-20260716/
    `python -m orbital_mission_compiler.cli render-kueue --input
    configs/mission_plans/sample_gpu_cpu_fallback.yaml --output-dir /tmp/out
    --namespace dra-unified --queue dra-unified-lq --dra-fallback`
-   -> the Kueue Job references the `exactly` GPU RCT (never `firstAvailable`).
+   -> two files: `*-kueue.yaml` (the `exactly` GPU RCT + the Job that references
+   it, never `firstAvailable`) and `*-scheduler-fallback.yaml` (the
+   `firstAvailable` claim, for the plain-Pod/Argo route Kueue does not admit).
 
 ## Honest notes
 

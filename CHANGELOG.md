@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- `render-kueue --dra-fallback` writes the scheduler-route `firstAvailable` claim
+  to its own `*-scheduler-fallback.yaml` instead of the `*-kueue.yaml` bundle. The
+  Job is admitted on the `exactly` claim and never references the `firstAvailable`
+  one, so a single file read as though the admitted Job falls back, and applying it
+  created a claim template nothing in the bundle consumed. Each rendered template
+  now carries an `orbital/dra-route` label (`scheduler` or `kueue`).
+- Workflow names are deduplicated after Kubernetes name normalization. Service ids
+  that differ only in characters normalization drops (`foo_bar` vs `foo.bar`)
+  previously produced one object name and one file, losing all but one service.
+- A mission plan with a duplicate YAML mapping key is rejected rather than resolved
+  to the last value.
+
+### Added
+- `render-argo --service-account`, for the kubectl-apply path: `argo submit
+  --serviceaccount` cannot be used on the multi-doc `--dra-fallback` bundle,
+  because `argo submit` drops the ResourceClaimTemplate document.
+
+### Fixed
+- The MCP `render_argo` tool now fails closed with `policy_engine_unavailable`
+  like the other tools, instead of calling the renderer directly and surfacing a
+  raw exception.
+- CI installs the pinned Argo CLI and lints with it. The Argo smoke previously
+  printed "argo CLI not found; skipped argo lint" and still passed, so its only
+  real gate never ran.
+
 ## v0.5.0 (2026-07-29)
 
 Unified GPU+CPU DRA and a scheduler-level accelerator fallback, re-validated on

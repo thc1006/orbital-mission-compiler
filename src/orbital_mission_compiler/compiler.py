@@ -80,8 +80,30 @@ def scale_priority_orchide(priority: int) -> int:
     return 4
 
 
+class _StrictLoader(yaml.SafeLoader):
+    """A SafeLoader that refuses a mapping with a repeated key.
+
+    PyYAML keeps the last value for a duplicate key, so a plan can read one way
+    to a reviewer and load another way. For an artifact that a policy layer signs
+    off before uplink, an ambiguous document is not something to resolve
+    silently.
+    """
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        seen: set[Any] = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    f"found duplicate key {key!r}", key_node.start_mark,
+                )
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def load_mission_plan(path: str | Path) -> MissionPlan:
-    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    raw = yaml.load(Path(path).read_text(encoding="utf-8"), Loader=_StrictLoader)  # noqa: S506
     return MissionPlan.model_validate(raw)
 
 
@@ -140,18 +162,22 @@ def _workflow_name(
     """Name an intent, disambiguating a repeated occurrence.
 
     The schema does not require a service_id to be unique within an event or a
-    timestamp to be unique across events, so two occurrences can share
-    mission/service/timestamp. Both writers use this name as the output filename
+    timestamp to be unique across events, and distinct identifiers can normalise
+    to the same Kubernetes name, so two occurrences can collide. Both writers use this name as the output filename
     and as the object name, so without a discriminator the second occurrence
     would silently overwrite the first. The first occurrence keeps the plain
     name, which is what existing goldens and manifests already carry.
     """
-    base = f"{mission_id}-{service_id}-{event_timestamp}"
-    seen = used.get(base, 0)
-    used[base] = seen + 1
-    if seen:
-        base = f"{base}-{seen + 1}"
-    return _collision_resistant_k8s_name(base)
+    canonical = _collision_resistant_k8s_name(f"{mission_id}-{service_id}-{event_timestamp}")
+    seen = used.get(canonical, 0)
+    used[canonical] = seen + 1
+    if not seen:
+        return canonical
+    # Counting the raw string would miss identifiers that differ only in
+    # characters the Kubernetes name rules erase: foo_bar, foo.bar, FOO-BAR and
+    # foo--bar all normalise to the same label, so each would look like a first
+    # occurrence and land on the same object and file.
+    return _collision_resistant_k8s_name(f"{canonical}-{seen + 1}")
 
 
 def compile_plan_to_intents(
@@ -241,18 +267,27 @@ def render_argo_workflow(
     *,
     dra_fallback: bool = False,
     namespace: str | None = None,
+    service_account: str | None = None,
 ) -> dict[str, Any]:
     """Render an Argo Workflow for the intent's steps.
 
     Default: the accelerator-with-fallback preference is realized only as the
     runtime env-var switch (``ORBITAL_FALLBACK_RESOURCE_CLASS``).
 
-    Opt-in ``dra_fallback``: the driver-backed accelerator-fallback step's Pod is
-    wired to a DRA ``firstAvailable`` ResourceClaimTemplate via ``podSpecPatch`` (see
-    ``_argo_dra_pod_spec_patch``), so GPU->CPU fallback becomes a scheduler-level
-    decision on the Argo/plain-Pod route -- the end-to-end scheduler fallback rather
-    than an orphan claim template. Pair with ``_first_available_rct`` (emitted
-    alongside by ``write_individual_workflows``) so the reference resolves.
+    Opt-in ``dra_fallback``: the accelerator-fallback step's Pod is wired to a DRA
+    ``firstAvailable`` ResourceClaimTemplate via ``podSpecPatch`` (see
+    ``_argo_dra_pod_spec_patch``), so the GPU-or-CPU choice is made by the
+    scheduler at allocation time rather than by the runtime env-var switch. Pair
+    with ``_first_available_rct`` (emitted alongside by
+    ``write_individual_workflows``) so the reference resolves.
+
+    This is DEVICE ALLOCATION fallback, not application fallback. The scheduler
+    picks a device; it does not substitute the image, command or arguments, and
+    the schema has no place to express a different implementation for the CPU
+    case. A step rendered this way must therefore run under either allocation,
+    and a workload that needs to know which one it got reads the device metadata
+    Kubernetes exposes. The env-var pair still reports the declared classes, so
+    it is not a signal of what was actually allocated.
 
     ``namespace``, when given, is stamped on the Workflow. A ResourceClaimTemplate
     is namespaced and a Pod can only reference one in its own namespace, so the
@@ -354,6 +389,12 @@ def render_argo_workflow(
     }
     if namespace is not None:
         workflow["metadata"]["namespace"] = namespace  # type: ignore[index]
+    if service_account is not None:
+        # `argo submit --serviceaccount` cannot be used on the multi-document
+        # bundle, because argo submit drops the ResourceClaimTemplate. Applying
+        # the bundle with kubectl therefore needs the account in the manifest, or
+        # the Workflow runs as default and fails the workflowtaskresults RBAC.
+        workflow["spec"]["serviceAccountName"] = service_account  # type: ignore[index]
     return workflow
 
 
@@ -366,6 +407,12 @@ def _rct_name_for_intent(intent: WorkflowIntent, device: str) -> str:
     together would collapse to the same name and overwrite one another on apply.
     """
     return _collision_resistant_k8s_name(f"{intent.workflow_name}-{device}-claim", max_len=62)
+
+
+# Marks which admission route may reference a rendered ResourceClaimTemplate:
+# "scheduler" for the firstAvailable claim (plain Pod / Argo), "kueue" for the
+# exactly claim a Kueue Job is admitted on.
+DRA_ROUTE_LABEL = "orbital/dra-route"
 
 
 # The accelerator-to-CPU directions renderable as a DRA firstAvailable request.
@@ -418,6 +465,10 @@ def _first_available_rct(intent: WorkflowIntent, namespace: str) -> dict[str, An
         "metadata": {
             "name": _rct_name_for_intent(intent, "accel"),
             "namespace": namespace,
+            # Which route may reference this template. A Kueue Job never does, so
+            # an operator reading the applied object -- not just the file it came
+            # from -- can tell that this claim is not what the Job was admitted on.
+            "labels": {DRA_ROUTE_LABEL: "scheduler"},
         },
         "spec": {
             "spec": {
@@ -501,6 +552,7 @@ def render_resource_claim_templates(
             "metadata": {
                 "name": _rct_name_for_intent(intent, "gpu"),
                 "namespace": namespace,
+                "labels": {DRA_ROUTE_LABEL: "kueue"},
             },
             "spec": {
                 "spec": {
@@ -795,7 +847,7 @@ def _validate_typed_violation(item: Any) -> None:
             f"policy decision carries a violation without the typed shape: {item!r}"
         )
     checks: list[tuple[str, bool]] = [
-        ("rule", item["rule"] is None or isinstance(item["rule"], int)),
+        ("rule", item["rule"] is None or (isinstance(item["rule"], int) and not isinstance(item["rule"], bool))),
         ("rule_id", isinstance(item["rule_id"], str) and bool(item["rule_id"])),
         ("severity", item["severity"] in {"T1", "T2", "T3", "T4"}),
         ("provenance", item["provenance"] in {"A", "D"}),
@@ -856,11 +908,18 @@ def typed_violations_from_decision(value: Any) -> list[dict[str, Any]]:
         for item in raw:
             _validate_typed_violation(item)
         violations = list(raw)
-        if deny_messages is not None and bool(deny_messages) != bool(violations):
-            raise PolicyEngineUnavailableError(
-                f"policy decision disagrees with itself: {len(deny_messages)} deny message(s) "
-                f"but {len(violations)} typed violation(s)"
-            )
+        if deny_messages is not None:
+            # The bundle defines deny as the message projection of violations, so
+            # comparing only emptiness would accept a decision that denies for one
+            # reason in `deny` and a different one in `violations`, and every
+            # consumer downstream would report whichever it happened to read.
+            projected = {v["message"] for v in violations}
+            if set(deny_messages) != projected:
+                raise PolicyEngineUnavailableError(
+                    "policy decision disagrees with itself: deny messages "
+                    f"{sorted(set(deny_messages))} do not match the violation "
+                    f"messages {sorted(projected)}"
+                )
     elif deny_messages is not None:
         from .baseline_validator import STRUCTURAL_RULE_ID
 
@@ -984,7 +1043,7 @@ def render_workflows_for_file(
     return objects
 
 
-def _preflight_unique(paths: list[Path]) -> None:
+def preflight_unique(paths: list[Path]) -> None:
     """Fail before writing when two renders would land on the same file.
 
     Names are disambiguated at compile time, so a duplicate here means a naming
@@ -1010,6 +1069,7 @@ def write_individual_workflows(
     decision: str = DEFAULT_POLICY_DECISION,
     dra_fallback: bool = False,
     namespace: str = "orbital-demo",
+    service_account: str | None = None,
 ) -> list[Path]:
     """Write one Argo manifest file per intent.
 
@@ -1043,12 +1103,15 @@ def write_individual_workflows(
         # previous namespace-less output, so a caller that selects the namespace
         # at apply time (kubectl -n / argo submit -n) is unaffected.
         workflow = render_argo_workflow(
-            intent, dra_fallback=dra_fallback, namespace=namespace if rct is not None else None
+            intent,
+            dra_fallback=dra_fallback,
+            namespace=namespace if rct is not None else None,
+            service_account=service_account,
         )
         out = out_dir / f"{workflow['metadata']['name']}.yaml"
         planned.append((out, [rct, workflow] if rct is not None else [workflow]))
 
-    _preflight_unique([path for path, _ in planned])
+    preflight_unique([path for path, _ in planned])
     for out, docs in planned:
         if len(docs) > 1:
             out.write_text(yaml.safe_dump_all(docs, sort_keys=False), encoding="utf-8")
