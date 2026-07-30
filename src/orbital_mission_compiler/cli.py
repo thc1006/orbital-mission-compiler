@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import yaml
 
 from .compiler import (
+    PolicyViolationError,
     compile_file,
+    enforce_policy_or_raise,
     load_mission_plan,
     compile_plan_to_intents,
     render_kueue_job,
@@ -17,6 +20,12 @@ from .compiler import (
 )
 from .policy import eval_policy
 
+_ENFORCE_POLICY_HELP = (
+    "Fail closed if the mission plan violates a policy rule: run the policy layer "
+    "(in-process OPA-equivalent baseline) before rendering and emit no artifact for "
+    "a denied plan. Off by default so the stages stay independently runnable."
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="orbital-mission-compiler")
@@ -25,11 +34,13 @@ def build_parser() -> argparse.ArgumentParser:
     compile_p = sub.add_parser("compile", help="Compile mission plan to workflow payload")
     compile_p.add_argument("--input", required=True)
     compile_p.add_argument("--output", required=True)
+    compile_p.add_argument("--enforce-policy", action="store_true", help=_ENFORCE_POLICY_HELP)
     compile_p.set_defaults(func=cmd_compile)
 
     render_p = sub.add_parser("render-argo", help="Render individual Argo Workflow manifests")
     render_p.add_argument("--input", required=True)
     render_p.add_argument("--output-dir", required=True)
+    render_p.add_argument("--enforce-policy", action="store_true", help=_ENFORCE_POLICY_HELP)
     render_p.set_defaults(func=cmd_render_argo)
 
     inspect_p = sub.add_parser("inspect", help="Inspect compiled workflow intents")
@@ -49,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         "instead of the runtime env-var switch. Requires the CPU DRA driver; the "
         "resulting claim is not Kueue quota-counted (only 'exactly' claims are).",
     )
+    kueue_p.add_argument("--enforce-policy", action="store_true", help=_ENFORCE_POLICY_HELP)
     kueue_p.set_defaults(func=cmd_render_kueue)
 
     policy_p = sub.add_parser("policy", help="Evaluate policy pack with OPA if available")
@@ -61,12 +73,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_compile(args: argparse.Namespace) -> None:
-    payload = compile_file(args.input, args.output)
+    payload = compile_file(args.input, args.output, enforce_policy=args.enforce_policy)
     print(json.dumps({"status": "ok", "workflows": len(payload["workflows"])}, indent=2))
 
 
 def cmd_render_argo(args: argparse.Namespace) -> None:
-    written = write_individual_workflows(args.input, args.output_dir)
+    written = write_individual_workflows(
+        args.input, args.output_dir, enforce_policy=args.enforce_policy
+    )
     print(json.dumps({"status": "ok", "files": [str(p) for p in written]}, indent=2))
 
 
@@ -79,6 +93,8 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 
 def cmd_render_kueue(args: argparse.Namespace) -> None:
     plan = load_mission_plan(args.input)
+    if args.enforce_policy:
+        enforce_policy_or_raise(plan)
     intents = compile_plan_to_intents(plan)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -112,7 +128,12 @@ def cmd_policy(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    args.func(args)
+    try:
+        args.func(args)
+    except PolicyViolationError as exc:
+        # Fail closed: a denied plan produces no artifact and a non-zero exit.
+        print(json.dumps({"status": "denied", "error": str(exc)}), file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

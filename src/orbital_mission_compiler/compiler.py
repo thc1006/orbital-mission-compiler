@@ -575,14 +575,48 @@ def render_kueue_job(
     return job
 
 
-def render_workflows_for_file(input_path: str | Path) -> list[dict[str, Any]]:
+class PolicyViolationError(ValueError):
+    """Raised when policy enforcement is on and the plan violates a policy rule.
+
+    With enforcement enabled the compile/render pipeline is fail-closed: no
+    artifact is produced for a plan the policy layer would deny. Enforcement uses
+    the in-process, OPA-equivalent baseline (``baseline_validator``), so it needs
+    no external ``opa`` CLI and runs in CI; the auditable OPA path remains
+    available via the ``policy`` CLI subcommand. Enforcement is opt-in so the
+    layers stay independently runnable (Section II-B).
+    """
+
+    def __init__(self, violations: list[str]) -> None:
+        self.violations = list(violations)
+        joined = "; ".join(self.violations)
+        super().__init__(
+            f"policy denied the mission plan ({len(self.violations)} violation(s)): {joined}"
+        )
+
+
+def enforce_policy_or_raise(plan: MissionPlan) -> None:
+    """Run the policy layer (in-process OPA-equivalent baseline) and fail closed."""
+    from . import baseline_validator
+
+    violations = baseline_validator.evaluate(plan.model_dump(mode="json"))
+    if violations:
+        raise PolicyViolationError(violations)
+
+
+def render_workflows_for_file(
+    input_path: str | Path, enforce_policy: bool = False
+) -> list[dict[str, Any]]:
     plan = load_mission_plan(input_path)
+    if enforce_policy:
+        enforce_policy_or_raise(plan)
     intents = compile_plan_to_intents(plan)
     return [render_argo_workflow(intent) for intent in intents]
 
 
-def write_individual_workflows(input_path: str | Path, output_dir: str | Path) -> list[Path]:
-    workflows = render_workflows_for_file(input_path)
+def write_individual_workflows(
+    input_path: str | Path, output_dir: str | Path, enforce_policy: bool = False
+) -> list[Path]:
+    workflows = render_workflows_for_file(input_path, enforce_policy=enforce_policy)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
@@ -593,8 +627,12 @@ def write_individual_workflows(input_path: str | Path, output_dir: str | Path) -
     return written
 
 
-def compile_file(input_path: str | Path, output_path: str | Path) -> dict[str, Any]:
+def compile_file(
+    input_path: str | Path, output_path: str | Path, enforce_policy: bool = False
+) -> dict[str, Any]:
     plan = load_mission_plan(input_path)
+    if enforce_policy:
+        enforce_policy_or_raise(plan)
     intents = compile_plan_to_intents(plan)
     payload = {
         "mission_id": plan.mission_id,
