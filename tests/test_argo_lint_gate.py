@@ -852,3 +852,45 @@ def test_a_stale_artifact_that_fails_lint_does_not_block_its_own_prune(tmp_path,
     assert report["pruned"] == [str(stale)], report
     assert not stale.exists()
     assert len(list(out.glob("*.yaml"))) == 1
+
+
+def test_every_command_that_prunes_reports_a_failed_prune_the_same_way(tmp_path, monkeypatch, capsys):
+    """The gate is not the only caller that prunes.
+
+    `render-argo` without the gate and `render-kueue` prune too, and a prune
+    that stops part-way leaves them with the same problem to act on. Letting it
+    surface as a traceback there loses what was removed and what was not, and
+    breaks the one-JSON-document contract on the way out.
+    """
+    out = tmp_path / "out"
+
+    def render(service_ids, *extra):
+        return build_parser().parse_args([
+            "render-argo", "--input", str(_multi_service_plan(tmp_path, service_ids)),
+            "--output-dir", str(out), *extra,
+        ])
+
+    cmd_render_argo(render(["a", "b", "c"]))
+    capsys.readouterr()
+    doomed = sorted(p for p in out.glob("*.yaml") if "-a-" not in p.name)
+    assert len(doomed) == 2
+
+    real_unlink = Path.unlink
+
+    def failing_unlink(self, *a, **kw):
+        if self == doomed[-1]:
+            raise OSError(13, "Permission denied")
+        return real_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+    with pytest.raises(SystemExit) as exit_info:
+        cmd_render_argo(render(["a"], "--prune"))
+    assert exit_info.value.code == 2
+
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)  # one document, not a traceback
+    assert report["reason"] == "prune-failed", report
+    assert report["pruned"] == [str(doomed[0])]
+    assert report["not_pruned"] == [str(doomed[-1])]
+    assert report["output_modified"] is True
+    assert "lint" not in report, "the ungated path never ran a linter"

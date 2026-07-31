@@ -259,13 +259,36 @@ def _render_argo(args: argparse.Namespace, output_dir: str | Path) -> list[Path]
     )
 
 
+def _prune_failure_report(exc: "PruneIncomplete", published: list[Path]) -> dict[str, object]:
+    """What a prune that stopped part-way leaves behind.
+
+    Publication has already committed by then, so this is not a failed publish
+    and nothing was rolled back. Every command that prunes reports it the same
+    way, because the caller has the same problem to act on whichever one they
+    ran: new manifests in place, and part of the previous generation still
+    there.
+    """
+    return {
+        "status": "error", "reason": "prune-failed",
+        "output_modified": True,
+        "files": [str(p) for p in published],
+        "pruned": exc.removed,
+        "not_pruned": exc.remaining,
+        "message": str(exc),
+    }
+
+
 def cmd_render_argo(args: argparse.Namespace) -> None:
     if args.argo_lint:
         _render_argo_with_lint_gate(args)
         return
     written = _render_argo(args, args.output_dir)
     result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
-    _report_stale(result, args.output_dir, written, args.prune)
+    try:
+        _report_stale(result, args.output_dir, written, args.prune)
+    except PruneIncomplete as exc:
+        print(json.dumps(_prune_failure_report(exc, written), indent=2))
+        raise SystemExit(2) from exc
     print(json.dumps(result, indent=2))
 
 
@@ -577,14 +600,9 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         except PruneIncomplete as exc:
             # Not a publish failure and nothing was rolled back: the manifests
             # are in place and the previous generation is partly gone.
-            print(json.dumps({
-                "status": "error", "lint": "passed", "reason": "prune-failed",
-                "output_modified": True,
-                "files": [str(p) for p in published],
-                "pruned": exc.removed,
-                "not_pruned": exc.remaining,
-                "message": str(exc),
-            }, indent=2))
+            print(json.dumps(
+                {"lint": "passed", **_prune_failure_report(exc, published)}, indent=2
+            ))
             raise SystemExit(2) from exc
         except OSError as exc:
             print(json.dumps({
@@ -724,7 +742,11 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
             f"runs that step twice. See 'step_projection'.",
             file=sys.stderr,
         )
-    _report_stale(result, args.output_dir, written, args.prune)
+    try:
+        _report_stale(result, args.output_dir, written, args.prune)
+    except PruneIncomplete as exc:
+        print(json.dumps(_prune_failure_report(exc, written), indent=2))
+        raise SystemExit(2) from exc
     print(json.dumps(result))
 
 
