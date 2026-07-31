@@ -192,7 +192,14 @@ class _StrictLoader(yaml.SafeLoader):
     silently.
     """
 
+    #: Mappings already scanned in this document, by id, holding the node so
+    #: the id stays unique. Populated lazily because SafeLoader has no __init__
+    #: of ours to hook.
+    _scanned_mappings: dict[int, yaml.Node]
+
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        if not hasattr(self, "_scanned_mappings"):
+            self._scanned_mappings = {}
         self._refuse_repeated_keys(node, deep, set())
         return super().construct_mapping(node, deep=deep)
 
@@ -221,6 +228,22 @@ class _StrictLoader(yaml.SafeLoader):
                 "while constructing a mapping", node.start_mark,
                 "found a merge key that refers to its own mapping", node.start_mark,
             )
+        # Each mapping is scanned once per document, the first time it is
+        # reached. `flatten_mapping` splices a merge source's pairs into the
+        # front of the mapping it merges into and leaves them there, so a
+        # mapping that legitimately overrides an inherited key really does hold
+        # that key twice once it has been flattened -- reading it a second time,
+        # as the merge source of some later mapping, would report an override as
+        # a duplicate. The first read is always before any flattening, because
+        # this scan runs ahead of SafeConstructor in every call and flattening
+        # only happens inside it. Scanning once also keeps a chain of merges
+        # linear instead of walking every path through it.
+        scanned = self._scanned_mappings
+        if id(node) in scanned:
+            return
+        # The node is kept, not just its id: an id is only unique while the
+        # object it belongs to is alive.
+        scanned[id(node)] = node
         visiting = visiting | {id(node)}
         seen: set[Any] = set()
         merged = False

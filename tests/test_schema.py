@@ -346,6 +346,40 @@ def test_a_key_written_twice_inside_a_merge_source_is_still_a_duplicate():
         assert load(legitimate)["s"] == _yaml.safe_load(legitimate)["s"]
 
 
+def test_an_inherited_key_overridden_and_then_reused_is_not_a_duplicate():
+    """The scan reads each mapping once, and it has to.
+
+    `flatten_mapping` splices a merge source's pairs into the front of the
+    mapping that merges it and leaves them there, so a mapping that overrides an
+    inherited key really does hold that key twice afterwards. Reading it again
+    as some later mapping's merge source reports the override as a duplicate --
+    and the pattern that breaks is the one merge keys exist for: shared step
+    defaults, specialised once, used by more than one step.
+    """
+    import yaml as _yaml
+
+    from orbital_mission_compiler.compiler import _StrictLoader
+
+    doc = (
+        "base: &base\n"
+        "  image: 'busybox:1.36'\n"
+        "  resource_class: cpu\n"
+        "gpu_defaults: &gpu\n"
+        "  <<: *base\n"
+        "  resource_class: gpu\n"      # overrides the inherited value
+        "step_one:\n"
+        "  <<: *gpu\n"
+        "  name: detect\n"
+        "step_two:\n"                   # second reader of the flattened anchor
+        "  <<: *gpu\n"
+        "  name: track\n"
+    )
+    loaded = _yaml.load(doc, Loader=_StrictLoader)
+    assert loaded == _yaml.safe_load(doc)
+    assert loaded["step_two"]["resource_class"] == "gpu"
+    assert loaded["step_two"]["image"] == "busybox:1.36"
+
+
 def test_a_duplicate_hidden_in_a_merge_source_cannot_downgrade_a_gpu_step(tmp_path):
     """The concrete harm: sharing a step definition through an anchor is exactly
     what merge keys are for, and a second `resource_class` inside that anchor
