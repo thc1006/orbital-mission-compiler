@@ -719,3 +719,136 @@ def test_the_lock_is_the_same_for_aliased_output_paths(tmp_path):
         release.set()
         worker.join(timeout=10)
         assert not worker.is_alive()
+
+
+def test_a_new_file_that_cannot_be_removed_is_an_incomplete_rollback(tmp_path, monkeypatch, capsys):
+    """Rollback has two ways to leave the directory modified, and only one was
+    reported.
+
+    A file this render created has no displaced copy to restore, so failing to
+    remove it left `unrestored` empty and the caller was told the output had
+    been rolled back while the new artifact was still sitting in it.
+    """
+    out = tmp_path / "out"
+    exe = _fake_argo(tmp_path, 0)
+    args = build_parser().parse_args([
+        "render-argo", "--input", str(_multi_service_plan(tmp_path, ["a", "b"])),
+        "--output-dir", str(out), "--argo-lint", "--argo-bin", str(exe),
+    ])
+
+    real_replace = os.replace
+    stuck: dict[str, Path] = {}
+
+    def failing_replace(src, dst):
+        target = Path(dst)
+        if target.parent == out and stuck:
+            raise OSError(28, "No space left on device")
+        result = real_replace(src, dst)
+        if target.parent == out:
+            stuck["first"] = target
+        return result
+
+    real_unlink = Path.unlink
+
+    def failing_unlink(self, *a, **kw):
+        if stuck.get("first") == self:
+            raise OSError(13, "Permission denied")
+        return real_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cmd_render_argo(args)
+    assert exit_info.value.code == 2
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["reason"] == "rollback-incomplete", report
+    assert report["output_modified"] is True
+    assert report["unremoved_published"] == [str(stuck["first"])], report
+    assert "rolled back" not in report["message"]
+    # The claim has to match the disk: the file really is still there.
+    assert stuck["first"].exists()
+
+
+def test_a_prune_that_stops_part_way_is_not_reported_as_a_failed_publish(tmp_path, monkeypatch, capsys):
+    """Publication commits and drops its backup before pruning starts, so a
+    prune that fails half-way cannot be rolled back.
+
+    Reporting it as `publish-failed` and "rolled back to its previous contents"
+    is wrong three times over: publication succeeded, the failing phase was the
+    prune, and nothing was restored.
+    """
+    out = tmp_path / "out"
+    exe = _fake_argo(tmp_path, 0)
+
+    def render(service_ids, *extra):
+        return build_parser().parse_args([
+            "render-argo", "--input", str(_multi_service_plan(tmp_path, service_ids)),
+            "--output-dir", str(out), "--argo-lint", "--argo-bin", str(exe), *extra,
+        ])
+
+    cmd_render_argo(render(["a", "b", "c"]))
+    capsys.readouterr()
+    assert len(list(out.glob("*.yaml"))) == 3
+
+    doomed = sorted(p for p in out.glob("*.yaml") if "-a-" not in p.name)
+    assert len(doomed) == 2
+    real_unlink = Path.unlink
+
+    def failing_unlink(self, *a, **kw):
+        if self == doomed[-1]:
+            raise OSError(13, "Permission denied")
+        return real_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+    with pytest.raises(SystemExit) as exit_info:
+        cmd_render_argo(render(["a"], "--prune"))
+    assert exit_info.value.code == 2
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["reason"] == "prune-failed", report
+    assert "rolled back" not in report["message"]
+    assert report["pruned"] == [str(doomed[0])], report
+    assert report["not_pruned"] == [str(doomed[-1])], report
+    # The published manifest is in place, which is what makes "publish-failed"
+    # the wrong word for this.
+    assert report["files"] and all(Path(f).exists() for f in report["files"])
+    assert not doomed[0].exists() and doomed[-1].exists()
+
+
+def test_a_stale_artifact_that_fails_lint_does_not_block_its_own_prune(tmp_path, capsys):
+    """`--prune` exists to remove artifacts a shrunk plan no longer produces.
+
+    Carrying them into the lint candidate first lets an invalid one fail the
+    gate, which stops the publish, which stops the prune -- so the one command
+    that could repair the directory is the one the bad file disables.
+    """
+    out = tmp_path / "out"
+    clean = _fake_argo(tmp_path, 0)
+
+    def render(service_ids, exe, *extra):
+        return build_parser().parse_args([
+            "render-argo", "--input", str(_multi_service_plan(tmp_path, service_ids)),
+            "--output-dir", str(out), "--argo-lint", "--argo-bin", str(exe), *extra,
+        ])
+
+    cmd_render_argo(render(["a", "b"], clean))
+    capsys.readouterr()
+    stale = next(p for p in out.glob("*.yaml") if "-b-" in p.name)
+
+    # A linter that rejects whatever directory it is given if the stale file is
+    # in it -- standing in for the file itself being invalid.
+    picky = _fake_argo(
+        tmp_path, 0, name="argo-picky",
+        body=f'for a in "$@"; do\n'
+             f'  if [ -d "$a" ] && [ -e "$a/{stale.name}" ]; then exit 1; fi\n'
+             f'done',
+    )
+    cmd_render_argo(render(["a"], picky, "--prune"))
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["status"] == "ok", report
+    assert report["pruned"] == [str(stale)], report
+    assert not stale.exists()
+    assert len(list(out.glob("*.yaml"))) == 1

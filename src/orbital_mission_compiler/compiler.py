@@ -1517,7 +1517,13 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
     out = Path(output_dir)
     if not out.is_dir():
         return []
-    current = {p.resolve() for p in written}
+    # Matched by name, not by resolved path, so this answers the same question
+    # before the render is published as after it. Names in the output directory
+    # are unique by construction (`preflight_unique`), and a caller asking which
+    # artifacts this render is about to leave behind holds paths that are still
+    # in staging -- against resolved paths every one of them would compare as
+    # unrelated and the whole previous generation would read as stale.
+    current = {p.name for p in written}
     # Scoped to the missions this render just wrote. Ownership alone is not
     # enough to delete by: another mission's manifests in the same directory
     # carry the same managed-by label and are equally ours, but they are not
@@ -1534,7 +1540,7 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
     return sorted(
         p for p in sorted(out.iterdir())
         if p.suffix == ".yaml"
-        and p.resolve() not in current
+        and p.name not in current
         and _is_rendered_artifact(p)
         and _artifact_mission(p) in missions
     )

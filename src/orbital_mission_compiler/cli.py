@@ -93,9 +93,20 @@ def _report_stale(result: dict[str, object], output_dir: str, written: list[Path
     if not stale:
         return
     if prune:
-        for path in stale:
-            path.unlink()
-        result["pruned"] = [str(p) for p in stale]
+        removed: list[str] = []
+        for index, path in enumerate(stale):
+            try:
+                path.unlink()
+            except OSError as exc:
+                # Publication has already committed and its backup is gone, so
+                # there is nothing to roll back to. Say what was removed and
+                # what was not, rather than letting the caller read this as a
+                # failed publish.
+                raise PruneIncomplete(
+                    str(exc), removed, [str(p) for p in stale[index:]]
+                ) from exc
+            removed.append(str(path))
+        result["pruned"] = removed
         return
     result["stale"] = [str(p) for p in stale]
     print(
@@ -277,6 +288,10 @@ def _nearest_existing_ancestor(path: Path) -> Path:
     return current
 
 
+class PublishLockUnavailable(Exception):
+    """The publish lock cannot be taken on this platform."""
+
+
 @contextlib.contextmanager
 def _publish_lock(out_dir: Path) -> Iterator[None]:
     """Serialise publishing into one output directory.
@@ -292,7 +307,16 @@ def _publish_lock(out_dir: Path) -> Iterator[None]:
     # two processes different lock files when one of them runs before the
     # directory is created and the other after, which is exactly when they would
     # collide. And a lock file is not something to leave in an operator's output.
-    import fcntl  # Unix-only, and only this feature needs it
+    try:
+        import fcntl  # Unix-only, and only this feature needs it
+    except ImportError as exc:
+        # Structured, not a traceback. The gate promises a single JSON document
+        # on stdout and exit 2 when it cannot run; a platform without flock is
+        # one more way it cannot run, not a different kind of event.
+        raise PublishLockUnavailable(
+            "the publish lock needs fcntl, which this platform does not provide, "
+            "so --argo-lint cannot serialise publishing here"
+        ) from exc
 
     # realpath, not absolute(): absolute() leaves `..` in place and does not
     # resolve symlinks, so /data/out and /data/tmp/../out would take different
@@ -310,19 +334,47 @@ def _publish_lock(out_dir: Path) -> Iterator[None]:
 
 
 class PublishRolledBackPartially(OSError):
-    """Publishing failed and some displaced files could not be put back.
+    """Publishing failed and the directory could not be put back as it was.
 
-    Carries where the surviving copies are, because at that point the backup is
-    the only place they exist.
+    Two ways that happens, and both leave the output modified: a file this
+    render displaced could not be restored, or a file this render created could
+    not be removed again. Carries where the surviving copies are, because for
+    the displaced ones the backup is the only place they still exist.
     """
 
-    def __init__(self, reason: str, recovery: Path, unrestored: list[str]) -> None:
+    def __init__(
+        self, reason: str, recovery: Path, unrestored: list[str], unremoved: list[str]
+    ) -> None:
+        parts = []
+        if unrestored:
+            parts.append(f"{len(unrestored)} displaced file(s) could not be restored")
+        if unremoved:
+            parts.append(f"{len(unremoved)} newly published file(s) could not be removed")
         super().__init__(
-            f"publishing failed ({reason}) and {len(unrestored)} file(s) could not be "
-            f"restored; they are in {recovery}"
+            f"publishing failed ({reason}) and {' and '.join(parts)}; "
+            f"the backup is in {recovery}"
         )
         self.recovery = recovery
         self.unrestored = unrestored
+        self.unremoved = unremoved
+
+
+class PruneIncomplete(OSError):
+    """Pruning stopped part-way, after publication had already succeeded.
+
+    Publication committed before this ran, so the new manifests are in place and
+    what is left is an incomplete removal of the previous generation. Reporting
+    it as a failed publish would be wrong twice over: nothing was rolled back,
+    and the phase that failed was not the publish.
+    """
+
+    def __init__(self, reason: str, removed: list[str], remaining: list[str]) -> None:
+        super().__init__(
+            f"the manifests were published, but pruning stopped after removing "
+            f"{len(removed)} of {len(removed) + len(remaining)} stale artifact(s): {reason}"
+        )
+        self.removed = removed
+        self.remaining = remaining
 
 
 def _publish(staged: list[Path], out_dir: Path) -> list[Path]:
@@ -355,20 +407,31 @@ def _publish(staged: list[Path], out_dir: Path) -> list[Path]:
             published.append(target)
     except OSError as exc:
         unrestored: list[str] = []
+        unremoved: list[str] = []
         for target in published:
-            with contextlib.suppress(OSError):
+            try:
                 target.unlink()
+            except OSError:
+                # Not suppressed. A file this render created and cannot remove
+                # is the directory left modified, exactly as an unrestorable
+                # displaced file is; swallowing it here is how the caller came
+                # to be told the output was rolled back while a new artifact
+                # from the failed set was still sitting in it.
+                unremoved.append(str(target))
         for target, kept in displaced.items():
             try:
                 os.replace(kept, target)
             except OSError:
                 unrestored.append(str(target))
-        if unrestored:
-            # The backup holds the only remaining copy of these, so it stays and
-            # the caller is told where. Deleting it here on the way out of a
-            # failed rollback is how a previous good artifact would be lost for
-            # good, while the command reported the directory as restored.
-            raise PublishRolledBackPartially(str(exc), backup_dir, unrestored) from exc
+        if unrestored or unremoved:
+            # The backup holds the only remaining copy of the displaced ones, so
+            # it stays and the caller is told where. Deleting it here on the way
+            # out of a failed rollback is how a previous good artifact would be
+            # lost for good, while the command reported the directory as
+            # restored.
+            raise PublishRolledBackPartially(
+                str(exc), backup_dir, unrestored, unremoved
+            ) from exc
         for created in created_dirs:
             with contextlib.suppress(OSError):
                 created.rmdir()
@@ -393,6 +456,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
     ))
     carried: list[Path] = []
     result_stale: dict[str, object] = {}
+    lock_stack = contextlib.ExitStack()
     try:
         written = _render_argo(args, staging)
 
@@ -409,26 +473,65 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             }, indent=2))
             raise SystemExit(2)
 
-        # Lint what the directory will actually hold. Staging carries only this
-        # render, but a file already in the output that this plan no longer
-        # produces survives the publish, and `kubectl apply -f <dir>` takes it
-        # along. Copying those in makes the verdict cover the set a caller
-        # applies; the copies are dropped again before publishing, so this does
-        # not rewrite files the render does not own.
+        # Taken before the destination is read, not just before it is written.
+        # The verdict is about a directory state, and a state read outside the
+        # lock is only what was there at the time of the read: another gated
+        # render can publish into the gap, and this run would then commit
+        # against a set the linter never saw. Held across the lint so that the
+        # state the verdict describes is the state that gets published.
+        try:
+            lock_stack.enter_context(_publish_lock(out_dir))
+        except PublishLockUnavailable as exc:
+            print(json.dumps({
+                "status": "error", "lint": "not-run", "reason": "publish-lock-unavailable",
+                "message": str(exc),
+            }, indent=2))
+            raise SystemExit(2) from exc
+
+        # Lint what the directory will actually hold once this render is done:
+        # what is there now, less what --prune is about to remove, plus what
+        # this render produces. Staging carries only the last of those, but a
+        # file already in the output that this plan no longer produces survives
+        # the publish and `kubectl apply -f <dir>` takes it along, so it belongs
+        # in the verdict. The copies are dropped again before publishing, so
+        # this does not rewrite files the render does not own.
+        #
+        # Subtracting the prune set matters: carrying a stale file this run is
+        # about to delete lets it fail the lint and so block its own removal --
+        # `--prune` could not repair the state it exists to repair.
         staged_names = {path.name for path in written}
-        if out_dir.is_dir():
-            # Every extension `kubectl apply -f <dir>` consumes, not only .yaml.
-            # A leftover invalid workflow saved as .yml would otherwise be
-            # applied with the directory while the gate reported it clean.
-            existing_manifests = sorted(
-                q for ext in ("*.yaml", "*.yml", "*.json") for q in out_dir.glob(ext)
-            )
-            for existing in existing_manifests:
-                if existing.name in staged_names or not existing.is_file():
-                    continue
-                copy = staging / existing.name
-                shutil.copy2(existing, copy)
-                carried.append(copy)
+        try:
+            if out_dir.is_dir():
+                # Every extension `kubectl apply -f <dir>` consumes, not only
+                # .yaml. A leftover invalid workflow saved as .yml would
+                # otherwise be applied with the directory while the gate
+                # reported it clean.
+                existing_manifests = sorted(
+                    q for ext in ("*.yaml", "*.yml", "*.json") for q in out_dir.glob(ext)
+                )
+                leaving = (
+                    {p.name for p in stale_rendered_artifacts(out_dir, written)}
+                    if args.prune else set()
+                )
+                for existing in existing_manifests:
+                    if existing.name in staged_names or existing.name in leaving:
+                        continue
+                    if not existing.is_file():
+                        continue
+                    copy = staging / existing.name
+                    shutil.copy2(existing, copy)
+                    carried.append(copy)
+        except OSError as exc:
+            # Reading the destination can fail on its own: a manifest removed
+            # between the glob and the copy, a directory that became
+            # unreadable. Nothing has been published at this point, and this
+            # command promises one JSON document rather than a traceback.
+            print(json.dumps({
+                "status": "error", "lint": "not-run", "reason": "snapshot-failed",
+                "message": f"could not read {out_dir} to decide what to lint, so nothing "
+                           f"was published: {exc}",
+            }, indent=2))
+            raise SystemExit(2) from exc
 
         rc, output = argo_lint_path(staging, argo_bin=args.argo_bin, resolved=resolved)
         for copy in carried:
@@ -443,19 +546,18 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             }, indent=2))
             raise SystemExit(1)
 
-        # Ownership, publication and the prune all happen inside one critical
-        # section. Checking ownership outside it only rules out a conflict that
-        # existed at the time of the check: another render can create the file
-        # in the gap, and the publish would then displace it without looking
-        # again. Pruning outside it lets two renders of the same mission delete
-        # each other's newly published files.
+        # Ownership, publication and the prune all happen under the same lock
+        # the snapshot was taken under. Checking ownership outside it only rules
+        # out a conflict that existed at the time of the check: another render
+        # can create the file in the gap, and the publish would then displace it
+        # without looking again. Pruning outside it lets two renders of the same
+        # mission delete each other's newly published files.
         try:
-            with _publish_lock(out_dir):
-                preflight_writable(
-                    [(out_dir / path.name, path.read_text(encoding="utf-8")) for path in written]
-                )
-                published = _publish(written, out_dir)
-                _report_stale(result_stale, args.output_dir, published, args.prune)
+            preflight_writable(
+                [(out_dir / path.name, path.read_text(encoding="utf-8")) for path in written]
+            )
+            published = _publish(written, out_dir)
+            _report_stale(result_stale, args.output_dir, published, args.prune)
         except ValueError as exc:
             print(json.dumps({
                 "status": "error", "lint": "passed", "reason": "not-owned",
@@ -468,6 +570,19 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                 "output_modified": True,
                 "recovery_directory": str(exc.recovery),
                 "unrestored": exc.unrestored,
+                "unremoved_published": exc.unremoved,
+                "message": str(exc),
+            }, indent=2))
+            raise SystemExit(2) from exc
+        except PruneIncomplete as exc:
+            # Not a publish failure and nothing was rolled back: the manifests
+            # are in place and the previous generation is partly gone.
+            print(json.dumps({
+                "status": "error", "lint": "passed", "reason": "prune-failed",
+                "output_modified": True,
+                "files": [str(p) for p in published],
+                "pruned": exc.removed,
+                "not_pruned": exc.remaining,
                 "message": str(exc),
             }, indent=2))
             raise SystemExit(2) from exc
@@ -482,6 +597,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         print(json.dumps({"status": "error", "lint": "unavailable", "message": str(exc)}, indent=2))
         raise SystemExit(2) from exc
     finally:
+        lock_stack.close()
         shutil.rmtree(staging, ignore_errors=True)
     result: dict[str, object] = {
         "status": "ok", "files": [str(p) for p in published], "lint": "passed",

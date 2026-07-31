@@ -117,14 +117,26 @@
 ### Added
 - `render-argo --argo-lint`, an opt-in gate that renders into a staging directory,
   lints the set the output directory will hold, and publishes only if the linter
-  accepts. Publishing rolls back on a filesystem error it can catch: displaced
-  files are kept aside until the whole set lands and are restored if it does
-  not, and ownership, publication and pruning happen inside one lock so two
-  renders cannot interleave. It is not crash-atomic to an external reader -- a
-  process killed mid-publish still leaves a mixed directory, and a reader that
-  does not take the lock can observe one. A lint verdict exits 1; a gate that could not run --
-  CLI absent, timeout, signal, an exit status that is not a verdict, or nothing
-  rendered to lint -- exits 2.
+  accepts. The set linted is what the directory holds afterwards: what is there
+  now, less what `--prune` is about to remove, plus what this render produces.
+  The lock is taken before the directory is read rather than just before it is
+  written, so the state the verdict describes is the state that gets published.
+  Publishing rolls back on a filesystem error it can catch: displaced files are
+  kept aside until the whole set lands and are restored if it does not. It is
+  not crash-atomic to an external reader -- a process killed mid-publish still
+  leaves a mixed directory, and a reader or a plain `render-argo` that does not
+  take the lock can observe one. A lint verdict exits 1; a gate that could not
+  run -- CLI absent, timeout, signal, an exit status that is not a verdict,
+  nothing rendered to lint, no `fcntl` on this platform, or a destination that
+  could not be read -- exits 2.
+- The gate distinguishes the ways it can leave the output directory modified,
+  because the caller can only act on the difference. `rollback-incomplete`
+  lists both the displaced files it could not restore and the newly published
+  files it could not remove; the second used to be swallowed, so a new artifact
+  could survive a failed publish while the command reported the directory as
+  rolled back. `prune-failed` says publication succeeded and pruning stopped
+  part-way, naming what it removed and what it did not, instead of reporting a
+  successful publish as a failed one that had been rolled back.
 - `--prune` on `render-argo` and `render-kueue`. A render writes what the plan
   describes; it does not empty the output directory, so after a plan shrinks the
   manifests for what is gone stay behind and `kubectl apply -f <dir>` redeploys
