@@ -79,7 +79,10 @@ def test_cmd_render_kueue(tmp_path, capsys):
     cmd_render_kueue(args)
     captured = capsys.readouterr()
     data = json.loads(captured.out)
-    assert data["status"] == "ok"
+    # `projected`, not `ok`: this plan's service has more steps than the one
+    # container a Kueue Job carries.
+    assert data["status"] == "projected"
+    assert data["complete_service"] is False
     assert isinstance(data["files"], list)
     assert len(data["files"]) >= 1
     for f in data["files"]:
@@ -103,7 +106,7 @@ def test_cmd_render_kueue_dra_fallback_job_uses_exactly_not_first_available(tmp_
     ])
     cmd_render_kueue(args)
     data = json.loads(capsys.readouterr().out)
-    assert data["status"] == "ok" and data["files"]
+    assert data["status"] == "projected" and data["files"]
 
     def _has_fa(rct):
         return "firstAvailable" in rct["spec"]["spec"]["devices"]["requests"][0]

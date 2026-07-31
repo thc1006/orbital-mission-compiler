@@ -20,6 +20,7 @@ from .compiler import (
     render_resource_claim_templates,
     DRA_ROUTE_LABEL,
     kueue_step_projection,
+    atomic_write,
     preflight_unique,
     preflight_writable,
     stale_rendered_artifacts,
@@ -275,10 +276,15 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
     preflight_writable(planned)
     written = []
     for out, text in planned:
-        out.write_text(text, encoding="utf-8")
+        atomic_write(out, text)
         written.append(out)
     result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
     if projections:
+        # Not "ok". A caller keying on status would otherwise treat a one-step
+        # admission probe as the whole service, apply it alongside the Argo
+        # render, and run that step twice.
+        result["status"] = "projected"
+        result["complete_service"] = False
         # A Kueue Job runs one container, so a multi-step service is admitted as
         # its primary step. Reporting it here keeps "the render succeeded" from
         # reading as "the service was rendered whole".

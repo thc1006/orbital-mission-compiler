@@ -3,6 +3,21 @@
 ## Unreleased
 
 ### Changed
+- A YAML merge key followed by an explicit key is accepted again. Scanning for
+  duplicates after the merge source was flattened in conflated an override with a
+  key written twice, and rejected a document whose meaning YAML defines.
+- Rendered objects are refused when their annotations would exceed the 262144
+  bytes the API server accepts, rather than failing at apply.
+- Files are published by renaming a sibling temporary file into place. Writing
+  the destination directly follows a symlink, which redirects the write outside
+  the output directory and past the ownership check; a symlink at a planned path
+  is now refused outright.
+- A boolean is no longer read as an orbit or a duration, and a number is no
+  longer read as a timestamp. `orbit: true` became orbit 1 and `timestamp: 0`
+  became 1970-01-01, both of which name artifacts after something nobody wrote.
+- `render-kueue` reports `status: "projected"` with `complete_service: false`
+  when a service has more steps than the one container a Kueue Job carries, so
+  automation keying on status does not treat an admission probe as the service.
 - `--prune` and the overwrite check identify a mission by a fingerprint of its raw
   id, not by the sanitized `mission-id` label. Sanitizing is lossy: `foo_bar` and
   `foo.bar` both become `foo-bar`, so one mission could prune the other's

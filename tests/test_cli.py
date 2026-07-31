@@ -54,7 +54,10 @@ def test_cli_render_kueue(tmp_path):
     result = _run_cli("render-kueue", "--input", "configs/mission_plans/sample_gpu_cpu_fallback.yaml", "--output-dir", str(tmp_path))
     assert result.returncode == 0
     data = json.loads(result.stdout)
-    assert data["status"] == "ok"
+    # This plan's service has three steps and a Kueue Job carries one container,
+    # so the render is a projection and says so rather than reporting "ok".
+    assert data["status"] == "projected"
+    assert data["complete_service"] is False
 
 
 # ── inspect ───────────────────────────────────────────────────────────

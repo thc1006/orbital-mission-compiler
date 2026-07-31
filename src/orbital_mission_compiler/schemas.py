@@ -140,13 +140,9 @@ class AIService(StrictModel):
     @field_validator("priority", mode="before")
     @classmethod
     def _priority_is_not_a_boolean(cls, value: Any) -> Any:
-        """`True` is an int in Python, and YAML reads `yes`/`on`/`true` as one.
-
-        Accepting it silently turns a mission priority into 1, the lowest ORCHIDE
-        tier, which is the opposite of what someone writing `priority: yes`
-        intends. There is no reading of a boolean as a 0-100 priority worth
-        guessing at.
-        """
+        """`True` is an int in Python, and YAML reads `yes`/`on`/`true` as one,
+        so an unguarded field turns `priority: yes` into 1, the lowest ORCHIDE
+        tier and the opposite of what that says."""
         if isinstance(value, bool):
             raise ValueError("priority must be a number between 0 and 100, not a boolean")
         return value
@@ -164,6 +160,31 @@ class MissionEvent(StrictModel):
     ground_visibility: bool = False
     region_type: str | None = None
     services: list[AIService] = Field(default_factory=list)
+
+
+    @field_validator("orbit", "duration_seconds", mode="before")
+    @classmethod
+    def _numbers_are_not_booleans(cls, value: Any, info: Any) -> Any:
+        """`orbit: true` is not orbit 1, and `duration_seconds: true` is not a
+        one-second acquisition. A boolean here says something the author did not
+        mean, and neither reading is worth guessing at."""
+        if isinstance(value, bool):
+            raise ValueError(f"{info.field_name} must be a number, not a boolean")
+        return value
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def _timestamp_is_written_not_counted(cls, value: Any) -> Any:
+        """The plan format is RFC 3339 text, which is what the docs promise and
+        what every shipped plan uses.
+
+        A number is accepted by default as a Unix timestamp, so `timestamp: 0`
+        becomes 1970-01-01 and names an artifact after it, which is never what a
+        mission plan meant to say.
+        """
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            raise ValueError("timestamp must be an RFC 3339 string, not a number")
+        return value
 
     @model_validator(mode="after")
     def check_event_constraints(self) -> "MissionEvent":

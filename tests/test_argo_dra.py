@@ -417,3 +417,69 @@ def test_a_file_the_compiler_did_not_write_is_not_overwritten(tmp_path):
     with pytest.raises(ValueError, match="not written by this compiler"):
         write_individual_workflows(plan, out, enforce_policy=False)
     assert (out / intent_name).read_text(encoding="utf-8") == "apiVersion: v1\nkind: ConfigMap\n"
+
+
+def test_a_symlink_at_a_planned_path_is_refused_not_followed(tmp_path):
+    """Opening the destination follows a link, which would redirect the write
+    outside the output directory and past the ownership check."""
+    plan = tmp_path / "p.yaml"
+    plan.write_text(
+        "mission_id: m\n"
+        "events:\n"
+        "  - timestamp: '2026-08-01T00:00:00Z'\n"
+        "    event_type: acquisition\n"
+        "    instrument: cam\n"
+        "    duration_seconds: 60\n"
+        "    services:\n"
+        "      - service_id: svc\n"
+        "        priority: 50\n"
+        "        steps:\n"
+        "          - {name: a, image: 'busybox:1.36'}\n",
+        encoding="utf-8",
+    )
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("KEEP ME\n", encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "m-svc-2026-08-01t00-00-00z.yaml").symlink_to(outside)
+
+    # Matched on the phrase, not the word: pytest derives tmp_path from the test
+    # name, so a looser pattern would match the path inside the message and pass
+    # whatever the reason turned out to be.
+    with pytest.raises(ValueError, match="is a symlink"):
+        write_individual_workflows(plan, out, enforce_policy=False)
+    assert outside.read_text(encoding="utf-8") == "KEEP ME\n"
+
+
+def test_an_object_too_large_for_the_api_server_is_refused_before_rendering():
+    """Identifiers are copied into annotations verbatim and nothing bounds their
+    length, so a schema-valid plan could render a manifest Kubernetes refuses --
+    which is the failure this compiler exists to move earlier. The limit was
+    checked against a live API server."""
+    from orbital_mission_compiler.compiler import MAX_ANNOTATION_BYTES, render_argo_workflow
+    from orbital_mission_compiler.schemas import WorkflowIntent, WorkflowStep
+
+    intent = WorkflowIntent(
+        mission_id="m" * (MAX_ANNOTATION_BYTES + 1), service_id="svc", priority=50,
+        workflow_name="wf", steps=[WorkflowStep(name="a", image="busybox:1.36")],
+    )
+    with pytest.raises(ValueError, match="annotations"):
+        render_argo_workflow(intent)
+
+
+def test_atomic_write_replaces_the_link_not_its_target(tmp_path):
+    """The publish primitive itself has to be symlink-safe, independently of the
+    preflight that normally stops us getting here."""
+    from orbital_mission_compiler.compiler import atomic_write
+
+    target = tmp_path / "target.yaml"
+    target.write_text("KEEP ME\n", encoding="utf-8")
+    link = tmp_path / "link.yaml"
+    link.symlink_to(target)
+
+    atomic_write(link, "rendered\n")
+
+    assert target.read_text(encoding="utf-8") == "KEEP ME\n", "the write followed the link"
+    assert not link.is_symlink(), "the link should have been replaced by a regular file"
+    assert link.read_text(encoding="utf-8") == "rendered\n"
+    assert not list(tmp_path.glob(".*.tmp")), "a temporary file was left behind"

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
+import os
 import re
+import tempfile
 from importlib import resources
 from datetime import datetime, timezone
 from pathlib import Path
@@ -190,14 +193,21 @@ class _StrictLoader(yaml.SafeLoader):
     """
 
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
-        # Flatten first. A merge key (`<<: *anchor`) is a key like any other to
-        # the scan below, and constructing it hits a tag SafeConstructor has no
-        # constructor for -- so plans that shared step definitions through an
-        # anchor, which loaded fine before, failed with an error naming a YAML
-        # tag rather than anything the author wrote.
-        self.flatten_mapping(node)
+        # Scan the keys the author wrote, before any merge source is flattened
+        # in. Flattening first conflates two different things: a key written
+        # twice, which is the ambiguity worth refusing, and a merge override,
+        # which is how YAML says "take these defaults and change this one".
+        # `<<: *defaults` followed by an explicit `priority:` leaves two
+        # `priority` entries in the flattened node, and rejecting that would
+        # refuse a document whose meaning YAML defines precisely.
+        #
+        # The merge keys themselves are skipped rather than constructed:
+        # SafeConstructor has no constructor for the merge tag, and resolving
+        # precedence is its job, not this scan's.
         seen: set[Any] = set()
         for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue
             key = self.construct_object(key_node, deep=deep)
             try:
                 duplicate = key in seen
@@ -493,7 +503,10 @@ def render_argo_workflow(
                 MANAGED_BY_LABEL: MANAGED_BY_VALUE,
                 MISSION_FINGERPRINT_LABEL: mission_fingerprint(intent.mission_id),
             },
-            "annotations": {**wf_annotations, RAW_MISSION_ID_ANNOTATION: intent.mission_id},
+            "annotations": _require_annotations_fit(
+                {**wf_annotations, RAW_MISSION_ID_ANNOTATION: intent.mission_id},
+                f"Workflow {intent.workflow_name}",
+            ),
         },
         "spec": {
             "entrypoint": "main",
@@ -939,7 +952,9 @@ def render_kueue_job(
                 "service-id": sanitize_k8s_name(intent.service_id),
                 "priority": str(intent.priority),
             },
-            "annotations": job_annotations,
+            "annotations": _require_annotations_fit(
+                job_annotations, f"Job for {intent.workflow_name}"
+            ),
         },
         "spec": {
             "template": {
@@ -1269,6 +1284,30 @@ MANAGED_BY_VALUE = "orbital-mission-compiler"
 # namespace is chosen when the manifest is applied.
 DRA_DEFAULT_NAMESPACE = "orbital-demo"
 
+# Kubernetes refuses an object whose annotations exceed this in total, keys and
+# values together. Verified against a live API server: "metadata.annotations:
+# Too long: may not be more than 262144 bytes". Counted in UTF-8 bytes, not
+# characters, because that is what the API server counts.
+MAX_ANNOTATION_BYTES = 262144
+
+
+def _require_annotations_fit(annotations: dict[str, str], what: str) -> dict[str, str]:
+    """Refuse to render an object the API server would reject for size.
+
+    Identifiers from the plan are copied into annotations verbatim, and nothing
+    in the schema bounds their length, so a plan that is otherwise valid can
+    render a manifest that fails at apply -- which is the failure this compiler
+    exists to move earlier.
+    """
+    total = sum(len(k.encode("utf-8")) + len(str(v).encode("utf-8")) for k, v in annotations.items())
+    if total > MAX_ANNOTATION_BYTES:
+        raise ValueError(
+            f"{what} would carry {total} bytes of annotations, over the {MAX_ANNOTATION_BYTES} "
+            "the API server accepts; shorten the mission, service or step identifiers"
+        )
+    return annotations
+
+
 MISSION_FINGERPRINT_LABEL = "orbital/mission-fingerprint"
 RAW_MISSION_ID_ANNOTATION = "orbital/raw-mission-id"
 
@@ -1367,6 +1406,11 @@ def preflight_writable(planned: list[tuple[Path, Any]]) -> None:
     for path, rendered in planned:
         if not path.exists():
             continue
+        if path.is_symlink():
+            # Not followed to decide ownership: what the link points at says
+            # nothing about the entry this render would replace.
+            conflicts.append(f"{path} is a symlink")
+            continue
         if not _is_rendered_artifact(path):
             conflicts.append(f"{path} was not written by this compiler")
             continue
@@ -1400,6 +1444,27 @@ def _rendered_mission(rendered: str | list[Any]) -> str | None:
         if isinstance(d, dict)
     }
     return marks.pop() if len(marks) == 1 else None
+
+
+def atomic_write(path: Path, text: str) -> None:
+    """Write by renaming a sibling temporary file into place.
+
+    `Path.write_text` opens the destination, which follows a symlink: a link
+    planted in the output directory redirects the write outside it, past the
+    ownership check. A rename replaces the directory entry instead, so the link
+    itself is what goes. It also means a reader never sees a half-written file.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def preflight_unique(paths: list[Path]) -> None:
@@ -1476,9 +1541,9 @@ def write_individual_workflows(
     preflight_writable(planned)
     for out, docs in planned:
         if len(docs) > 1:
-            out.write_text(yaml.safe_dump_all(docs, sort_keys=False), encoding="utf-8")
+            atomic_write(out, yaml.safe_dump_all(docs, sort_keys=False))
         else:
-            out.write_text(yaml.safe_dump(docs[0], sort_keys=False), encoding="utf-8")
+            atomic_write(out, yaml.safe_dump(docs[0], sort_keys=False))
         written.append(out)
     return written
 
@@ -1503,5 +1568,5 @@ def compile_file(
     }
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    atomic_write(out, yaml.safe_dump(payload, sort_keys=False))
     return payload

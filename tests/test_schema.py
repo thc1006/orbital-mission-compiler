@@ -268,3 +268,58 @@ def test_identifiers_that_name_artifacts_may_not_be_blank():
             "services": [{"service_id": "s", "priority": 50,
                           "steps": [{"name": "a", "image": "i:1"}]}],
         })
+
+
+def test_yaml_merge_overrides_are_not_duplicate_keys():
+    """A merge key followed by an explicit key is how YAML says "these defaults,
+    but change this one".
+
+    Scanning for duplicates after the merge source is flattened in conflates
+    that with a key genuinely written twice, and rejects a document whose
+    meaning YAML defines precisely.
+    """
+    import pytest as _pytest
+    import yaml as _yaml
+
+    from orbital_mission_compiler.compiler import _StrictLoader
+
+    def load(text):
+        return _yaml.load(text, Loader=_StrictLoader)
+
+    override = "d: &d {image: 'busybox:1.36', resource_class: cpu}\ns:\n  <<: *d\n  image: 'alpine:3.20'\n"
+    assert load(override)["s"] == _yaml.safe_load(override)["s"]
+    assert load(override)["s"]["image"] == "alpine:3.20", "the explicit key must win"
+
+    sequence = "a: &a {p: 1}\nb: &b {p: 2}\ns:\n  <<: [*a, *b]\n"
+    assert load(sequence)["s"] == _yaml.safe_load(sequence)["s"]
+
+    for genuinely_duplicated in ("a: 1\na: 2\n", "a:\n  b: 1\n  b: 2\n",
+                                 "d: &d {p: 1}\ns:\n  <<: *d\n  q: 1\n  q: 2\n"):
+        with _pytest.raises(_yaml.constructor.ConstructorError, match="duplicate key"):
+            load(genuinely_duplicated)
+
+
+def test_a_boolean_is_not_an_orbit_a_duration_or_a_timestamp():
+    """`orbit: true` is not orbit 1 and `duration_seconds: true` is not a
+    one-second acquisition. A number where a date belongs is read as a Unix
+    timestamp, so `timestamp: 0` names an artifact after 1970."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from orbital_mission_compiler.schemas import MissionEvent
+
+    base = {
+        "timestamp": "2026-08-01T00:00:00Z", "event_type": "acquisition",
+        "instrument": "cam", "duration_seconds": 60,
+        "services": [{"service_id": "s", "priority": 50,
+                      "steps": [{"name": "a", "image": "i:1"}]}],
+    }
+    for patch, expected in (
+        ({"orbit": True}, "orbit"),
+        ({"duration_seconds": True}, "duration_seconds"),
+        ({"timestamp": 0}, "timestamp"),
+        ({"timestamp": 1767225600}, "timestamp"),
+    ):
+        with _pytest.raises(ValidationError, match=expected):
+            MissionEvent.model_validate({**base, **patch})
+    MissionEvent.model_validate({**base, "orbit": 3, "duration_seconds": 60.5})
