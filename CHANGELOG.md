@@ -21,6 +21,30 @@
   published file keeps the mode the umask would have given it, because `mkstemp`
   creates 0600 and a rename keeps it, which would have narrowed every artifact
   to the user that rendered it.
+- A quoted number must read as the number it becomes. `priority: "50"` is how a
+  templated plan writes fifty and stays legal, but pydantic coerces a string with
+  Python's numeric grammar, which is wider than the one a reader applies: `'1_0'`
+  is ten, `'6e2'` is six hundred. That is the ambiguity the strict loader refuses
+  a repeated key for, so it is refused here too.
+- Every rendered Kubernetes object is held to the annotation budget. The two
+  ResourceClaimTemplate renderers wrote the raw mission id without it, so a
+  direct library call could build an object the API server refuses for size
+  while the Workflow and Job for the same intent were refused. The budget is the
+  API server's own object limit; a client-side `kubectl apply` additionally
+  stores the object in a last-applied annotation, which is not counted here.
+- A directory entry that cannot be read no longer reads as absent.
+  `Path.glob` swallows the error scandir raises, so an unreadable output
+  directory came back empty: nothing stale, and a `--prune` that reported
+  nothing to do. Reading an artifact also refuses anything that is not a regular
+  file -- a fifo named `*.yaml` blocked the read until someone wrote to it, and
+  that read happens while the publish lock is held.
+- The OPA input is serialised with `allow_nan=False`, and a payload that cannot
+  be serialised, or an executable that has gone away since it was found, is a
+  fail-closed engine result rather than an exception. The schema path already
+  rejects a non-finite number, but `eval_policy` also takes a plain dict.
+- The MCP tools require the plan path to be a file. A directory passed
+  `exists()` and then failed inside the loader, escaping as a raw tool exception
+  instead of the structured error every other rejection produces.
 - A boolean is no longer read as an orbit or a duration, and a number is no
   longer read as a timestamp. `orbit: true` became orbit 1 and `timestamp: 0`
   became 1970-01-01, both of which name artifacts after something nobody wrote.

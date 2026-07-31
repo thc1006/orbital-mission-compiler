@@ -435,3 +435,49 @@ def test_a_boolean_is_not_an_orbit_a_duration_or_a_timestamp():
         with _pytest.raises(ValidationError, match=expected):
             MissionEvent.model_validate({**base, **patch})
     MissionEvent.model_validate({**base, "orbit": 3, "duration_seconds": 60.5})
+
+
+def test_a_quoted_number_must_read_as_the_number_it_becomes():
+    """`priority: "50"` is how a templated plan writes fifty, so quoting a number
+    stays legal. But pydantic coerces a string with Python's numeric grammar,
+    which is wider than the one a reader applies: `'1_0'` is ten because Python
+    allows underscores inside a literal, and `'6e2'` is six hundred.
+
+    That is the same ambiguity the strict YAML loader refuses a repeated key
+    for, so it is refused rather than resolved silently.
+    """
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from orbital_mission_compiler.schemas import AIService, MissionEvent
+
+    def event(**over):
+        base = {
+            "timestamp": "2026-08-01T00:00:00Z", "event_type": "acquisition",
+            "instrument": "cam", "duration_seconds": 60,
+            "services": [{"service_id": "s", "priority": 50,
+                          "steps": [{"name": "a", "image": "i:1"}]}],
+        }
+        base.update(over)
+        return base
+
+    def service(priority):
+        return {"service_id": "s", "priority": priority,
+                "steps": [{"name": "a", "image": "i:1"}]}
+
+    for field, value in [("orbit", "1_0"), ("duration_seconds", "1_000"),
+                         ("duration_seconds", "6e2"), ("orbit", "0x10")]:
+        with _pytest.raises(ValidationError):
+            MissionEvent.model_validate(event(**{field: value}))
+    with _pytest.raises(ValidationError):
+        AIService.model_validate(service("1_0"))
+
+    # Unambiguous forms are left alone: there is only one thing they can mean.
+    assert MissionEvent.model_validate(event(orbit="1")).orbit == 1
+    assert MissionEvent.model_validate(event(duration_seconds="60.5")).duration_seconds == 60.5
+    assert MissionEvent.model_validate(event(duration_seconds=" 60 ")).duration_seconds == 60.0
+    assert AIService.model_validate(service("50")).priority == 50
+    assert AIService.model_validate(service("+50")).priority == 50
+    # And a number written as a number is untouched.
+    assert MissionEvent.model_validate(event(orbit=5)).orbit == 5
+    assert AIService.model_validate(service(50)).priority == 50

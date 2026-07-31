@@ -668,7 +668,10 @@ def _first_available_rct(intent: WorkflowIntent, namespace: str | None) -> dict[
                 MANAGED_BY_LABEL: MANAGED_BY_VALUE,
                 MISSION_FINGERPRINT_LABEL: mission_fingerprint(intent.mission_id),
             },
-            "annotations": {RAW_MISSION_ID_ANNOTATION: intent.mission_id},
+            "annotations": _require_annotations_fit(
+                {RAW_MISSION_ID_ANNOTATION: intent.mission_id},
+                f"ResourceClaimTemplate {_rct_name_for_intent(intent, 'accel')}",
+            ),
         },
         "spec": {
             "spec": {
@@ -758,7 +761,10 @@ def render_resource_claim_templates(
                     MANAGED_BY_LABEL: MANAGED_BY_VALUE,
                     MISSION_FINGERPRINT_LABEL: mission_fingerprint(intent.mission_id),
                 },
-                "annotations": {RAW_MISSION_ID_ANNOTATION: intent.mission_id},
+                "annotations": _require_annotations_fit(
+                {RAW_MISSION_ID_ANNOTATION: intent.mission_id},
+                f"ResourceClaimTemplate {_rct_name_for_intent(intent, 'gpu')}",
+            ),
             },
             "spec": {
                 "spec": {
@@ -1373,7 +1379,16 @@ RAW_MISSION_ID_ANNOTATION = "orbital/raw-mission-id"
 
 
 def mission_fingerprint(mission_id: str) -> str:
-    """A lossless identity for a mission, safe to use as a label value."""
+    """A mission's identity as a label value, taken from the raw id.
+
+    Not lossless -- it is 64 bits of a hash, and two ids could in principle
+    collide. It is here because the *sanitized* id is lossy in a way that bites
+    in practice: `foo_bar` and `foo.bar` both become `foo-bar`, so ownership and
+    `--prune` decided from the sanitized name confuse two real missions a user
+    could plausibly have. The raw id is kept verbatim in the
+    `orbital/raw-mission-id` annotation alongside, for anyone who needs to check
+    exactly which mission an artifact came from.
+    """
     return hashlib.sha256(mission_id.encode("utf-8")).hexdigest()[:16]
 
 
@@ -1389,6 +1404,13 @@ def _is_rendered_artifact(path: Path) -> bool:
     render that has already written its output would strand the caller with
     artifacts on disk and no result.
     """
+    if not path.is_file():
+        # Asked before the read, because a read is not guaranteed to return.
+        # A fifo named `something.yaml` in the output directory blocks `open`
+        # until someone writes to the other end, and this runs while the
+        # publish lock is held -- so one directory entry would stall every
+        # render into that directory, not just this one.
+        return False
     try:
         docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8"))]
     except Exception:  # noqa: BLE001 - see the docstring: unreadable means not ours
@@ -1444,9 +1466,15 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
     missions = {m for m in (_artifact_mission(p) for p in written) if m}
     if not missions:
         return []
+    # Listed rather than globbed. `Path.glob` swallows the OSError scandir
+    # raises, so an output directory that cannot be read comes back as an empty
+    # one: every artifact in it reads as absent, nothing is reported stale, and
+    # a --prune says it found nothing to do. A directory this render cannot read
+    # is a question, not an answer.
     return sorted(
-        p for p in out.glob("*.yaml")
-        if p.resolve() not in current
+        p for p in sorted(out.iterdir())
+        if p.suffix == ".yaml"
+        and p.resolve() not in current
         and _is_rendered_artifact(p)
         and _artifact_mission(p) in missions
     )

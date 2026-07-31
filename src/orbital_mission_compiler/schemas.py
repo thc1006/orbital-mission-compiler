@@ -36,6 +36,30 @@ class ExecutionMode(str, Enum):
     PARALLEL = "parallel"
 
 
+_PLAIN_DECIMAL_RE = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)\Z")
+
+
+def _plain_decimal(value: Any, field: str) -> Any:
+    """Accept a quoted number only when it reads as the number it becomes.
+
+    A string here is coerced by pydantic using Python's own numeric grammar,
+    which is wider than what a reader of the plan applies: `'1_0'` becomes ten,
+    because Python allows underscores inside a numeric literal, and `'6e2'`
+    becomes six hundred. Those are the same "reads one way, loads another"
+    ambiguity the strict YAML loader refuses a repeated key for, so they are
+    refused here rather than resolved silently.
+
+    `'50'`, `'60.5'`, `' 60 '` and `'+50'` are left alone. They are how a
+    templated plan writes a number and there is only one thing they can mean.
+    """
+    if isinstance(value, str) and not _PLAIN_DECIMAL_RE.fullmatch(value.strip()):
+        raise ValueError(
+            f"{field} must be a plain decimal number; {value!r} is read by Python as "
+            "something a reader of the plan would not read it as"
+        )
+    return value
+
+
 class StrictModel(BaseModel):
     """Base for every mission-plan model: an unknown field is an error.
 
@@ -48,9 +72,12 @@ class StrictModel(BaseModel):
     already gone.
 
     ``strict`` is deliberately not set here: it would reject the RFC 3339
-    timestamp strings and enum values the plan format is written in. Where a
-    loose coercion would actually change meaning -- a boolean read as a
-    number -- the field carries its own validator.
+    timestamp strings and enum values the plan format is written in, and the
+    quoted numbers -- ``priority: "50"`` -- that a templated plan is full of.
+    Where a loose coercion would change meaning the field carries its own
+    validator instead, and there are two such coercions: a boolean read as a
+    number, and a quoted number Python's grammar reads differently from a
+    reader of the plan (``'1_0'`` is ten, ``'6e2'`` is six hundred).
 
     ``allow_inf_nan`` is off. YAML spells infinity ``.inf`` and Pydantic accepts
     it for a float by default, and ``duration_seconds: .inf`` passes ``ge=0``.
@@ -145,7 +172,7 @@ class AIService(StrictModel):
         tier and the opposite of what that says."""
         if isinstance(value, bool):
             raise ValueError("priority must be a number between 0 and 100, not a boolean")
-        return value
+        return _plain_decimal(value, "priority")
     execution_mode: ExecutionMode = ExecutionMode.SEQUENTIAL
     steps: list[WorkflowStep] = Field(min_length=1)
 
@@ -170,7 +197,7 @@ class MissionEvent(StrictModel):
         mean, and neither reading is worth guessing at."""
         if isinstance(value, bool):
             raise ValueError(f"{info.field_name} must be a number, not a boolean")
-        return value
+        return _plain_decimal(value, info.field_name)
 
     @field_validator("timestamp", mode="before")
     @classmethod

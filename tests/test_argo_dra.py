@@ -548,3 +548,71 @@ def _current_umask() -> int:
     umask = os.umask(0)
     os.umask(umask)
     return umask
+
+
+def test_a_resource_claim_template_is_held_to_the_same_annotation_budget(tmp_path):
+    """The budget applied to the Workflow and the Job, and not to the two
+    ResourceClaimTemplate renderers, so a direct library call could still build
+    an object the API server refuses for size."""
+    from orbital_mission_compiler.compiler import (
+        MAX_ANNOTATION_BYTES,
+        render_resource_claim_templates,
+    )
+    from orbital_mission_compiler.schemas import WorkflowIntent, WorkflowStep
+
+    def intent(mission_id, **hints):
+        return WorkflowIntent(
+            mission_id=mission_id, service_id="svc", priority=50, workflow_name="wf",
+            steps=[WorkflowStep(name="a", image="busybox:1.36",
+                                resource_class="gpu", fallback_resource_class="cpu")],
+            resource_hints=hints,
+        )
+
+    # Both renderers: the scheduler-route firstAvailable template and the
+    # Kueue-route exactly one, which are reached by different flags.
+    for dra_fallback, hints in ((True, {}), (False, {"requires_gpu": True})):
+        with pytest.raises(ValueError, match="annotations"):
+            render_resource_claim_templates(
+                intent("m" * (MAX_ANNOTATION_BYTES + 1), **hints), dra_fallback=dra_fallback
+            )
+        assert render_resource_claim_templates(intent("m", **hints), dra_fallback=dra_fallback)
+
+
+def test_a_directory_entry_that_never_returns_does_not_stall_the_render(tmp_path):
+    """`_is_rendered_artifact` reads whatever the glob hands it, and this runs
+    while the publish lock is held. A fifo named `*.yaml` blocks `open` until
+    someone writes to it, so one directory entry would stall every render into
+    that directory rather than just this one."""
+    import os
+
+    from orbital_mission_compiler.compiler import _is_rendered_artifact
+
+    fifo = tmp_path / "zzz.yaml"
+    os.mkfifo(fifo)
+    # Returns rather than blocking. Without the regular-file check this call
+    # never comes back and the test times out.
+    assert _is_rendered_artifact(fifo) is False
+
+
+def test_an_output_directory_that_cannot_be_read_is_not_reported_as_empty(tmp_path):
+    """`Path.glob` swallows the OSError scandir raises, so an unreadable output
+    directory comes back as an empty one: nothing is reported stale and a
+    `--prune` says there was nothing to do."""
+    import os
+
+    from orbital_mission_compiler.compiler import stale_rendered_artifacts
+
+    out = tmp_path / "out"
+    written = write_individual_workflows(GPU_FALLBACK, out, enforce_policy=False)
+    assert written
+    # Something this render no longer produces, so there IS a stale artifact to
+    # find -- the point is that an unreadable directory must not answer "none".
+    (out / "zz-old.yaml").write_bytes(written[0].read_bytes())
+
+    assert stale_rendered_artifacts(out, written)  # readable: it is found
+    os.chmod(out, 0o311)  # traversable, not listable
+    try:
+        with pytest.raises(OSError):
+            stale_rendered_artifacts(out, written)
+    finally:
+        os.chmod(out, 0o755)

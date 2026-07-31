@@ -118,6 +118,11 @@ def _validate_plan_path(path: str) -> Path:
         raise ValueError(f"Path outside allowed directory: {path}")
     if not resolved.exists():
         raise ValueError(f"Plan file not found: {path}")
+    if not resolved.is_file():
+        # A directory passes `exists()`, and the loader then fails on the read
+        # with an IsADirectoryError that escapes this tool as a raw exception
+        # rather than the structured error every other rejection produces.
+        raise ValueError(f"Plan path is not a file: {path}")
     return resolved
 
 
