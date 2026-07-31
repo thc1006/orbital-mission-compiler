@@ -406,6 +406,21 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             }, indent=2))
             raise SystemExit(1)
 
+        # The ownership rule the direct writer applies has to hold here too.
+        # Staging is a fresh directory, so the preflight inside the writer saw
+        # nothing to protect; without this the lint gate would be the one path
+        # that overwrites another mission's artifacts.
+        try:
+            preflight_writable(
+                [(out_dir / path.name, path.read_text(encoding="utf-8")) for path in written]
+            )
+        except ValueError as exc:
+            print(json.dumps({
+                "status": "error", "lint": "passed", "reason": "not-owned",
+                "message": str(exc),
+            }, indent=2))
+            raise SystemExit(2) from exc
+
         try:
             with _publish_lock(out_dir):
                 published = _publish(written, out_dir)

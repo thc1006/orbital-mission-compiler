@@ -339,37 +339,41 @@ def test_a_failure_part_way_through_publishing_rolls_the_whole_set_back(tmp_path
 
     Without a rollback the directory ends up holding some files from this render
     and some from the last one, each individually lint-clean, with nothing
-    recording that it is not any one render's output. Service "a" is new here and
-    "b"/"c" already exist, so the rollback has to both remove what it added and
-    restore what it displaced -- restoring alone would leave the new file behind.
+    recording that it is not any one render's output. The previous contents here
+    are a real earlier render of the same mission, so the ownership preflight
+    passes and this exercises the rollback rather than being stopped before it.
     """
-    plan = _multi_service_plan(tmp_path, ["a", "b", "c"])
     out = tmp_path / "out"
-    out.mkdir()
-    previous = {}
-    for sid in ("b", "c"):
-        name = f"m-{sid}-2026-08-01t00-00-00z.yaml"
-        (out / name).write_text(f"# previous {name}\n", encoding="utf-8")
-        previous[name] = (out / name).read_text(encoding="utf-8")
-    new_name = "m-a-2026-08-01t00-00-00z.yaml"
-
     exe = _fake_argo(tmp_path, 0)
+
+    def render_args(plan):
+        return build_parser().parse_args([
+            "render-argo", "--input", str(plan), "--output-dir", str(out),
+            "--argo-lint", "--argo-bin", str(exe),
+        ])
+
+    # The first render covers b and c; the second adds a. Rollback then has both
+    # halves to undo -- a file it created, and two it displaced -- where a run
+    # that only displaced would be restored by the displacement alone and would
+    # not notice a missing unlink.
+    cmd_render_argo(render_args(_multi_service_plan(tmp_path, ["b", "c"])))
+    capsys.readouterr()
+    previous = {p.name: p.read_text(encoding="utf-8") for p in out.glob("*.yaml")}
+    assert len(previous) == 2
+    args = render_args(_multi_service_plan(tmp_path, ["a", "b", "c"]))
+
     real_replace = os.replace
     calls = {"n": 0}
 
     def failing_replace(src, dst):
-        # a: publish (1). b: displace (2), publish (3). c: displace (4) -> fail,
-        # so by then a brand-new file and a replaced file are both in place.
+        # a publishes (1); b is displaced (2) and published (3); c is displaced
+        # (4) -> fail. By then a new file and a replaced one are both in place.
         calls["n"] += 1
         if calls["n"] == 4:
             raise OSError(13, "Permission denied")
         return real_replace(src, dst)
 
     monkeypatch.setattr(os, "replace", failing_replace)
-    args = build_parser().parse_args([
-        "render-argo", "--input", str(plan), "--output-dir", str(out),
-        "--argo-lint", "--argo-bin", str(exe),
-    ])
     with pytest.raises(SystemExit) as exc:
         cmd_render_argo(args)
     assert exc.value.code == 2
@@ -377,10 +381,12 @@ def test_a_failure_part_way_through_publishing_rolls_the_whole_set_back(tmp_path
     assert data["status"] == "error" and data["reason"] == "publish-failed"
 
     monkeypatch.undo()
-    for name, body in previous.items():
-        assert (out / name).read_text(encoding="utf-8") == body, f"{name} was not restored"
-    assert not (out / new_name).exists(), "a file this render added survived the rollback"
-    assert sorted(p.name for p in out.glob("*.yaml")) == sorted(previous)
+    restored = {p.name: p.read_text(encoding="utf-8") for p in out.glob("*.yaml")}
+    assert restored == previous, "the directory was left holding a mixture"
+    assert not any("-a-" in name for name in restored), (
+        "a file this render added survived the rollback"
+    )
+    assert not list(tmp_path.glob(".argo-lint-staging-*"))
 
 
 def test_a_rejected_lint_does_not_create_an_output_directory(tmp_path, monkeypatch, capsys):
@@ -542,3 +548,56 @@ def test_the_gate_publishes_under_the_lock(tmp_path, capsys):
     worker.join(timeout=20)
     assert done.is_set(), "the gate never finished after the lock was released"
     assert list(out.glob("*.yaml")), "nothing was published after the lock was released"
+
+
+def test_the_lint_gate_does_not_overwrite_another_missions_artifacts(tmp_path, capsys):
+    """The gate stages into a fresh directory, so the writer's own overwrite
+    preflight sees nothing to protect.
+
+    Without the same check at the publish boundary, `--argo-lint` would be the
+    one path that replaces another mission's output -- and two mission ids that
+    sanitize alike render to the same filename, so it would do it silently.
+    """
+    exe = _fake_argo(tmp_path, 0)
+    out = tmp_path / "shared"
+
+    def plan(mission_id, name):
+        p = tmp_path / name
+        p.write_text(
+            f"mission_id: {mission_id}\n"
+            "events:\n"
+            "  - timestamp: '2026-08-01T00:00:00Z'\n"
+            "    event_type: acquisition\n"
+            "    instrument: cam\n"
+            "    duration_seconds: 60\n"
+            "    services:\n"
+            "      - service_id: svc\n"
+            "        priority: 50\n"
+            "        steps:\n"
+            "          - {name: a, image: 'busybox:1.36'}\n",
+            encoding="utf-8",
+        )
+        return p
+
+    def render(plan_path):
+        return build_parser().parse_args([
+            "render-argo", "--input", str(plan_path), "--output-dir", str(out),
+            "--argo-lint", "--argo-bin", str(exe),
+        ])
+
+    cmd_render_argo(render(plan("foo_bar", "one.yaml")))
+    first = json.loads(capsys.readouterr().out)
+    assert first["status"] == "ok"
+    kept = {p.name: p.read_text(encoding="utf-8") for p in out.glob("*.yaml")}
+    assert len(kept) == 1
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_render_argo(render(plan("foo.bar", "two.yaml")))
+    assert exc.value.code == 2
+    data = json.loads(capsys.readouterr().out)
+    assert data["reason"] == "not-owned", data
+    assert {p.name: p.read_text(encoding="utf-8") for p in out.glob("*.yaml")} == kept
+
+    # Re-rendering the same mission is still fine.
+    cmd_render_argo(render(plan("foo_bar", "three.yaml")))
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"
