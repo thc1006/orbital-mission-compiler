@@ -127,51 +127,41 @@ jobs:
       # The Argo smoke's only real gate is `argo lint`. Without the CLI the script
       # prints "skipped argo lint" and the step still passes, so a rendered
       # manifest that Argo would reject reads as a green smoke.
-      - name: Cache Argo CLI
+      - name: Cache the Argo CLI archive
         uses: actions/cache@v4
         id: argo-cache
         with:
-          path: ~/.local/bin/argo
+          # The archive, not the unpacked binary: the published checksum is of the
+          # gzip, so caching that is what lets every run re-verify what it uses.
+          path: ~/.cache/argo/argo-linux-amd64.gz
           key: argo-${{ env.ARGO_VERSION }}-linux-amd64
 
-      - name: Install Argo CLI
+      - name: Download the Argo CLI
         if: steps.argo-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          TMP_DIR="$(mktemp -d)"
-          trap 'rm -rf "$TMP_DIR"' EXIT
-          mkdir -p "$HOME/.local/bin"
-          BASE="https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}"
-          curl -fSL -o "$TMP_DIR/argo-linux-amd64.gz" "${BASE}/argo-linux-amd64.gz"
-          curl -fSL -o "$TMP_DIR/checksums.txt" "${BASE}/argo-workflows-cli-checksums.txt"
-          (
-            cd "$TMP_DIR"
-            grep 'argo-linux-amd64.gz$' checksums.txt > expected.sha256
-            test -s expected.sha256
-            sha256sum -c expected.sha256
-          )
-          gunzip -f "$TMP_DIR/argo-linux-amd64.gz"
-          install -m 0755 "$TMP_DIR/argo-linux-amd64" "$HOME/.local/bin/argo"
+          mkdir -p "$HOME/.cache/argo"
+          curl -fSL -o "$HOME/.cache/argo/argo-linux-amd64.gz" \
+            "https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}/argo-linux-amd64.gz"
 
-      # Verified on every run, not only after a download. A cache restored from a
-      # poisoned or corrupted entry would otherwise be the binary that decides
-      # whether manifests are published, having been checked once, long ago.
-      - name: Verify the Argo checksum and add it to PATH
+      # Verified on every run, cache hit or miss. A cache entry that was poisoned
+      # or corrupted after it was written would otherwise become the binary that
+      # decides whether manifests are published, on the strength of a check that
+      # happened once.
+      - name: Verify the Argo checksum and install
         run: |
           set -euo pipefail
           TMP_DIR="$(mktemp -d)"
           trap 'rm -rf "$TMP_DIR"' EXIT
           BASE="https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}"
           curl -fSL -o "$TMP_DIR/checksums.txt" "${BASE}/argo-workflows-cli-checksums.txt"
-          EXPECTED="$(grep 'argo-linux-amd64.gz$' "$TMP_DIR/checksums.txt" | awk '{print $1}')"
-          test -n "$EXPECTED"
-          gzip -n -c "$HOME/.local/bin/argo" > "$TMP_DIR/argo.gz" || true
-          # The published checksum is of the gzip, so compare the binary against a
-          # freshly downloaded copy rather than trying to reproduce their gzip.
-          curl -fSL -o "$TMP_DIR/argo-linux-amd64.gz" "${BASE}/argo-linux-amd64.gz"
-          (cd "$TMP_DIR" && printf '%s  argo-linux-amd64.gz\n' "$EXPECTED" | sha256sum -c -)
+          grep 'argo-linux-amd64.gz$' "$TMP_DIR/checksums.txt" > "$TMP_DIR/expected.sha256"
+          test -s "$TMP_DIR/expected.sha256"
+          cp "$HOME/.cache/argo/argo-linux-amd64.gz" "$TMP_DIR/"
+          (cd "$TMP_DIR" && sha256sum -c expected.sha256)
           gunzip -f "$TMP_DIR/argo-linux-amd64.gz"
-          cmp "$TMP_DIR/argo-linux-amd64" "$HOME/.local/bin/argo"
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 "$TMP_DIR/argo-linux-amd64" "$HOME/.local/bin/argo"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/argo" version --short
 
