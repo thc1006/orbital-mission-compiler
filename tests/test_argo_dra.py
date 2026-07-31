@@ -483,3 +483,68 @@ def test_atomic_write_replaces_the_link_not_its_target(tmp_path):
     assert not link.is_symlink(), "the link should have been replaced by a regular file"
     assert link.read_text(encoding="utf-8") == "rendered\n"
     assert not list(tmp_path.glob(".*.tmp")), "a temporary file was left behind"
+
+
+def test_a_symlink_with_no_target_is_refused_as_well(tmp_path):
+    """`Path.exists()` follows the link, so a link pointing nowhere reads as an
+    absent file and the planned path is taken for free space -- the symlink
+    branch never runs. Its target can appear at any moment afterwards."""
+    from orbital_mission_compiler.compiler import preflight_writable
+
+    out = tmp_path / "out"
+    out.mkdir()
+    link = out / "m-svc.yaml"
+    link.symlink_to(tmp_path / "not-there-yet.yaml")
+    assert link.is_symlink() and not link.exists()
+
+    with pytest.raises(ValueError, match="is a symlink"):
+        preflight_writable([(link, {"kind": "Workflow"})])
+
+
+def test_the_annotation_budget_counts_what_the_api_server_counts():
+    """Sizing a payload from MAX_ANNOTATION_BYTES only proves a check exists; it
+    passes at any value of the constant, over any unit, counting anything. The
+    three facts the guard rests on are pinned here against the API server's own
+    rule (`TotalAnnotationSizeLimitB`, keys and values, UTF-8 bytes)."""
+    from orbital_mission_compiler.compiler import MAX_ANNOTATION_BYTES, _require_annotations_fit
+
+    assert MAX_ANNOTATION_BYTES == 262144
+
+    # Keys count too: 1 byte of key plus 262143 of value sits exactly on the
+    # limit, and one more byte of value goes over it.
+    _require_annotations_fit({"k": "v" * 262143}, "obj")
+    with pytest.raises(ValueError, match="annotations"):
+        _require_annotations_fit({"k": "v" * 262144}, "obj")
+
+    # Bytes, not characters: 131072 two-byte characters is half the limit by
+    # length and one byte over it by encoding.
+    over_in_bytes = {"k": "é" * 131072}
+    assert len(over_in_bytes["k"]) < MAX_ANNOTATION_BYTES
+    with pytest.raises(ValueError, match="annotations"):
+        _require_annotations_fit(over_in_bytes, "obj")
+
+
+def test_publishing_by_rename_keeps_the_mode_the_umask_would_give(tmp_path):
+    """`mkstemp` creates 0600 and `os.replace` keeps it, so switching to a
+    rename would otherwise narrow every artifact to its owner -- and the
+    operator who applies the output is not always the one who rendered it."""
+    import os
+
+    from orbital_mission_compiler.compiler import atomic_write
+
+    expected = 0o666 & ~_current_umask()
+    fresh = tmp_path / "fresh.yaml"
+    atomic_write(fresh, "rendered\n")
+    assert os.stat(fresh).st_mode & 0o777 == expected
+
+    reference = tmp_path / "reference.yaml"
+    reference.write_text("rendered\n", encoding="utf-8")
+    assert os.stat(fresh).st_mode & 0o777 == os.stat(reference).st_mode & 0o777
+
+
+def _current_umask() -> int:
+    import os
+
+    umask = os.umask(0)
+    os.umask(umask)
+    return umask

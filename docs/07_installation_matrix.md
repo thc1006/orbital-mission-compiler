@@ -19,6 +19,7 @@
 | FastMCP (optional) | `fastmcp` | https://gofastmcp.com/getting-started/installation | **3.2.0** | `pip install fastmcp==3.2.0` | Python only | optional extra; not required for core compiler |
 | mypy | `mypy` | https://mypy.readthedocs.io/ ; https://github.com/python/mypy/releases | **1.16.0** | `pip install mypy==1.16.0` | Python toolchain | static type checker; dev dependency only |
 | types-PyYAML | `types-PyYAML` | https://pypi.org/project/types-PyYAML/ | **6.0.12.20250915** | `pip install types-PyYAML==6.0.12.20250915` | Python toolchain | type stubs for PyYAML; dev dependency only |
+| build | `build` | https://build.pypa.io/ ; https://pypi.org/project/build/1.2.2.post1/ | **1.2.2.post1** | `pip install build==1.2.2.post1` | Python toolchain | PyPA build frontend; dev dependency only, used by the packaging test |
 | OTel Collector (optional) | `opentelemetry-collector` | https://opentelemetry.io/docs/collector/install/kubernetes/ ; https://github.com/open-telemetry/opentelemetry-collector/releases | **v0.149.0** | `kubectl apply -f https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector/v0.149.0/examples/k8s/otel-config.yaml` | Kubernetes required | optional, not validated end-to-end here |
 
 

@@ -5,13 +5,22 @@
 ### Changed
 - A YAML merge key followed by an explicit key is accepted again. Scanning for
   duplicates after the merge source was flattened in conflated an override with a
-  key written twice, and rejected a document whose meaning YAML defines.
+  key written twice, and rejected a document whose meaning YAML defines. The
+  source a `<<:` pulls from is scanned in its own right, since it is a mapping
+  the author wrote and is spliced in without ever being constructed: a step
+  shared through an anchor could carry `resource_class` twice and load as the
+  second one, reading as GPU and running as CPU. `<<` written twice in one
+  mapping, and a mapping that merges itself, are refused for the same reason.
 - Rendered objects are refused when their annotations would exceed the 262144
   bytes the API server accepts, rather than failing at apply.
 - Files are published by renaming a sibling temporary file into place. Writing
   the destination directly follows a symlink, which redirects the write outside
   the output directory and past the ownership check; a symlink at a planned path
-  is now refused outright.
+  is now refused outright, including one whose target does not exist yet --
+  `Path.exists()` follows the link, so such a path read as free space. The
+  published file keeps the mode the umask would have given it, because `mkstemp`
+  creates 0600 and a rename keeps it, which would have narrowed every artifact
+  to the user that rendered it.
 - A boolean is no longer read as an orbit or a duration, and a number is no
   longer read as a timestamp. `orbit: true` became orbit 1 and `timestamp: 0`
   became 1970-01-01, both of which name artifacts after something nobody wrote.

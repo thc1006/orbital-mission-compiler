@@ -146,7 +146,7 @@ The following features are explicitly added by this project to fill gaps that OR
 | Enum values | 11 | 11 | 0 | 100% traced |
 | OPA deny rules | 10 | 4 | 6 | 100% traced |
 | Resource hints keys | 10 | 7 | 3 | 100% traced |
-| **Total** | **58** | **46 (79%)** | **12 (21%)** | **100% traced** |
+| **Total** | **58** | **43 (74%)** | **15 (26%)** | **100% traced** |
 
 Note: this summary counts the four mission-plan schema models (`MissionPlan`, `MissionEvent`, `AIService`, `WorkflowStep`) and excludes the internal `WorkflowIntent` compiler IR model.
 

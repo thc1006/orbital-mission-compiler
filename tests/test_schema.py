@@ -299,6 +299,84 @@ def test_yaml_merge_overrides_are_not_duplicate_keys():
             load(genuinely_duplicated)
 
 
+def test_a_key_written_twice_inside_a_merge_source_is_still_a_duplicate():
+    """The mapping a `<<:` pulls from is one the author wrote, so a key repeated
+    inside it is the same ambiguity as one repeated anywhere else.
+
+    `flatten_mapping` splices a merge source's pairs in without constructing it,
+    and a source reached only through `<<:` is nobody's value, so scanning the
+    merging mapping alone never looks at it.
+    """
+    import pytest as _pytest
+    import yaml as _yaml
+
+    from orbital_mission_compiler.compiler import _StrictLoader
+
+    def load(text):
+        return _yaml.load(text, Loader=_StrictLoader)
+
+    hidden = {
+        "inline": "s:\n  <<: {k: 1, k: 2}\n",
+        "block": "s:\n  <<: &a\n    k: 1\n    k: 2\n",
+        "sequence": "s:\n  <<: [{k: 1, k: 2}]\n",
+        "nested": "d: &d\n  <<: {k: 1, k: 2}\ns:\n  <<: *d\n",
+        "anchored value": "d: &d\n  k: 1\n  k: 2\ns:\n  <<: *d\n",
+    }
+    for where, text in hidden.items():
+        # It loads under stock PyYAML, quietly keeping the last value -- which
+        # is exactly what this loader exists to refuse.
+        assert _yaml.safe_load(text)["s"]["k"] == 2, where
+        with _pytest.raises(_yaml.constructor.ConstructorError, match="duplicate key"):
+            load(text)
+
+    # `<<` twice is a repeated key too, and the later one wins -- the opposite
+    # of `<<: [a, b]`, where the earlier does. Same document, two readings.
+    with _pytest.raises(_yaml.constructor.ConstructorError, match="duplicate merge key"):
+        load("a: &a {k: 1}\nb: &b {k: 2}\ns:\n  <<: *a\n  <<: *b\n")
+
+    # A mapping that merges itself has nothing to resolve, and scanning it
+    # would not terminate.
+    with _pytest.raises(_yaml.constructor.ConstructorError, match="refers to its own mapping"):
+        load("s: &s\n  <<: *s\n  k: 1\n")
+
+    # Still loads: the merge forms a plan may legitimately use.
+    for legitimate in ("d: &d {k: 1, j: 9}\ns:\n  <<: *d\n  k: 2\n",
+                       "a: &a {k: 1}\nb: &b {j: 2}\ns:\n  <<: [*a, *b]\n",
+                       "a: &a {k: 1}\nb: &b\n  <<: *a\n  j: 2\ns:\n  <<: *b\n"):
+        assert load(legitimate)["s"] == _yaml.safe_load(legitimate)["s"]
+
+
+def test_a_duplicate_hidden_in_a_merge_source_cannot_downgrade_a_gpu_step(tmp_path):
+    """The concrete harm: sharing a step definition through an anchor is exactly
+    what merge keys are for, and a second `resource_class` inside that anchor
+    turns an accelerated step into a CPU one while the file still reads as GPU.
+    """
+    import pytest as _pytest
+    import yaml as _yaml
+
+    from orbital_mission_compiler.compiler import load_mission_plan
+
+    plan = tmp_path / "plan.yaml"
+    plan.write_text(
+        "mission_id: m\n"
+        "events:\n"
+        "  - timestamp: '2026-08-01T00:00:00Z'\n"
+        "    event_type: acquisition\n"
+        "    instrument: cam\n"
+        "    duration_seconds: 60\n"
+        "    services:\n"
+        "      - service_id: s\n"
+        "        priority: 50\n"
+        "        steps:\n"
+        "          - <<: {name: detect, image: 'busybox:1.36',"
+        " resource_class: gpu, resource_class: cpu}\n"
+        "            fallback_resource_class: cpu\n",
+        encoding="utf-8",
+    )
+    with _pytest.raises(_yaml.constructor.ConstructorError, match="duplicate key"):
+        load_mission_plan(plan)
+
+
 def test_a_boolean_is_not_an_orbit_a_duration_or_a_timestamp():
     """`orbit: true` is not orbit 1 and `duration_seconds: true` is not a
     one-second acquisition. A number where a date belongs is read as a Unix

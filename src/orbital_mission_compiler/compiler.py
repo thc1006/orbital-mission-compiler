@@ -193,34 +193,71 @@ class _StrictLoader(yaml.SafeLoader):
     """
 
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
-        # Scan the keys the author wrote, before any merge source is flattened
-        # in. Flattening first conflates two different things: a key written
-        # twice, which is the ambiguity worth refusing, and a merge override,
-        # which is how YAML says "take these defaults and change this one".
-        # `<<: *defaults` followed by an explicit `priority:` leaves two
-        # `priority` entries in the flattened node, and rejecting that would
-        # refuse a document whose meaning YAML defines precisely.
-        #
-        # The merge keys themselves are skipped rather than constructed:
-        # SafeConstructor has no constructor for the merge tag, and resolving
-        # precedence is its job, not this scan's.
+        self._refuse_repeated_keys(node, deep, set())
+        return super().construct_mapping(node, deep=deep)
+
+    def _refuse_repeated_keys(self, node: yaml.MappingNode, deep: bool, visiting: set[int]) -> None:
+        """Raise if this mapping, or a mapping it merges in, repeats a key.
+
+        Scanned before any merge source is flattened in. Flattening first
+        conflates two different things: a key written twice, which is the
+        ambiguity worth refusing, and a merge override, which is how YAML says
+        "take these defaults and change this one". `<<: *defaults` followed by
+        an explicit `priority:` leaves two `priority` entries in the flattened
+        node, and rejecting that would refuse a document whose meaning YAML
+        defines precisely.
+
+        A merge source is a mapping the author wrote too, so it is scanned in
+        its own right. `flatten_mapping` splices its pairs in without ever
+        constructing it, and a source reached only through `<<:` is nobody's
+        value, so a key repeated inside one is invisible to a scan of this node
+        alone -- which is how `<<: {resource_class: gpu, resource_class: cpu}`
+        came to load as cpu without complaint.
+        """
+        if id(node) in visiting:
+            # A mapping that merges itself. Nothing to resolve, and recursing
+            # would not terminate.
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping", node.start_mark,
+                "found a merge key that refers to its own mapping", node.start_mark,
+            )
+        visiting = visiting | {id(node)}
         seen: set[Any] = set()
-        for key_node, _ in node.value:
+        merged = False
+        for key_node, value_node in node.value:
             if key_node.tag == "tag:yaml.org,2002:merge":
+                if merged:
+                    # Two `<<` in one mapping is a repeated key, and the later
+                    # one wins -- the opposite of `<<: [a, b]`, where the
+                    # earlier does. Same document, two readings.
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping", node.start_mark,
+                        "found duplicate merge key '<<'", key_node.start_mark,
+                    )
+                merged = True
+                for source in self._merge_sources(value_node):
+                    self._refuse_repeated_keys(source, deep, visiting)
                 continue
             key = self.construct_object(key_node, deep=deep)
             try:
                 duplicate = key in seen
             except TypeError:
                 # Let SafeConstructor report it, with the position it knows.
-                return super().construct_mapping(node, deep=deep)
+                return
             if duplicate:
                 raise yaml.constructor.ConstructorError(
                     "while constructing a mapping", node.start_mark,
                     f"found duplicate key {key!r}", key_node.start_mark,
                 )
             seen.add(key)
-        return super().construct_mapping(node, deep=deep)
+
+    @staticmethod
+    def _merge_sources(value_node: yaml.Node) -> list[yaml.MappingNode]:
+        """The mappings a `<<:` pulls from, whether written as one or a list."""
+        candidates = (
+            value_node.value if isinstance(value_node, yaml.SequenceNode) else [value_node]
+        )
+        return [n for n in candidates if isinstance(n, yaml.MappingNode)]
 
 
 def load_mission_plan(path: str | Path) -> MissionPlan:
@@ -1404,12 +1441,15 @@ def preflight_writable(planned: list[tuple[Path, Any]]) -> None:
     """
     conflicts: list[str] = []
     for path, rendered in planned:
-        if not path.exists():
-            continue
         if path.is_symlink():
-            # Not followed to decide ownership: what the link points at says
-            # nothing about the entry this render would replace.
+            # Asked before `exists()`, which follows the link: a link with no
+            # target reads as absent, and the planned path would then be taken
+            # for free space. Not followed to decide ownership either -- what
+            # the link points at says nothing about the entry this render would
+            # replace.
             conflicts.append(f"{path} is a symlink")
+            continue
+        if not path.exists():
             continue
         if not _is_rendered_artifact(path):
             conflicts.append(f"{path} was not written by this compiler")
@@ -1446,6 +1486,20 @@ def _rendered_mission(rendered: str | list[Any]) -> str | None:
     return marks.pop() if len(marks) == 1 else None
 
 
+def _default_file_mode() -> int:
+    """The mode `open()` would give a new file under this process's umask.
+
+    Read once, at import: `os.umask` is process-wide, and reading it means
+    setting it, which is not something to do while other threads are writing.
+    """
+    umask = os.umask(0)
+    os.umask(umask)
+    return 0o666 & ~umask
+
+
+_DEFAULT_FILE_MODE = _default_file_mode()
+
+
 def atomic_write(path: Path, text: str) -> None:
     """Write by renaming a sibling temporary file into place.
 
@@ -1453,6 +1507,11 @@ def atomic_write(path: Path, text: str) -> None:
     planted in the output directory redirects the write outside it, past the
     ownership check. A rename replaces the directory entry instead, so the link
     itself is what goes. It also means a reader never sees a half-written file.
+
+    The mode is set back to what the umask would have given, because
+    `mkstemp` creates 0600 and `os.replace` keeps it -- publishing by rename
+    would otherwise narrow every rendered artifact to its owner, and the
+    operator who applies the output is not always the one who rendered it.
     """
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
@@ -1460,6 +1519,7 @@ def atomic_write(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(tmp, _DEFAULT_FILE_MODE)
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
