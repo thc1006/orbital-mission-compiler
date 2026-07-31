@@ -894,3 +894,61 @@ def test_every_command_that_prunes_reports_a_failed_prune_the_same_way(tmp_path,
     assert report["not_pruned"] == [str(doomed[-1])]
     assert report["output_modified"] is True
     assert "lint" not in report, "the ungated path never ran a linter"
+
+
+@pytest.mark.skipif(not ARGO_AVAILABLE, reason="argo CLI not installed")
+def test_a_file_the_linter_cannot_parse_is_not_a_pass(tmp_path, capsys):
+    """`argo lint` logs a file it cannot parse and carries on, exiting 0 as long
+    as anything else in the target lints.
+
+    The gate always stages its own valid manifests alongside, so that condition
+    always holds and the exit status alone says "these manifests are valid"
+    about a set containing one the linter never read. `kubectl apply -f <dir>`
+    would choke on it. Uses the real CLI, because the behaviour under test is
+    the CLI's.
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "zz-unparseable.yaml").write_text(
+        "apiVersion: argoproj.io/v1alpha1\nkind: Workflow\nmetadata:\n  name: [unclosed\n",
+        encoding="utf-8",
+    )
+    args = build_parser().parse_args([
+        "render-argo", "--input", str(_multi_service_plan(tmp_path, ["a"])),
+        "--output-dir", str(out), "--argo-lint",
+    ])
+
+    with pytest.raises(SystemExit) as exit_info:
+        cmd_render_argo(args)
+    assert exit_info.value.code == 1, "an unreadable manifest in the set is a verdict, not a pass"
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "lint-failed", report
+    assert "yaml file is not valid" in report["lint_output"]
+    # Nothing was published: the directory holds only what was already there.
+    assert sorted(p.name for p in out.glob("*.yaml")) == ["zz-unparseable.yaml"]
+
+
+def test_the_lock_file_being_unopenable_is_a_structured_error(tmp_path, monkeypatch, capsys):
+    """The lock lives at a derivable path in the shared temp directory and is
+    created 0600 by whoever renders first, so a second user cannot open it. That
+    is one more way the gate cannot run, not a traceback."""
+    exe = _fake_argo(tmp_path, 0)
+    args = build_parser().parse_args([
+        "render-argo", "--input", str(_multi_service_plan(tmp_path, ["a"])),
+        "--output-dir", str(tmp_path / "out"), "--argo-lint", "--argo-bin", str(exe),
+    ])
+
+    real_open = os.open
+
+    def refuse_lock(path, *a, **kw):
+        if "orbital-publish-" in str(path):
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(os, "open", refuse_lock)
+    with pytest.raises(SystemExit) as exit_info:
+        cmd_render_argo(args)
+    assert exit_info.value.code == 2
+    report = json.loads(capsys.readouterr().out)  # one document, not a traceback
+    assert report["reason"] == "publish-lock-unavailable", report
+    assert not (tmp_path / "out").exists(), "a gate that could not run must not create the output"

@@ -1806,6 +1806,12 @@ def argo_lint_path(
     # (verified against the pinned CLI). Those are all reasons a caller must not
     # publish, so they are reported as a failed verdict with the linter's own
     # message rather than being guessed apart.
+    #
+    # Status 0 is narrower than "everything here is valid". A file the CLI
+    # cannot parse is logged as `msg="yaml file is not valid"` and skipped, and
+    # the run exits 0 as long as anything else in the target lints -- so the
+    # unparseable-YAML case above only holds when that file is alone. A caller
+    # that lints a directory has to read the output, not just the status.
     if proc.returncode not in (0, 1):
         raise ArgoLintUnavailable(
             f"argo lint exited {proc.returncode}, which is not a lint verdict: "

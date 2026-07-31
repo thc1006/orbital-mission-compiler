@@ -129,6 +129,17 @@
   run -- CLI absent, timeout, signal, an exit status that is not a verdict,
   nothing rendered to lint, no `fcntl` on this platform, or a destination that
   could not be read -- exits 2.
+- A file the linter cannot parse is a failed verdict, not a pass. `argo lint`
+  logs it and carries on, exiting 0 as long as anything else in the target
+  lints -- which is always, because the gate stages its own manifests
+  alongside. So the exit status alone said "these manifests are valid" about a
+  set containing one the linter never read, and `kubectl apply -f <dir>` would
+  choke on it. Measured on both v4.0.1 and v4.0.8.
+- A destination that cannot be listed is an error rather than an empty
+  directory, and a lock file that cannot be opened is `publish-lock-unavailable`
+  rather than a traceback. The lock lives at a derivable path in the shared temp
+  directory and is created 0600 by whoever renders first, so a second user
+  cannot open it.
 - The gate distinguishes the ways it can leave the output directory modified,
   because the caller can only act on the difference. `rollback-incomplete`
   lists both the displaced files it could not restore and the newly published

@@ -347,7 +347,18 @@ def _publish_lock(out_dir: Path) -> Iterator[None]:
     canonical = os.path.realpath(out_dir)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     lock_path = Path(tempfile.gettempdir()) / f"orbital-publish-{digest}.lock"
-    handle = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        handle = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError as exc:
+        # The path is derived from the output directory and lives in the shared
+        # system temp directory, so whoever renders first owns the file at mode
+        # 0600 and a second user cannot open it. That is one more way the gate
+        # cannot run, not a different kind of event, so it gets the same
+        # structured exit as a missing fcntl.
+        raise PublishLockUnavailable(
+            f"the publish lock at {lock_path} could not be opened, so --argo-lint "
+            f"cannot serialise publishing here: {exc}"
+        ) from exc
     try:
         fcntl.flock(handle, fcntl.LOCK_EX)
         yield
@@ -446,6 +457,12 @@ def _publish(staged: list[Path], out_dir: Path) -> list[Path]:
                 os.replace(kept, target)
             except OSError:
                 unrestored.append(str(target))
+            else:
+                # Putting the previous file back is what "removed" was for. A
+                # target that failed to unlink and was then overwritten by its
+                # own backup holds nothing from this render, so reporting it as
+                # left behind would be a claim the directory contradicts.
+                unremoved = [u for u in unremoved if u != str(target)]
         if unrestored or unremoved:
             # The backup holds the only remaining copy of the displaced ones, so
             # it stays and the caller is told where. Deleting it here on the way
@@ -529,8 +546,13 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                 # .yaml. A leftover invalid workflow saved as .yml would
                 # otherwise be applied with the directory while the gate
                 # reported it clean.
+                # Listed rather than globbed: `Path.glob` swallows the OSError
+                # scandir raises, so a destination that cannot be read would
+                # come back empty, nothing would be carried, and the gate would
+                # lint only its own render and call the directory clean.
                 existing_manifests = sorted(
-                    q for ext in ("*.yaml", "*.yml", "*.json") for q in out_dir.glob(ext)
+                    q for q in out_dir.iterdir()
+                    if q.suffix in (".yaml", ".yml", ".json")
                 )
                 leaving = (
                     {p.name for p in stale_rendered_artifacts(out_dir, written)}
@@ -560,6 +582,15 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         for copy in carried:
             copy.unlink()
         carried = []
+        # A file the CLI cannot parse is logged and skipped, and the run still
+        # exits 0 as long as something else in the directory lints -- which is
+        # always, because the gate stages its own manifests alongside. So the
+        # exit status alone says "these manifests are valid" about a set that
+        # contains one the linter never read, and `kubectl apply -f <dir>`
+        # would choke on it. Measured on both v4.0.1 and v4.0.8: the file alone
+        # exits 1, the file beside a valid one exits 0.
+        if rc == 0 and 'msg="yaml file is not valid"' in output:
+            rc = 1
         if rc != 0:
             print(json.dumps({
                 "status": "lint-failed", "files": [],
