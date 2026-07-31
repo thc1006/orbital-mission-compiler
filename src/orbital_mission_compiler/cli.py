@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -293,7 +292,13 @@ def _publish_lock(out_dir: Path) -> Iterator[None]:
     # two processes different lock files when one of them runs before the
     # directory is created and the other after, which is exactly when they would
     # collide. And a lock file is not something to leave in an operator's output.
-    digest = hashlib.sha256(str(out_dir.absolute()).encode("utf-8")).hexdigest()[:16]
+    import fcntl  # Unix-only, and only this feature needs it
+
+    # realpath, not absolute(): absolute() leaves `..` in place and does not
+    # resolve symlinks, so /data/out and /data/tmp/../out would take different
+    # locks on the same directory -- the case the lock exists for.
+    canonical = os.path.realpath(out_dir)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     lock_path = Path(tempfile.gettempdir()) / f"orbital-publish-{digest}.lock"
     handle = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -302,6 +307,22 @@ def _publish_lock(out_dir: Path) -> Iterator[None]:
     finally:
         fcntl.flock(handle, fcntl.LOCK_UN)
         os.close(handle)
+
+
+class PublishRolledBackPartially(OSError):
+    """Publishing failed and some displaced files could not be put back.
+
+    Carries where the surviving copies are, because at that point the backup is
+    the only place they exist.
+    """
+
+    def __init__(self, reason: str, recovery: Path, unrestored: list[str]) -> None:
+        super().__init__(
+            f"publishing failed ({reason}) and {len(unrestored)} file(s) could not be "
+            f"restored; they are in {recovery}"
+        )
+        self.recovery = recovery
+        self.unrestored = unrestored
 
 
 def _publish(staged: list[Path], out_dir: Path) -> list[Path]:
@@ -332,19 +353,28 @@ def _publish(staged: list[Path], out_dir: Path) -> list[Path]:
                 displaced[target] = kept
             os.replace(path, target)
             published.append(target)
-    except OSError:
+    except OSError as exc:
+        unrestored: list[str] = []
         for target in published:
             with contextlib.suppress(OSError):
                 target.unlink()
         for target, kept in displaced.items():
-            with contextlib.suppress(OSError):
+            try:
                 os.replace(kept, target)
+            except OSError:
+                unrestored.append(str(target))
+        if unrestored:
+            # The backup holds the only remaining copy of these, so it stays and
+            # the caller is told where. Deleting it here on the way out of a
+            # failed rollback is how a previous good artifact would be lost for
+            # good, while the command reported the directory as restored.
+            raise PublishRolledBackPartially(str(exc), backup_dir, unrestored) from exc
         for created in created_dirs:
             with contextlib.suppress(OSError):
                 created.rmdir()
-        raise
-    finally:
         shutil.rmtree(backup_dir, ignore_errors=True)
+        raise
+    shutil.rmtree(backup_dir, ignore_errors=True)
     return published
 
 
@@ -362,6 +392,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         prefix=".argo-lint-staging-", dir=_nearest_existing_ancestor(out_dir)
     ))
     carried: list[Path] = []
+    result_stale: dict[str, object] = {}
     try:
         written = _render_argo(args, staging)
 
@@ -386,7 +417,13 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         # not rewrite files the render does not own.
         staged_names = {path.name for path in written}
         if out_dir.is_dir():
-            for existing in sorted(out_dir.glob("*.yaml")):
+            # Every extension `kubectl apply -f <dir>` consumes, not only .yaml.
+            # A leftover invalid workflow saved as .yml would otherwise be
+            # applied with the directory while the gate reported it clean.
+            existing_manifests = sorted(
+                q for ext in ("*.yaml", "*.yml", "*.json") for q in out_dir.glob(ext)
+            )
+            for existing in existing_manifests:
                 if existing.name in staged_names or not existing.is_file():
                     continue
                 copy = staging / existing.name
@@ -406,24 +443,34 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             }, indent=2))
             raise SystemExit(1)
 
-        # The ownership rule the direct writer applies has to hold here too.
-        # Staging is a fresh directory, so the preflight inside the writer saw
-        # nothing to protect; without this the lint gate would be the one path
-        # that overwrites another mission's artifacts.
+        # Ownership, publication and the prune all happen inside one critical
+        # section. Checking ownership outside it only rules out a conflict that
+        # existed at the time of the check: another render can create the file
+        # in the gap, and the publish would then displace it without looking
+        # again. Pruning outside it lets two renders of the same mission delete
+        # each other's newly published files.
         try:
-            preflight_writable(
-                [(out_dir / path.name, path.read_text(encoding="utf-8")) for path in written]
-            )
+            with _publish_lock(out_dir):
+                preflight_writable(
+                    [(out_dir / path.name, path.read_text(encoding="utf-8")) for path in written]
+                )
+                published = _publish(written, out_dir)
+                _report_stale(result_stale, args.output_dir, published, args.prune)
         except ValueError as exc:
             print(json.dumps({
                 "status": "error", "lint": "passed", "reason": "not-owned",
                 "message": str(exc),
             }, indent=2))
             raise SystemExit(2) from exc
-
-        try:
-            with _publish_lock(out_dir):
-                published = _publish(written, out_dir)
+        except PublishRolledBackPartially as exc:
+            print(json.dumps({
+                "status": "error", "lint": "passed", "reason": "rollback-incomplete",
+                "output_modified": True,
+                "recovery_directory": str(exc.recovery),
+                "unrestored": exc.unrestored,
+                "message": str(exc),
+            }, indent=2))
+            raise SystemExit(2) from exc
         except OSError as exc:
             print(json.dumps({
                 "status": "error", "lint": "passed", "reason": "publish-failed",
@@ -439,6 +486,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
     result: dict[str, object] = {
         "status": "ok", "files": [str(p) for p in published], "lint": "passed",
         "lint_output": output.strip(),
+        **result_stale,
     }
     if staging.exists():
         # Reported rather than swallowed: the render succeeded, but a staging
@@ -446,10 +494,6 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         # they can only do that if they are told.
         result["staging_left_behind"] = str(staging)
         print(f"warning: could not remove the staging directory {staging}", file=sys.stderr)
-    # Leftovers are reported against the published set, so the staging round trip
-    # does not make every previous artifact look stale. They were part of the lint
-    # above, so this is about what to apply, not about whether it is valid.
-    _report_stale(result, args.output_dir, published, args.prune)
     print(json.dumps(result, indent=2))
 
 

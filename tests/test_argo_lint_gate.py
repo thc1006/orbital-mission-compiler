@@ -601,3 +601,121 @@ def test_the_lint_gate_does_not_overwrite_another_missions_artifacts(tmp_path, c
     # Re-rendering the same mission is still fine.
     cmd_render_argo(render(plan("foo_bar", "three.yaml")))
     assert json.loads(capsys.readouterr().out)["status"] == "ok"
+
+
+def test_a_failed_restore_keeps_the_only_remaining_copy(tmp_path, monkeypatch, capsys):
+    """When publishing fails and putting a displaced file back also fails, the
+    backup is the only copy of that file left.
+
+    Deleting it on the way out of a failed rollback loses the previous good
+    artifact for good, while the command reports the directory as restored.
+    """
+    out = tmp_path / "out"
+    exe = _fake_argo(tmp_path, 0)
+
+    def render_args(plan):
+        return build_parser().parse_args([
+            "render-argo", "--input", str(plan), "--output-dir", str(out),
+            "--argo-lint", "--argo-bin", str(exe),
+        ])
+
+    cmd_render_argo(render_args(_multi_service_plan(tmp_path, ["a", "b"])))
+    capsys.readouterr()
+    previous = sorted(p.name for p in out.glob("*.yaml"))
+    assert len(previous) == 2
+
+    real_replace = os.replace
+    published_count = {"n": 0}
+    backup_marker = ".orbital-publish-backup-"
+
+    def failing_replace(src, dst):
+        # Keyed on the paths, not a call count: the writers publish through
+        # os.replace as well, and staging lives inside the output directory, so
+        # both counting and a substring test would fire during the render.
+        if backup_marker in str(src):
+            raise OSError(13, "Permission denied")  # a restore
+        if Path(dst).parent == out:
+            published_count["n"] += 1
+            if published_count["n"] == 2:
+                raise OSError(13, "Permission denied")  # the second file lands badly
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    with pytest.raises(SystemExit) as exc:
+        cmd_render_argo(render_args(_multi_service_plan(tmp_path, ["a", "b"])))
+    assert exc.value.code == 2
+    data = json.loads(capsys.readouterr().out)
+    monkeypatch.undo()
+
+    assert data["reason"] == "rollback-incomplete", data
+    assert data["output_modified"] is True
+    assert data["unrestored"], data
+    recovery = Path(data["recovery_directory"])
+    assert recovery.is_dir(), "the recovery directory was deleted"
+    survivors = sorted(p.name for p in recovery.glob("*.yaml"))
+    assert survivors, "the only copy of the displaced file is gone"
+
+
+def test_a_leftover_yml_is_part_of_the_verdict(tmp_path, capsys):
+    """`kubectl apply -f <dir>` consumes .yml and .json too, so a gate that
+    claims to lint what the directory will hold cannot look only at .yaml."""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "left-over.yml").write_text("apiVersion: argoproj.io/v1alpha1\nkind: Workflow\n", encoding="utf-8")
+
+    exe = tmp_path / "argo"
+    exe.write_text(
+        "#!/bin/sh\n"
+        'dir=""\nfor a in "$@"; do dir="$a"; done\n'
+        'if [ -f "$dir/left-over.yml" ]; then echo "left-over.yml is invalid"; exit 1; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+
+    args = build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--argo-lint", "--argo-bin", str(exe),
+    ])
+    with pytest.raises(SystemExit) as exc:
+        cmd_render_argo(args)
+    assert exc.value.code == 1
+    assert "left-over" in json.loads(capsys.readouterr().out)["lint_output"]
+
+
+def test_the_lock_is_the_same_for_aliased_output_paths(tmp_path):
+    """`absolute()` leaves `..` in place and does not resolve links, so two
+    spellings of one directory would take different locks and not exclude each
+    other -- which is the case the lock exists for.
+
+    Observed by holding one spelling and watching the other block, rather than
+    by recomputing the key here, which would only restate the implementation.
+    """
+    import threading
+
+    from orbital_mission_compiler.cli import _publish_lock
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "sub").mkdir()
+    aliases = [tmp_path / "link", tmp_path / "sub" / ".." / "real"]
+    (tmp_path / "link").symlink_to(real)
+
+    for alias in aliases:
+        entered = threading.Event()
+        release = threading.Event()
+
+        def take_alias() -> None:
+            with _publish_lock(alias):
+                entered.set()
+                release.wait(timeout=10)
+
+        with _publish_lock(real):
+            worker = threading.Thread(target=take_alias)
+            worker.start()
+            blocked = not entered.wait(timeout=1.0)
+            assert blocked, f"{alias} did not share the lock with {real}"
+        assert entered.wait(timeout=10), f"{alias} never acquired the lock after release"
+        release.set()
+        worker.join(timeout=10)
+        assert not worker.is_alive()
