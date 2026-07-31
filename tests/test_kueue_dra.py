@@ -7,7 +7,6 @@ Issue #46: Kueue DRA rendering for heterogeneous accelerators.
 Reference: ORCHIDE slide 14 (heterogeneous hardware), Kueue v0.17 DRA docs.
 """
 
-import pytest
 
 from orbital_mission_compiler.compiler import (
     render_kueue_job,
@@ -234,11 +233,31 @@ def _gpu_fpga_intent() -> WorkflowIntent:
 
 
 class TestMixedGpuFpga:
-    """Mixed GPU+FPGA is rejected — not schedulable on separate node pools."""
+    """A service mixing GPU and FPGA steps is legal, and the Job says which it ran.
 
-    def test_mixed_raises_value_error(self):
-        with pytest.raises(ValueError, match="both GPU and FPGA"):
-            render_kueue_job(_gpu_fpga_intent())
+    One Pod asking for both devices would be unschedulable, which is what this
+    used to reject. But the Kueue Job carries one container from one step, so it
+    only ever has one resource class: the mixture is a property of the service,
+    which Argo renders as separate Pods. Rejecting it here refused a valid plan
+    on the strength of steps that this artifact does not contain.
+    """
+
+    def test_mixed_service_renders_the_primary_step_only(self):
+        job = render_kueue_job(_gpu_fpga_intent())
+        containers = job["spec"]["template"]["spec"]["containers"]
+        assert len(containers) == 1
+        ann = job["metadata"]["annotations"]
+        assert ann["orbital/executed-step-resource-class"] == "gpu"
+        assert ann["orbital/requires-gpu"] == "true"
+        assert ann["orbital/requires-fpga"] == "false", (
+            "the Job does not run the FPGA step, so it must not claim to need one"
+        )
+
+    def test_the_service_wide_mixture_is_still_recorded(self):
+        ann = render_kueue_job(_gpu_fpga_intent())["metadata"]["annotations"]
+        assert ann["orbital/service-requires-gpu"] == "true"
+        assert ann["orbital/service-requires-fpga"] == "true"
+        assert "fpga" in ann["orbital/steps-not-in-this-job"]
 
 
 # ── CPU (unchanged) ──────────────────────────────────────────────────────

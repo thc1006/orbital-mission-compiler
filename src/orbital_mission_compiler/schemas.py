@@ -51,9 +51,15 @@ class StrictModel(BaseModel):
     timestamp strings and enum values the plan format is written in. Where a
     loose coercion would actually change meaning -- a boolean read as a
     number -- the field carries its own validator.
+
+    ``allow_inf_nan`` is off. YAML spells infinity ``.inf`` and Pydantic accepts
+    it for a float by default, and ``duration_seconds: .inf`` passes ``ge=0``.
+    It then reaches the timeline analysis, where ``start + duration`` swallows
+    every later event: a plan with one infinite acquisition reports a conflict
+    with an event five months away and puts a plausible-looking number on it.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class WorkflowStep(StrictModel):
@@ -93,9 +99,12 @@ class WorkflowStep(StrictModel):
             prefix, _, name = key.rpartition("/")
             if not _LABEL_NAME_RE.fullmatch(name or "") or len(name) > 63:
                 raise ValueError(f"node selector key {key!r} has an invalid name segment")
+            # Each segment is a DNS label in its own right, so the 63-character
+            # limit applies per segment as well as 253 to the whole prefix.
+            parts = prefix.split(".") if prefix else []
             if prefix and (
                 len(prefix) > 253
-                or not all(_DNS_LABEL_RE.fullmatch(part) for part in prefix.split("."))
+                or not all(_DNS_LABEL_RE.fullmatch(part) and len(part) <= 63 for part in parts)
             ):
                 raise ValueError(f"node selector key {key!r} has an invalid prefix")
             if val and (len(val) > 63 or not _LABEL_VALUE_RE.fullmatch(val)):
@@ -119,6 +128,14 @@ class AIService(StrictModel):
         description="0-100 scale; ORCHIDE uses 1-4 (see rendering layer for conversion)",
     )
     landscape_type: str | None = None
+
+    @field_validator("service_id")
+    @classmethod
+    def _service_id_not_blank(cls, value: str) -> str:
+        """A service id names the workflow and the file it is written to."""
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("service_id must not be blank")
+        return value
 
     @field_validator("priority", mode="before")
     @classmethod
@@ -151,7 +168,7 @@ class MissionEvent(StrictModel):
     @model_validator(mode="after")
     def check_event_constraints(self) -> "MissionEvent":
         if self.event_type == MissionEventType.ACQUISITION:
-            if not self.instrument:
+            if not self.instrument or not self.instrument.strip():
                 raise ValueError("acquisition events must specify an instrument (slide 9: INST)")
         if self.event_type == MissionEventType.DOWNLOAD:
             if self.duration_seconds is None:
@@ -177,8 +194,10 @@ class MissionPlan(StrictModel):
     @field_validator("mission_id")
     @classmethod
     def mission_id_not_empty(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("mission_id must not be empty")
+        # Blank, not merely empty: the id names every rendered artifact, and a
+        # value of spaces sanitizes to a placeholder rather than failing.
+        if not v or not v.strip():
+            raise ValueError("mission_id must not be blank")
         return v
 
 

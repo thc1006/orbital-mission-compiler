@@ -222,3 +222,49 @@ def test_node_selector_keys_and_values_are_checked_here_not_at_apply():
         {"k": ""},  # an empty value is a legal label value
     ):
         WorkflowStep(name="a", image="i:1", preferred_node_selector=selector)
+
+
+def test_an_infinite_duration_is_not_a_duration():
+    """YAML spells infinity `.inf`, Pydantic accepts it for a float by default,
+    and it satisfies `ge=0`.
+
+    It then reaches the timeline analysis, where `start + duration` swallows
+    every later event: one infinite acquisition reports a conflict with an event
+    five months away and puts a plausible-looking number of seconds on it.
+    """
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from orbital_mission_compiler.schemas import MissionEvent
+
+    base = {
+        "timestamp": "2026-08-01T00:00:00Z", "event_type": "acquisition",
+        "instrument": "cam",
+        "services": [{"service_id": "s", "priority": 50,
+                      "steps": [{"name": "a", "image": "i:1"}]}],
+    }
+    MissionEvent.model_validate({**base, "duration_seconds": 60})
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        with _pytest.raises(ValidationError):
+            MissionEvent.model_validate({**base, "duration_seconds": bad})
+
+
+def test_identifiers_that_name_artifacts_may_not_be_blank():
+    """A value of spaces is truthy, so an emptiness check passes it through, and
+    it then sanitizes to a placeholder in the name of every rendered object."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from orbital_mission_compiler.schemas import AIService, MissionEvent, MissionPlan, WorkflowStep
+
+    with _pytest.raises(ValidationError, match="blank"):
+        MissionPlan(mission_id="   ", events=[])
+    with _pytest.raises(ValidationError, match="blank"):
+        AIService(service_id="   ", priority=50, steps=[WorkflowStep(name="a", image="i:1")])
+    with _pytest.raises(ValidationError, match="instrument"):
+        MissionEvent.model_validate({
+            "timestamp": "2026-08-01T00:00:00Z", "event_type": "acquisition",
+            "instrument": "   ", "duration_seconds": 60,
+            "services": [{"service_id": "s", "priority": 50,
+                          "steps": [{"name": "a", "image": "i:1"}]}],
+        })

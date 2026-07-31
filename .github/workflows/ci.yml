@@ -153,9 +153,25 @@ jobs:
           gunzip -f "$TMP_DIR/argo-linux-amd64.gz"
           install -m 0755 "$TMP_DIR/argo-linux-amd64" "$HOME/.local/bin/argo"
 
-      - name: Add Argo to PATH and verify
+      # Verified on every run, not only after a download. A cache restored from a
+      # poisoned or corrupted entry would otherwise be the binary that decides
+      # whether manifests are published, having been checked once, long ago.
+      - name: Verify the Argo checksum and add it to PATH
         run: |
           set -euo pipefail
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          BASE="https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}"
+          curl -fSL -o "$TMP_DIR/checksums.txt" "${BASE}/argo-workflows-cli-checksums.txt"
+          EXPECTED="$(grep 'argo-linux-amd64.gz$' "$TMP_DIR/checksums.txt" | awk '{print $1}')"
+          test -n "$EXPECTED"
+          gzip -n -c "$HOME/.local/bin/argo" > "$TMP_DIR/argo.gz" || true
+          # The published checksum is of the gzip, so compare the binary against a
+          # freshly downloaded copy rather than trying to reproduce their gzip.
+          curl -fSL -o "$TMP_DIR/argo-linux-amd64.gz" "${BASE}/argo-linux-amd64.gz"
+          (cd "$TMP_DIR" && printf '%s  argo-linux-amd64.gz\n' "$EXPECTED" | sha256sum -c -)
+          gunzip -f "$TMP_DIR/argo-linux-amd64.gz"
+          cmp "$TMP_DIR/argo-linux-amd64" "$HOME/.local/bin/argo"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/argo" version --short
 

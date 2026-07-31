@@ -491,8 +491,9 @@ def render_argo_workflow(
                 "service-id": sanitize_k8s_name(intent.service_id),
                 "priority": str(intent.priority),
                 MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+                MISSION_FINGERPRINT_LABEL: mission_fingerprint(intent.mission_id),
             },
-            "annotations": wf_annotations,
+            "annotations": {**wf_annotations, RAW_MISSION_ID_ANNOTATION: intent.mission_id},
         },
         "spec": {
             "entrypoint": "main",
@@ -556,7 +557,7 @@ def _dra_fallback_steps(intent: WorkflowIntent) -> list[WorkflowStep]:
     ]
 
 
-def _first_available_rct(intent: WorkflowIntent, namespace: str) -> dict[str, Any] | None:
+def _first_available_rct(intent: WorkflowIntent, namespace: str | None) -> dict[str, Any] | None:
     """The scheduler-route ``firstAvailable`` ResourceClaimTemplate for the intent's
     driver-backed accelerator-with-fallback step, or ``None`` if no step qualifies.
 
@@ -567,6 +568,14 @@ def _first_available_rct(intent: WorkflowIntent, namespace: str) -> dict[str, An
     steps = _dra_fallback_steps(intent)
     if not steps:
         return None
+    if namespace is None:
+        # A ResourceClaimTemplate is namespaced and a Pod resolves one only in its
+        # own namespace, so a bundle whose two documents could land in different
+        # namespaces is not something to emit and hope for.
+        raise ValueError(
+            "a DRA fallback render needs an explicit namespace, so the Workflow "
+            "and the claim template it references cannot be separated"
+        )
     # Every qualifying step shares the same direction (DRA_FALLBACK_DIRECTIONS), so
     # one template serves them all: each Pod that references it gets its own claim.
     step = steps[0]
@@ -581,7 +590,12 @@ def _first_available_rct(intent: WorkflowIntent, namespace: str) -> dict[str, An
             # Which route may reference this template. A Kueue Job never does, so
             # an operator reading the applied object -- not just the file it came
             # from -- can tell that this claim is not what the Job was admitted on.
-            "labels": {DRA_ROUTE_LABEL: "scheduler", MANAGED_BY_LABEL: MANAGED_BY_VALUE},
+            "labels": {
+                DRA_ROUTE_LABEL: "scheduler",
+                MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+                MISSION_FINGERPRINT_LABEL: mission_fingerprint(intent.mission_id),
+            },
+            "annotations": {RAW_MISSION_ID_ANNOTATION: intent.mission_id},
         },
         "spec": {
             "spec": {
@@ -669,7 +683,9 @@ def render_resource_claim_templates(
                 "labels": {
                     DRA_ROUTE_LABEL: "kueue",
                     MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+                    MISSION_FINGERPRINT_LABEL: mission_fingerprint(intent.mission_id),
                 },
+                "annotations": {RAW_MISSION_ID_ANNOTATION: intent.mission_id},
             },
             "spec": {
                 "spec": {
@@ -796,11 +812,18 @@ def render_kueue_job(
     # names a LocalQueue. The object name may be a subdomain, the label value is
     # capped at 63, so the binding constraint is the intersection.
     _require_k8s_subdomain(queue_name, "queue_name", max_len=63)
-    requires_gpu = intent.resource_hints.get("requires_gpu", False)
-    requires_fpga = intent.resource_hints.get("requires_fpga", False)
 
     # Pick the primary compute step (GPU > FPGA > first step).
     primary = _primary_step(intent)
+
+    # Derived from the step this Job actually runs, not from the whole service.
+    # The aggregate hints cover every step, including the ones the projection
+    # leaves out, so a service whose GPU step is followed by an FPGA step read as
+    # one Pod asking for both and was rejected -- although the Job that would be
+    # rendered holds only the GPU step. Argo runs those two as separate Pods, so
+    # the service is fine; it is this projection that has to be described right.
+    requires_gpu = primary.resource_class == ResourceClass.GPU
+    requires_fpga = primary.resource_class == ResourceClass.FPGA
 
     # This Job is a STANDALONE workload that demonstrates Kueue admission for the
     # service's primary step. It is not an admission gate for the Argo Workflow:
@@ -870,13 +893,11 @@ def render_kueue_job(
         ]
 
     # ── FPGA handling (legacy only — no DRA driver available) ─────────
-    # ORCHIDE slide 14 uses separate node types (GPU vs FPGA). Mixed
-    # GPU+FPGA in a single pod would be unschedulable — reject early.
-    if requires_gpu and requires_fpga:
-        raise ValueError(
-            f"Workflow intent '{intent.workflow_name}' requests both GPU and FPGA "
-            "resources, but mixed GPU+FPGA execution in a single pod is not supported."
-        )
+    # ORCHIDE slide 14 uses separate node types (GPU vs FPGA), and one Pod asking
+    # for both would be unschedulable. That cannot arise here now: the Job holds
+    # one container from one step, so it has one resource class. A service that
+    # mixes them stays legal, and the Argo render is what expresses it, as
+    # separate Pods.
     if requires_fpga:
         container["resources"]["requests"]["xilinx.com/fpga"] = "1"
         container["resources"].setdefault("limits", {})["xilinx.com/fpga"] = "1"
@@ -888,14 +909,20 @@ def render_kueue_job(
     job_annotations: dict[str, str] = {
         "orbital/priority": str(intent.priority),
         "orbital/orchide-priority": str(scale_priority_orchide(intent.priority)),
+        RAW_MISSION_ID_ANNOTATION: intent.mission_id,
         "orbital/executed-step": primary.name,
         # Named explicitly so an operator reading the applied Job can see that it
         # does not run the whole service, without having to diff it against the plan.
         "orbital/steps-not-in-this-job": ",".join(dropped),
         "orbital/kueue-artifact-role": "standalone-primary-step",
+        # Named for what they describe: these are the projected Job's, and the
+        # service-wide hints sit beside them so the two are not confused.
+        "orbital/executed-step-resource-class": primary.resource_class.value,
         "orbital/requires-gpu": str(requires_gpu).lower(),
         "orbital/requires-fpga": str(requires_fpga).lower(),
-        "orbital/fallback-enabled": str(intent.resource_hints.get("fallback_enabled", False)).lower(),
+        "orbital/fallback-enabled": str(primary.fallback_resource_class is not None).lower(),
+        "orbital/service-requires-gpu": str(intent.resource_hints.get("requires_gpu", False)).lower(),
+        "orbital/service-requires-fpga": str(intent.resource_hints.get("requires_fpga", False)).lower(),
     }
 
     job: dict[str, Any] = {
@@ -906,7 +933,8 @@ def render_kueue_job(
             "namespace": namespace,
             "labels": {
                 "kueue.x-k8s.io/queue-name": queue_name,
-        MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+                MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+                MISSION_FINGERPRINT_LABEL: mission_fingerprint(intent.mission_id),
                 "mission-id": sanitize_k8s_name(intent.mission_id),
                 "service-id": sanitize_k8s_name(intent.service_id),
                 "priority": str(intent.priority),
@@ -1184,7 +1212,7 @@ def render_workflows_for_file(
     bundle: str = DEFAULT_POLICY_BUNDLE,
     decision: str = DEFAULT_POLICY_DECISION,
     dra_fallback: bool = False,
-    namespace: str = "orbital-demo",
+    namespace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Render the Kubernetes objects for a plan file.
 
@@ -1196,6 +1224,8 @@ def render_workflows_for_file(
     plan = _load_or_accept_plan(input_path)
     if enforce_policy:
         enforce_policy_or_raise(plan, engine=policy_engine, bundle=bundle, decision=decision)
+    if dra_fallback and namespace is None:
+        namespace = DRA_DEFAULT_NAMESPACE
     intents = compile_plan_to_intents(plan)
     objects: list[dict[str, Any]] = []
     for intent in intents:
@@ -1228,6 +1258,25 @@ def _load_or_accept_plan(source: str | Path | MissionPlan) -> MissionPlan:
 MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 MANAGED_BY_VALUE = "orbital-mission-compiler"
 
+# Which mission an artifact belongs to, for deciding what a render may replace or
+# remove. Not the `mission-id` label: that one is sanitized for display, and
+# sanitizing is lossy -- `foo_bar`, `foo.bar` and `FOO-BAR` all become `foo-bar`,
+# so keying ownership on it lets one mission delete or overwrite another's
+# output. The raw id is kept in an annotation alongside, where it needs no
+# sanitizing, so an operator can still read what it was.
+# A DRA bundle's two documents have to share a namespace, so that mode supplies
+# one when the caller did not. An ordinary render stays namespace-less, and the
+# namespace is chosen when the manifest is applied.
+DRA_DEFAULT_NAMESPACE = "orbital-demo"
+
+MISSION_FINGERPRINT_LABEL = "orbital/mission-fingerprint"
+RAW_MISSION_ID_ANNOTATION = "orbital/raw-mission-id"
+
+
+def mission_fingerprint(mission_id: str) -> str:
+    """A lossless identity for a mission, safe to use as a label value."""
+    return hashlib.sha256(mission_id.encode("utf-8")).hexdigest()[:16]
+
 
 def _is_rendered_artifact(path: Path) -> bool:
     """Whether every document in this file is output this tool wrote.
@@ -1258,13 +1307,13 @@ def _is_rendered_artifact(path: Path) -> bool:
 
 
 def _artifact_mission(path: Path) -> str | None:
-    """The mission every document in this file belongs to, if they agree."""
+    """The mission fingerprint every document in this file carries, if they agree."""
     try:
         docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8"))]
     except Exception:  # noqa: BLE001 - unreadable is not ours; see _is_rendered_artifact
         return None
     missions = {
-        (d.get("metadata") or {}).get("labels", {}).get("mission-id")
+        (d.get("metadata") or {}).get("labels", {}).get(MISSION_FINGERPRINT_LABEL)
         for d in docs
         if isinstance(d, dict)
     }
@@ -1304,6 +1353,55 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
     )
 
 
+def preflight_writable(planned: list[tuple[Path, Any]]) -> None:
+    """Refuse to overwrite an artifact this render does not own.
+
+    Two missions whose ids sanitize alike -- `foo_bar` and `foo.bar` both become
+    `foo-bar` -- produce the same filename for the same service and timestamp, so
+    rendering the second into the same directory replaced the first with no
+    warning and no way to notice. A file already at a planned path may only be
+    replaced when it is this tool's output for the same mission; anything else,
+    including a file the compiler did not write, is left alone and reported.
+    """
+    conflicts: list[str] = []
+    for path, rendered in planned:
+        if not path.exists():
+            continue
+        if not _is_rendered_artifact(path):
+            conflicts.append(f"{path} was not written by this compiler")
+            continue
+        theirs = _artifact_mission(path)
+        ours = _rendered_mission(rendered)
+        if theirs != ours:
+            conflicts.append(f"{path} belongs to a different mission")
+    if conflicts:
+        raise ValueError(
+            "refusing to overwrite output this render does not own: "
+            + "; ".join(conflicts)
+        )
+
+
+def _rendered_mission(rendered: str | list[Any]) -> str | None:
+    """The mission fingerprint carried by a rendered document set.
+
+    Accepts either the serialized text or the documents themselves, because the
+    two writers hold their pending output in different shapes.
+    """
+    if isinstance(rendered, str):
+        try:
+            docs: list[Any] = list(yaml.safe_load_all(rendered))
+        except yaml.YAMLError:
+            return None
+    else:
+        docs = list(rendered)
+    marks = {
+        (d.get("metadata") or {}).get("labels", {}).get(MISSION_FINGERPRINT_LABEL)
+        for d in docs
+        if isinstance(d, dict)
+    }
+    return marks.pop() if len(marks) == 1 else None
+
+
 def preflight_unique(paths: list[Path]) -> None:
     """Fail before writing when two renders would land on the same file.
 
@@ -1329,7 +1427,7 @@ def write_individual_workflows(
     bundle: str = DEFAULT_POLICY_BUNDLE,
     decision: str = DEFAULT_POLICY_DECISION,
     dra_fallback: bool = False,
-    namespace: str = "orbital-demo",
+    namespace: str | None = None,
     service_account: str | None = None,
 ) -> list[Path]:
     """Write one Argo manifest file per intent.
@@ -1352,6 +1450,8 @@ def write_individual_workflows(
     plan = _load_or_accept_plan(input_path)
     if enforce_policy:
         enforce_policy_or_raise(plan, engine=policy_engine, bundle=bundle, decision=decision)
+    if dra_fallback and namespace is None:
+        namespace = DRA_DEFAULT_NAMESPACE
     intents = compile_plan_to_intents(plan)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1373,6 +1473,7 @@ def write_individual_workflows(
         planned.append((out, [rct, workflow] if rct is not None else [workflow]))
 
     preflight_unique([path for path, _ in planned])
+    preflight_writable(planned)
     for out, docs in planned:
         if len(docs) > 1:
             out.write_text(yaml.safe_dump_all(docs, sort_keys=False), encoding="utf-8")

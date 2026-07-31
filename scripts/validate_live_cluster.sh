@@ -212,6 +212,16 @@ else
   echo "Skipping Argo submission (no rendered file or argo CLI unavailable)"
 fi
 
+# Interrupt, timeout or a failed step would otherwise leave the Job, its Workload
+# and the claim templates on the cluster, and the next run would collide with them.
+cleanup_all() {
+  [ -n "${JOB_NAME:-}" ] && kubectl delete "job/${JOB_NAME}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1
+  [ -n "${RCT_FILE:-}" ] && [ -s "${RCT_FILE}" ] && kubectl delete -f "${RCT_FILE}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1
+  [ -n "${WF_NAME:-}" ] && argo delete "${WF_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1
+  return 0
+}
+trap cleanup_all EXIT INT TERM
+
 # ── Step 5: Render and submit Kueue Job ────────────────────────────────
 
 echo ""

@@ -315,3 +315,105 @@ def test_render_workflows_for_file_returns_the_claim_before_the_workflow():
     # Off by default the return is workflows only, so the flag is what changes it.
     plain = render_workflows_for_file(GPU_FALLBACK, enforce_policy=False)
     assert {o["kind"] for o in plain} == {"Workflow"}
+
+
+# ── seventh round: identity, namespace, and the projected Job ────────
+
+
+def test_a_plain_render_leaves_the_namespace_to_the_caller(tmp_path):
+    """An ordinary Workflow stays namespace-less, so `argo submit -n` and
+    `kubectl apply -n` still decide where it lands. The DRA bundle is the
+    exception, because the Workflow and its claim template have to agree."""
+    from orbital_mission_compiler.cli import build_parser, cmd_render_argo
+
+    def render(*extra, out):
+        cmd_render_argo(build_parser().parse_args([
+            "render-argo", "--input", GPU_FALLBACK, "--output-dir", str(out), *extra,
+        ]))
+        # Every document, not the first: the DRA render is multi-doc, and taking
+        # only the head would silently drop the Workflow this asserts about.
+        return [
+            d
+            for p in sorted(out.glob("*.yaml"))
+            for d in yaml.safe_load_all(p.read_text())
+            if d
+        ]
+
+    plain = render(out=tmp_path / "plain")
+    assert all("namespace" not in d["metadata"] for d in plain), plain
+
+    explicit = render("--namespace", "mission-x", out=tmp_path / "explicit")
+    assert all(d["metadata"]["namespace"] == "mission-x" for d in explicit)
+
+    dra_out = tmp_path / "dra"
+    dra = render("--dra-fallback", out=dra_out)
+    kinds = {d["kind"] for d in dra}
+    assert {"Workflow", "ResourceClaimTemplate"} <= kinds, kinds
+    namespaces = {d["metadata"].get("namespace") for d in dra}
+    assert len(namespaces) == 1 and None not in namespaces, namespaces
+
+
+def test_two_missions_that_sanitize_alike_do_not_overwrite_each_other(tmp_path):
+    """`foo_bar` and `foo.bar` both sanitize to `foo-bar`, so with the same
+    service and timestamp they render to the same filename.
+
+    Keying ownership on the sanitized label made the second render replace the
+    first with no warning, and made `--prune` treat the first as this mission's
+    own leftovers.
+    """
+    from orbital_mission_compiler.compiler import stale_rendered_artifacts
+
+    def plan(mission_id, name):
+        p = tmp_path / name
+        p.write_text(
+            f"mission_id: {mission_id}\n"
+            "events:\n"
+            "  - timestamp: '2026-08-01T00:00:00Z'\n"
+            "    event_type: acquisition\n"
+            "    instrument: cam\n"
+            "    duration_seconds: 60\n"
+            "    services:\n"
+            "      - service_id: svc\n"
+            "        priority: 50\n"
+            "        steps:\n"
+            "          - {name: a, image: 'busybox:1.36'}\n",
+            encoding="utf-8",
+        )
+        return p
+
+    out = tmp_path / "shared"
+    first = write_individual_workflows(plan("foo_bar", "a.yaml"), out, enforce_policy=False)
+    assert len(first) == 1
+
+    with pytest.raises(ValueError, match="does not own"):
+        write_individual_workflows(plan("foo.bar", "b.yaml"), out, enforce_policy=False)
+    assert first[0].exists(), "the other mission's artifact was replaced"
+
+    # Re-rendering the same mission is still allowed, and prunes only its own.
+    again = write_individual_workflows(plan("foo_bar", "c.yaml"), out, enforce_policy=False)
+    assert stale_rendered_artifacts(out, again) == []
+
+
+def test_a_file_the_compiler_did_not_write_is_not_overwritten(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    intent_name = "m-svc-2026-08-01t00-00-00z.yaml"
+    (out / intent_name).write_text("apiVersion: v1\nkind: ConfigMap\n", encoding="utf-8")
+    plan = tmp_path / "p.yaml"
+    plan.write_text(
+        "mission_id: m\n"
+        "events:\n"
+        "  - timestamp: '2026-08-01T00:00:00Z'\n"
+        "    event_type: acquisition\n"
+        "    instrument: cam\n"
+        "    duration_seconds: 60\n"
+        "    services:\n"
+        "      - service_id: svc\n"
+        "        priority: 50\n"
+        "        steps:\n"
+        "          - {name: a, image: 'busybox:1.36'}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="not written by this compiler"):
+        write_individual_workflows(plan, out, enforce_policy=False)
+    assert (out / intent_name).read_text(encoding="utf-8") == "apiVersion: v1\nkind: ConfigMap\n"

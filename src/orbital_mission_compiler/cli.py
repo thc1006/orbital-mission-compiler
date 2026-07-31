@@ -21,6 +21,7 @@ from .compiler import (
     DRA_ROUTE_LABEL,
     kueue_step_projection,
     preflight_unique,
+    preflight_writable,
     stale_rendered_artifacts,
     render_workload_priority_classes,
     typed_violations_from_decision,
@@ -105,7 +106,15 @@ def build_parser() -> argparse.ArgumentParser:
         "scheduler-route artifact and is not Kueue quota-counted.",
     )
     render_p.add_argument("--prune", action="store_true", help=_PRUNE_HELP)
-    render_p.add_argument("--namespace", default="orbital-demo")
+    render_p.add_argument(
+        "--namespace",
+        default=None,
+        help="Stamp metadata.namespace on the rendered objects. Off by default, so "
+        "an ordinary Workflow stays namespace-less and the namespace is chosen at "
+        "'argo submit -n' or 'kubectl apply -n' time. --dra-fallback needs one, "
+        "because the Workflow and the claim template it references must agree, and "
+        "defaults to 'orbital-demo' there.",
+    )
     render_p.add_argument(
         "--service-account",
         default=None,
@@ -180,6 +189,9 @@ def cmd_compile(args: argparse.Namespace) -> None:
 
 
 def cmd_render_argo(args: argparse.Namespace) -> None:
+    # Passed straight through: the writer supplies a namespace for a DRA bundle,
+    # whose two documents have to share one, and leaves an ordinary render
+    # namespace-less so it is chosen when the manifest is applied.
     written = write_individual_workflows(
         args.input, args.output_dir, enforce_policy=not args.unsafe_skip_policy,
         policy_engine=args.policy_engine, bundle=args.bundle, decision=args.decision,
@@ -260,6 +272,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
             ))
 
     preflight_unique([path for path, _ in planned])
+    preflight_writable(planned)
     written = []
     for out, text in planned:
         out.write_text(text, encoding="utf-8")

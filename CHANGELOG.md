@@ -3,6 +3,23 @@
 ## Unreleased
 
 ### Changed
+- `--prune` and the overwrite check identify a mission by a fingerprint of its raw
+  id, not by the sanitized `mission-id` label. Sanitizing is lossy: `foo_bar` and
+  `foo.bar` both become `foo-bar`, so one mission could prune the other's
+  artifacts, and with the same service and timestamp the second render replaced
+  the first outright. A render now refuses to overwrite a file it does not own.
+- The Kueue Job derives its resources and its own annotations from the step it
+  runs. They came from the whole service, so a GPU step followed by an FPGA step
+  was rejected as one Pod asking for both, although the Job holds only the GPU
+  step. That service is legal and the Argo render expresses it as separate Pods.
+- `render-argo` leaves an ordinary Workflow namespace-less again, so the
+  namespace is chosen at `argo submit -n` or `kubectl apply -n` time.
+  `--dra-fallback` still stamps one, because a claim template is namespaced and
+  the Workflow that references it has to match.
+- Mission-plan models reject non-finite numbers, and blank mission, service and
+  instrument identifiers. `duration_seconds: .inf` is valid YAML, satisfies
+  `ge=0`, and made the timeline analysis report a conflict with an event months
+  away.
 - Mission-plan models reject unknown fields. Pydantic ignores them by default, so
   `execution_mod: parallel` left the service sequential and
   `fallback_resource_clas: cpu` left an accelerator step with no fallback, and the
