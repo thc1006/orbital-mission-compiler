@@ -28,6 +28,31 @@ OUT="${OUT:-${HERE}/out/kueue-priority}"
 # One identifier per run, so two runs on one cluster cannot collide and neither can
 # touch anything that was already there. Override RUN_ID to reproduce a name.
 RUN_ID="${RUN_ID:-r$(date +%s)$$}"
+
+# The identifier is substituted into object names, a label value, a label selector
+# and the YAML templates, so an override carrying a newline, a comma, an equals or a
+# slash would break the manifest, silently widen what cleanup deletes, or produce a
+# name the API server refuses. Held to what all four uses accept: an RFC 1123 label.
+# The 32-character cap leaves room for the longest name built from it,
+# "orbital-<id>-mission-critical", inside the 63 a label value allows.
+case "${RUN_ID}" in
+  # Unreachable while the assignment above uses :- , which substitutes the default
+  # for an empty override as well as an unset one. Kept because without it an empty
+  # value would fall through to the accepting branch rather than be caught.
+  "")            RUN_ID_BAD="it is empty" ;;
+  [!a-z0-9]*)    RUN_ID_BAD="it must start with a lowercase letter or digit" ;;
+  *[!a-z0-9])    RUN_ID_BAD="it must end with a lowercase letter or digit" ;;
+  *[!a-z0-9-]*)  RUN_ID_BAD="it may hold only lowercase letters, digits and '-'" ;;
+  *)             RUN_ID_BAD="" ;;
+esac
+if [ -z "${RUN_ID_BAD}" ] && [ "${#RUN_ID}" -gt 32 ]; then
+  RUN_ID_BAD="it is longer than 32 characters"
+fi
+if [ -n "${RUN_ID_BAD}" ]; then
+  printf 'RUN_ID is not usable: %s\n' "${RUN_ID_BAD}" >&2
+  printf 'RESULT: FAIL\n'
+  exit 2
+fi
 NS="prio-${RUN_ID}"
 FLAVOR="prio-flavor-${RUN_ID}"
 CQ="prio-cq-${RUN_ID}"
@@ -38,6 +63,10 @@ BLOCKER="prio-blocker-${RUN_ID}"
 CLASS_PREFIX="orbital-${RUN_ID}-"
 HIGH_CLASS="${CLASS_PREFIX}mission-critical"
 LOW_CLASS="${CLASS_PREFIX}mission-normal"
+# --emit-priority-classes writes one class per ORCHIDE tier, so the run creates four
+# whether or not the proof reads them all back. Checking only the two it reads left
+# the other two applied over whatever was already there.
+ALL_CLASSES="${CLASS_PREFIX}mission-critical ${CLASS_PREFIX}mission-high ${CLASS_PREFIX}mission-normal ${CLASS_PREFIX}mission-low"
 OWNER_LABEL="orbital.test/run-id=${RUN_ID}"
 
 rm -rf "$OUT"; mkdir -p "$OUT"
@@ -125,8 +154,9 @@ COLLIDE=""
 absent namespace "$NS" || COLLIDE="${COLLIDE} namespace/${NS}"
 absent clusterqueue "$CQ" || COLLIDE="${COLLIDE} clusterqueue/${CQ}"
 absent resourceflavor "$FLAVOR" || COLLIDE="${COLLIDE} resourceflavor/${FLAVOR}"
-absent workloadpriorityclass "$HIGH_CLASS" || COLLIDE="${COLLIDE} wpc/${HIGH_CLASS}"
-absent workloadpriorityclass "$LOW_CLASS" || COLLIDE="${COLLIDE} wpc/${LOW_CLASS}"
+for cls in ${ALL_CLASSES}; do
+  absent workloadpriorityclass "$cls" || COLLIDE="${COLLIDE} wpc/${cls}"
+done
 if [ -z "$COLLIDE" ]; then
   report PASS "no pre-existing object carries this run's names"
 else
