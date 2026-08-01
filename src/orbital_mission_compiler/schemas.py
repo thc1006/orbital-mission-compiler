@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 from typing import Any
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 
 # Label syntax, per the Kubernetes object-labels reference: a key is an optional
@@ -95,7 +95,9 @@ class WorkflowStep(StrictModel):
     phase: StepPhase | None = None
     resource_class: ResourceClass = ResourceClass.CPU
     fallback_resource_class: ResourceClass | None = None
-    needs_acceleration: bool = False
+    # Strict: pydantic reads "yes", "on" and 1 as true, so a quoted YAML string
+    # would decide whether a step is treated as accelerated.
+    needs_acceleration: StrictBool = False
     command: list[str] = Field(default_factory=list)
     args: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -113,6 +115,36 @@ class WorkflowStep(StrictModel):
             raise ValueError(f"{info.field_name} must not be blank")
         return value
 
+    @field_validator("metadata")
+    @classmethod
+    def _serialisable_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """Metadata reaches the policy engines as JSON, so it has to survive the trip.
+
+        YAML's safe loader still builds values JSON has no form for. Binary raises a
+        decode error, and an alias pointing back at its own container never
+        terminates. Both surface while the plan is being serialised for a decision,
+        so the caller gets a traceback instead of a verdict. Dates and sets round
+        trip, so they are left alone.
+        """
+        seen: set[int] = set()
+
+        def walk(node: Any, where: str) -> None:
+            if isinstance(node, bytes | bytearray):
+                raise ValueError(f"metadata{where} is binary, which has no JSON form")
+            if isinstance(node, dict | list):
+                # Discarded on the way out, so an anchor used twice side by side is
+                # fine and only a container reachable from itself is refused.
+                if id(node) in seen:
+                    raise ValueError(f"metadata{where} contains itself")
+                seen.add(id(node))
+                pairs = node.items() if isinstance(node, dict) else enumerate(node)
+                for key, item in pairs:
+                    walk(item, f"{where}[{key!r}]")
+                seen.discard(id(node))
+
+        walk(value, "")
+        return value
+
     @field_validator("preferred_node_selector")
     @classmethod
     def _valid_label_selector(cls, value: dict[str, str]) -> dict[str, str]:
@@ -123,9 +155,14 @@ class WorkflowStep(StrictModel):
         cleanly and is refused by the API server.
         """
         for key, val in value.items():
-            prefix, _, name = key.rpartition("/")
+            prefix, separator, name = key.rpartition("/")
             if not _LABEL_NAME_RE.fullmatch(name or "") or len(name) > 63:
                 raise ValueError(f"node selector key {key!r} has an invalid name segment")
+            # A key may leave the prefix out, but a slash promises one. Reading the
+            # separator back is what tells "foo" apart from "/foo": both leave an
+            # empty prefix behind, and only the second is refused by the API server.
+            if separator and not prefix:
+                raise ValueError(f"node selector key {key!r} has an empty prefix")
             # Each segment is a DNS label in its own right, so the 63-character
             # limit applies per segment as well as 253 to the whole prefix.
             parts = prefix.split(".") if prefix else []
@@ -184,7 +221,9 @@ class MissionEvent(StrictModel):
     duration_seconds: float | None = Field(default=None, ge=0)
     instrument: str | None = None
     sensor: str | None = None
-    ground_visibility: bool = False
+    # Strict for the same reason as needs_acceleration, and it matters more here:
+    # this flag is what a download step is checked against.
+    ground_visibility: StrictBool = False
     region_type: str | None = None
     services: list[AIService] = Field(default_factory=list)
 

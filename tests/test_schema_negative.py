@@ -201,3 +201,83 @@ def test_accept_valid_download():
         ground_visibility=True,
     )
     assert event.duration_seconds == 268.0
+
+# ── A slash in a node-selector key promises a prefix ────────────────────
+
+
+def test_node_selector_rejects_empty_prefix():
+    """"/foo" leaves an empty prefix behind, the same as "foo" does.
+
+    Only the second is a legal Kubernetes label key, so reading the separator
+    back is what tells them apart. Refusing it here is the point of the
+    compiler: the alternative is a plan that renders cleanly and is thrown out
+    by the API server.
+    """
+    with pytest.raises(ValidationError):
+        _step(preferred_node_selector={"/foo": "v"})
+
+
+def test_node_selector_still_accepts_a_bare_name_and_a_real_prefix():
+    assert _step(preferred_node_selector={"foo": "v"})
+    assert _step(preferred_node_selector={"example.com/foo": "v"})
+
+
+# ── The two flags that gate admission are real booleans ─────────────────
+
+
+@pytest.mark.parametrize("value", ["yes", "on", "true", 1, "1"])
+def test_needs_acceleration_rejects_non_booleans(value):
+    """Pydantic reads all of these as true when the field is a plain bool.
+
+    A quoted YAML string would then decide whether a step counts as
+    accelerated, which is a mission decision made by a typo.
+    """
+    with pytest.raises(ValidationError):
+        _step(needs_acceleration=value)
+
+
+@pytest.mark.parametrize("value", ["yes", "on", "true", 1])
+def test_ground_visibility_rejects_non_booleans(value):
+    with pytest.raises(ValidationError):
+        MissionEvent(
+            timestamp="2029-10-06T00:23:00Z",
+            event_type=MissionEventType.ACQUISITION,
+            orbit=1,
+            instrument="INST_1",
+            ground_visibility=value,
+        )
+
+
+# ── Metadata has to survive the trip to the policy engines ──────────────
+
+
+def test_metadata_rejects_binary_at_any_depth():
+    """Binary validates and then raises while the plan is serialised as JSON.
+
+    That happens after the schema stage and before a verdict, so the caller
+    gets a traceback where a structured admission result belongs.
+    """
+    for value in (
+        {"payload": b"\xff\xfe"},
+        {"outer": {"inner": b"\xff\xfe"}},
+        {"items": [b"\xff\xfe"]},
+    ):
+        with pytest.raises(ValidationError):
+            _step(metadata=value)
+
+
+def test_metadata_rejects_a_value_that_contains_itself():
+    """A YAML alias pointing back at its own container never terminates."""
+    loop: dict = {}
+    loop["self"] = loop
+    with pytest.raises(ValidationError):
+        _step(metadata=loop)
+
+
+def test_metadata_still_accepts_what_json_can_hold():
+    """Dates and sets round trip, so the check does not reach for them."""
+    import datetime
+
+    assert _step(metadata={"when": datetime.date(2026, 1, 1)})
+    assert _step(metadata={"tags": {"a", "b"}})
+    assert _step(metadata={"k": "v", "n": 1, "nested": {"l": [1, 2]}})
