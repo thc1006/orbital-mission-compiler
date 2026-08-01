@@ -275,9 +275,125 @@ def test_metadata_rejects_a_value_that_contains_itself():
 
 
 def test_metadata_still_accepts_what_json_can_hold():
-    """Dates and sets round trip, so the check does not reach for them."""
+    """Dates come out of YAML and serialise to a stable ISO string, so they stay."""
     import datetime
 
     assert _step(metadata={"when": datetime.date(2026, 1, 1)})
-    assert _step(metadata={"tags": {"a", "b"}})
-    assert _step(metadata={"k": "v", "n": 1, "nested": {"l": [1, 2]}})
+    assert _step(metadata={"when": datetime.datetime(2026, 1, 1, 12, 0)})
+    assert _step(metadata={"k": "v", "n": 1, "f": 1.5, "b": True, "z": None})
+    assert _step(metadata={"nested": {"l": [1, 2, {"deep": "ok"}]}})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"regions": {"taiwan", "japan"}},
+        {"regions": frozenset({"taiwan", "japan"})},
+        {"outer": {"inner": {"a", "b"}}},
+        {"items": [{"a", "b"}]},
+    ],
+)
+def test_metadata_rejects_sets_because_their_json_order_is_not_stable(value):
+    """A set serialises to an array whose order is not the same twice.
+
+    An earlier revision allowed sets on the grounds that they round trip. They do,
+    but to a different array each run: one plan produced nine distinct orderings
+    across ten interpreter hash seeds. The policy engines are handed metadata as
+    JSON, so the input a decision is made on, and any digest taken of it, would
+    change between runs of the same plan.
+    """
+    # The message names the reason, since "not a JSON value" would send whoever
+    # hits it looking for the wrong thing: a set is rejected for its ordering, not
+    # for being unrepresentable.
+    with pytest.raises(ValidationError, match="no stable JSON order"):
+        _step(metadata=value)
+
+
+@pytest.mark.parametrize("literal", ["v: .nan", "v: .inf", "v: -.inf"])
+def test_metadata_rejects_non_finite_numbers(literal):
+    """These reach JSON as null, so the plan says one thing and the policy sees another.
+
+    YAML's safe loader produces them from a plain scalar, so a mission plan can
+    carry one without any special syntax.
+    """
+    import yaml
+
+    with pytest.raises(ValidationError, match="which JSON cannot hold"):
+        _step(metadata=yaml.safe_load(literal))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"v": __import__("decimal").Decimal("1.5")},
+        {"v": complex(1, 2)},
+        {"v": ("a", "b")},
+    ],
+)
+def test_metadata_rejects_values_that_reach_json_as_something_else(value):
+    """Decimal and complex arrive as strings, so a number stops being a number.
+
+    A tuple is ordered and would survive, but saying list is the way to mean list.
+    """
+    with pytest.raises(ValidationError):
+        _step(metadata=value)
+
+def _nested(levels: int) -> dict:
+    """Metadata nested to the given depth."""
+    top = cur = {}
+    for _ in range(levels):
+        cur["n"] = {}
+        cur = cur["n"]
+    return top
+
+
+def test_metadata_depth_is_bounded_by_the_compiler_not_the_interpreter():
+    """Deep metadata is refused with a reason instead of exhausting the stack.
+
+    Recursion made the ceiling depend on how deep the caller already was: the same
+    plan raised RecursionError from one entry point and survived from another, and
+    a RecursionError is a traceback where an admission result belongs.
+    """
+    assert _step(metadata=_nested(31))
+    with pytest.raises(ValidationError, match="nested deeper than"):
+        _step(metadata=_nested(33))
+    # Far past anything recursion would have survived.
+    with pytest.raises(ValidationError, match="nested deeper than"):
+        _step(metadata=_nested(200_000))
+
+
+def test_metadata_depth_verdict_does_not_move_with_the_caller_s_stack():
+    """The same input has to give the same answer wherever it is validated from."""
+
+    def at_depth(remaining: int):
+        if remaining:
+            return at_depth(remaining - 1)
+        with pytest.raises(ValidationError, match="nested deeper than"):
+            _step(metadata=_nested(40))
+        return True
+
+    for depth in (0, 100, 300):
+        assert at_depth(depth)
+
+
+def test_metadata_node_count_is_bounded():
+    """A wide document is bounded too, not only a deep one."""
+    assert _step(metadata={"l": list(range(9_000))})
+    with pytest.raises(ValidationError, match="more than"):
+        _step(metadata={"l": list(range(20_000))})
+
+
+def test_bounding_the_walk_did_not_lose_the_cycle_and_alias_rules():
+    """The iterative walk has to keep telling a shared anchor from a real cycle."""
+    shared = {"x": 1}
+    assert _step(metadata={"a": shared, "b": shared})
+
+    loop: dict = {}
+    loop["self"] = loop
+    with pytest.raises(ValidationError, match="contains itself"):
+        _step(metadata=loop)
+
+    through_list: dict = {"l": []}
+    through_list["l"].append(through_list)
+    with pytest.raises(ValidationError, match="contains itself"):
+        _step(metadata=through_list)

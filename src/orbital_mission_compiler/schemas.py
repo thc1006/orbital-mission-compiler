@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+import math
 import re
 from enum import Enum
 from typing import Any
@@ -9,6 +11,27 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, fi
 # Label syntax, per the Kubernetes object-labels reference: a key is an optional
 # DNS-subdomain prefix and a name segment, and a value is alphanumeric with
 # dashes, underscores and dots inside.
+# What a metadata value may be. Dates come out of YAML's safe loader and serialise to
+# a stable ISO string, so they stay; everything absent here either has no JSON form or
+# reaches JSON as a different value than the plan wrote.
+_JSON_METADATA_TYPES = (
+    type(None),
+    bool,
+    int,
+    float,
+    str,
+    list,
+    dict,
+    datetime.date,
+    datetime.datetime,
+)
+
+# Metadata is per-step annotation data. Nesting past this, or carrying this many
+# values, is not something a mission plan does; the point of the bound is that the
+# work is finished or refused on the compiler's terms rather than Python's.
+_MAX_METADATA_DEPTH = 32
+_MAX_METADATA_NODES = 10_000
+
 _DNS_LABEL_RE = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?\Z")
 _LABEL_NAME_RE = re.compile(r"[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?\Z")
 _LABEL_VALUE_RE = re.compile(r"[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?\Z")
@@ -120,29 +143,66 @@ class WorkflowStep(StrictModel):
     def _serialisable_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
         """Metadata reaches the policy engines as JSON, so it has to survive the trip.
 
-        YAML's safe loader still builds values JSON has no form for. Binary raises a
-        decode error, and an alias pointing back at its own container never
-        terminates. Both surface while the plan is being serialised for a decision,
-        so the caller gets a traceback instead of a verdict. Dates and sets round
-        trip, so they are left alone.
-        """
-        seen: set[int] = set()
+        YAML's safe loader still builds values JSON has no form for, or values that
+        reach JSON as something else. Each is refused here with the reason, because
+        the alternative surfaces while the plan is being serialised for a decision
+        and the caller gets a traceback where a verdict belongs. Dates round trip to
+        a stable string and stay.
 
-        def walk(node: Any, where: str) -> None:
+        Walked with an explicit stack rather than by recursion: Python's own limit
+        depends on how deep the caller already is, so the same plan raised
+        RecursionError at one depth from one entry point and survived it from
+        another. A bound the compiler sets is one it can report.
+        """
+        on_path: set[int] = set()
+        stack: list[tuple[Any, str, int, bool]] = [(value, "", 0, False)]
+        nodes = 0
+
+        while stack:
+            node, where, depth, leaving = stack.pop()
+            if leaving:
+                # Popped once every descendant has been, so a container is only on
+                # the path while it is being walked: an anchor used twice side by
+                # side is fine and only one reachable from itself is refused.
+                on_path.discard(id(node))
+                continue
+
+            nodes += 1
+            if nodes > _MAX_METADATA_NODES:
+                raise ValueError(
+                    f"metadata holds more than {_MAX_METADATA_NODES} values"
+                )
+            if depth > _MAX_METADATA_DEPTH:
+                raise ValueError(
+                    f"metadata{where} is nested deeper than {_MAX_METADATA_DEPTH}"
+                )
+
             if isinstance(node, bytes | bytearray):
                 raise ValueError(f"metadata{where} is binary, which has no JSON form")
+            # An unordered collection serialises to an array whose order is not the
+            # same twice: the same plan gave nine different orderings across ten
+            # interpreter hash seeds. The policy engines are handed this as JSON, so
+            # the input the decision is made on, and any digest taken of it, would
+            # differ run to run.
+            if isinstance(node, set | frozenset):
+                raise ValueError(f"metadata{where} is a set, which has no stable JSON order")
+            # Serialisation turns these into null, so a plan saying one thing would be
+            # judged on another, with nothing recording the substitution.
+            if isinstance(node, float) and not math.isfinite(node):
+                raise ValueError(f"metadata{where} is {node}, which JSON cannot hold")
+            if not isinstance(node, _JSON_METADATA_TYPES):
+                raise ValueError(
+                    f"metadata{where} is {type(node).__name__}, which is not a JSON value"
+                )
             if isinstance(node, dict | list):
-                # Discarded on the way out, so an anchor used twice side by side is
-                # fine and only a container reachable from itself is refused.
-                if id(node) in seen:
+                if id(node) in on_path:
                     raise ValueError(f"metadata{where} contains itself")
-                seen.add(id(node))
+                on_path.add(id(node))
+                stack.append((node, where, depth, True))
                 pairs = node.items() if isinstance(node, dict) else enumerate(node)
                 for key, item in pairs:
-                    walk(item, f"{where}[{key!r}]")
-                seen.discard(id(node))
+                    stack.append((item, f"{where}[{key!r}]", depth + 1, False))
 
-        walk(value, "")
         return value
 
     @field_validator("preferred_node_selector")
