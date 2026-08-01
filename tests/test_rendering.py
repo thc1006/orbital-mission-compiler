@@ -79,3 +79,74 @@ def test_kueue_job_has_resource_annotations():
     job = render_kueue_job(intent)
     annotations = job["metadata"].get("annotations", {})
     assert annotations["orbital/requires-gpu"] == "true"
+
+# ── A step gets what it asked to run, and nothing it did not ───────────
+
+
+def _one_step_intent(command, args):
+    """An intent carrying a single step with the given command and args."""
+    from orbital_mission_compiler.schemas import (
+        AIService,
+        MissionEvent,
+        MissionEventType,
+        MissionPlan,
+        WorkflowStep,
+    )
+
+    step = WorkflowStep(name="my-step", image="img:latest", command=command, args=args)
+    plan = MissionPlan(
+        mission_id="entrypoint",
+        events=[
+            MissionEvent(
+                timestamp="2029-10-06T00:23:00Z",
+                event_type=MissionEventType.ACQUISITION,
+                orbit=1,
+                instrument="INST_1",
+                services=[AIService(service_id="svc", priority=1, steps=[step])],
+            )
+        ],
+    )
+    return compile_plan_to_intents(plan)[0]
+
+
+def _argo_container(command, args):
+    wf = render_argo_workflow(_one_step_intent(command, args))
+    return [t for t in wf["spec"]["templates"] if "container" in t][0]["container"]
+
+
+def _kueue_container(command, args):
+    job = render_kueue_job(_one_step_intent(command, args))
+    return job["spec"]["template"]["spec"]["containers"][0]
+
+
+def test_a_command_only_step_is_not_handed_an_argument():
+    """`or` treats an empty list as absent, so /app/run gained an echo.
+
+    The compiler was changing what runs, which is the one thing it must not do.
+    """
+    for container in (_argo_container(["/app/run"], []), _kueue_container(["/app/run"], [])):
+        assert container["command"] == ["/app/run"]
+        assert "args" not in container
+
+
+def test_an_args_only_step_keeps_the_image_entrypoint():
+    """Defaulting the command to sh -c makes the first arg the program it runs."""
+    for container in (
+        _argo_container([], ["--model", "/models/a"]),
+        _kueue_container([], ["--model", "/models/a"]),
+    ):
+        assert "command" not in container
+        assert container["args"] == ["--model", "/models/a"]
+
+
+def test_a_step_naming_both_is_rendered_as_written():
+    for container in (_argo_container(["/app/run"], ["--x"]), _kueue_container(["/app/run"], ["--x"])):
+        assert container["command"] == ["/app/run"]
+        assert container["args"] == ["--x"]
+
+
+def test_a_step_naming_neither_still_gets_the_demo_pair():
+    """The sample plans lean on this, so it stays for the empty case only."""
+    for container in (_argo_container([], []), _kueue_container([], [])):
+        assert container["command"] == ["sh", "-c"]
+        assert container["args"] == ['echo "run my-step"']

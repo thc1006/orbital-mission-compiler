@@ -443,6 +443,26 @@ def _preferred_affinity(step: WorkflowStep) -> dict[str, Any] | None:
     }
 
 
+def _container_entrypoint(step: WorkflowStep) -> dict[str, list[str]]:
+    """What the step asked to run, and nothing it did not.
+
+    A step naming only a command must not be handed an argument it never wrote,
+    and one naming only args must keep the image's own entrypoint. Treating an
+    empty list as absent collapses those two into a third thing that runs
+    something else: `/app/run` gains an echo, and `--model x` becomes the
+    program `sh -c` is asked to execute. Only a step naming neither falls back
+    to the demo pair the sample plans rely on.
+    """
+    if not step.command and not step.args:
+        return {"command": ["sh", "-c"], "args": [f'echo "run {step.name}"']}
+    spec: dict[str, list[str]] = {}
+    if step.command:
+        spec["command"] = list(step.command)
+    if step.args:
+        spec["args"] = list(step.args)
+    return spec
+
+
 def render_argo_workflow(
     intent: WorkflowIntent,
     *,
@@ -491,8 +511,7 @@ def render_argo_workflow(
             "name": template_name,
             "container": {
                 "image": step.image,
-                "command": step.command or ["sh", "-c"],
-                "args": step.args or [f'echo "run {step.name}"'],
+                **_container_entrypoint(step),
                 "env": [
                     {"name": "ORBITAL_RESOURCE_CLASS", "value": step.resource_class.value},
                     {
@@ -926,8 +945,7 @@ def render_kueue_job(
     container: dict[str, Any] = {
         "name": sanitize_k8s_name(primary.name),
         "image": primary.image,
-        "command": primary.command or ["sh", "-c"],
-        "args": primary.args or [f'echo "run {primary.name}"'],
+        **_container_entrypoint(primary),
         "resources": {
             "requests": {
                 "cpu": cpu_request.strip(),
