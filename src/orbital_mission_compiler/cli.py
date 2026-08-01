@@ -282,13 +282,28 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
     if args.argo_lint:
         _render_argo_with_lint_gate(args)
         return
-    written = _render_argo(args, args.output_dir)
-    result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
+    # The same lock the gate takes. Without it an ungated render can replace files
+    # in the directory a gated run has just snapshotted and linted and is about to
+    # publish into, and the gate's verdict would then describe a directory that no
+    # longer exists.
+    #
+    # Best-effort here, unlike in the gate. A platform with no flock cannot run the
+    # gate either, so there is no gated writer to interleave with, and refusing to
+    # render would be a new failure for a command that makes no promise of
+    # exclusivity of its own.
+    lock_stack = contextlib.ExitStack()
     try:
-        _report_stale(result, args.output_dir, written, args.prune)
-    except PruneIncomplete as exc:
-        print(json.dumps(_prune_failure_report(exc, written), indent=2))
-        raise SystemExit(2) from exc
+        lock_stack.enter_context(_publish_lock(Path(args.output_dir)))
+    except PublishLockUnavailable:
+        pass
+    with lock_stack:
+        written = _render_argo(args, args.output_dir)
+        result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
+        try:
+            _report_stale(result, args.output_dir, written, args.prune)
+        except PruneIncomplete as exc:
+            print(json.dumps(_prune_failure_report(exc, written), indent=2))
+            raise SystemExit(2) from exc
     print(json.dumps(result, indent=2))
 
 

@@ -952,3 +952,65 @@ def test_the_lock_file_being_unopenable_is_a_structured_error(tmp_path, monkeypa
     report = json.loads(capsys.readouterr().out)  # one document, not a traceback
     assert report["reason"] == "publish-lock-unavailable", report
     assert not (tmp_path / "out").exists(), "a gate that could not run must not create the output"
+
+# ── The lock is shared with the ungated writer ──────────────────────────
+
+
+def _render_argo_args(plan: str, out: Path, lint: bool = False):
+    parser = build_parser()
+    argv = ["render-argo", "--input", plan, "--output-dir", str(out), "--policy-engine", "baseline"]
+    if lint:
+        argv.append("--argo-lint")
+    return parser.parse_args(argv)
+
+
+def test_plain_render_argo_takes_the_publish_lock(tmp_path, monkeypatch, capsys):
+    """A gated run snapshots, lints, then publishes; an ungated one must not cut in.
+
+    Without a shared lock the plain writer can replace files in the destination
+    between the gate's snapshot and its publication, and the verdict then describes
+    a directory that no longer exists.
+    """
+    import contextlib
+
+    from orbital_mission_compiler import cli
+
+    taken: list[str] = []
+
+    @contextlib.contextmanager
+    def _record(out_dir):
+        taken.append(os.path.realpath(out_dir))
+        yield
+
+    monkeypatch.setattr(cli, "_publish_lock", _record)
+    out = tmp_path / "out"
+    cmd_render_argo(_render_argo_args(VALID_PLAN, out))
+    capsys.readouterr()
+
+    assert taken == [os.path.realpath(out)]
+
+
+def test_plain_render_argo_still_renders_where_the_lock_cannot_be_taken(tmp_path, monkeypatch, capsys):
+    """The gate exits 2 without the lock; the plain writer has no verdict to protect.
+
+    A platform with no flock cannot run the gate at all, so there is no gated writer
+    to interleave with, and refusing to render would be a new failure for a command
+    that never promised exclusivity.
+    """
+    import contextlib
+
+    from orbital_mission_compiler import cli
+
+    @contextlib.contextmanager
+    def _unavailable(out_dir):
+        raise cli.PublishLockUnavailable("no flock here")
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr(cli, "_publish_lock", _unavailable)
+    out = tmp_path / "out"
+    cmd_render_argo(_render_argo_args(VALID_PLAN, out))
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["status"] == "ok"
+    assert payload["files"]
+    assert list(out.glob("*.yaml"))
