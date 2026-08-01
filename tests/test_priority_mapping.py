@@ -255,11 +255,47 @@ def test_the_default_class_names_are_project_scoped():
 
 
 def test_the_mapping_version_moved_with_the_names():
-    """The constant's own comment says to bump it when the mapping changes.
-
-    A Job already in a cluster carries the version it was labelled with, so a stale
-    label is the only way to notice that the classes it references were renamed.
-    """
+    """The constant's own comment says to bump it when the mapping changes."""
     from orbital_mission_compiler.compiler import PRIORITY_CLASS_MAPPING_VERSION
 
     assert PRIORITY_CLASS_MAPPING_VERSION == "v2"
+
+
+def test_a_job_records_the_mapping_it_was_rendered_under():
+    """The version has to travel with the Job, not only with the class objects.
+
+    An earlier revision of this file said a Job carried the version it was labelled
+    with. It did not: only the WorkloadPriorityClass objects were labelled, and a
+    class name alone cannot say which mapping chose it, because the names survive a
+    rename of what they mean and the objects are cluster-scoped and outlive the Job.
+    Selecting on the label is the use, so it is a label.
+    """
+    from orbital_mission_compiler.compiler import PRIORITY_CLASS_MAPPING_VERSION
+
+    intent = compile_plan_to_intents(
+        load_mission_plan("configs/mission_plans/sample_gpu_cpu_fallback.yaml")
+    )[0]
+
+    labelled = render_kueue_job(intent, priority_class=True)["metadata"]["labels"]
+    assert labelled["orbital/priority-mapping-version"] == PRIORITY_CLASS_MAPPING_VERSION
+    assert labelled["kueue.x-k8s.io/priority-class"] == "orbital-mission-high"
+
+    # Without a class reference there is no mapping to record.
+    plain = render_kueue_job(intent, priority_class=False)["metadata"]["labels"]
+    assert "orbital/priority-mapping-version" not in plain
+
+
+def test_the_job_and_the_classes_agree_on_the_mapping_version():
+    """A Job labelled v2 has to be pointing at classes emitted by the same mapping."""
+    intent = compile_plan_to_intents(
+        load_mission_plan("configs/mission_plans/sample_gpu_cpu_fallback.yaml")
+    )[0]
+    job = render_kueue_job(intent, priority_class=True)["metadata"]["labels"]
+    classes = {
+        w["metadata"]["name"]: w["metadata"]["labels"]["orbital/priority-mapping-version"]
+        for w in render_workload_priority_classes()
+    }
+
+    referenced = job["kueue.x-k8s.io/priority-class"]
+    assert referenced in classes
+    assert classes[referenced] == job["orbital/priority-mapping-version"]

@@ -1110,6 +1110,15 @@ def render_kueue_job(
         job["metadata"]["labels"]["kueue.x-k8s.io/priority-class"] = _priority_class_name(
             scale_priority_orchide(intent.priority), priority_class_prefix
         )
+        # Which mapping the class name was chosen under. A class name alone cannot
+        # say that: the names are stable across a rename of what they mean, and the
+        # object they point at is cluster-scoped and outlives the Job. A label rather
+        # than an annotation because selecting on it is the use -- `kubectl get jobs
+        # -l orbital/priority-mapping-version=v1` is how a cluster finds the Jobs
+        # still referencing a class set that has been renamed under them.
+        job["metadata"]["labels"]["orbital/priority-mapping-version"] = (
+            PRIORITY_CLASS_MAPPING_VERSION
+        )
     return job
 
 
