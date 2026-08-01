@@ -3,26 +3,37 @@
 # binding constraint. No preemption is configured, so the proof is pure queue
 # sorting: when quota frees, Kueue admits the highest-priority PENDING workload,
 # independent of submission order.
+#
+# A template, not a manifest to apply directly: validate_kueue_priority.sh fills the
+# placeholders with names carrying that run's identifier, so two runs cannot collide and
+# neither can adopt an object that was already on the cluster. The run-id label is what
+# teardown selects on, so it only ever removes what the same run created.
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: mission-prio
+  name: __NS__
+  labels:
+    orbital.test/run-id: __RUN_ID__
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
 metadata:
-  name: mission-prio-flavor
+  name: __FLAVOR__
+  labels:
+    orbital.test/run-id: __RUN_ID__
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
 metadata:
-  name: mission-prio-cq
+  name: __CQ__
+  labels:
+    orbital.test/run-id: __RUN_ID__
 spec:
   namespaceSelector: {}
   resourceGroups:
     - coveredResources: ["cpu", "memory"]
       flavors:
-        - name: mission-prio-flavor
+        - name: __FLAVOR__
           resources:
             - name: cpu
               nominalQuota: "1"
@@ -32,7 +43,9 @@ spec:
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: LocalQueue
 metadata:
-  name: mission-prio-lq
-  namespace: mission-prio
+  name: __LQ__
+  namespace: __NS__
+  labels:
+    orbital.test/run-id: __RUN_ID__
 spec:
-  clusterQueue: mission-prio-cq
+  clusterQueue: __CQ__

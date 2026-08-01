@@ -3,13 +3,16 @@
 # the higher-priority pending workload first. It carries no priority-class (Kueue
 # default priority 0), which is irrelevant here -- it is admitted simply because it
 # arrives while the quota is free.
+#
+# A template, like 00-namespace-and-queue.yaml: the script fills in this run's names.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: prio-blocker
-  namespace: mission-prio
+  name: __BLOCKER__
+  namespace: __NS__
   labels:
-    kueue.x-k8s.io/queue-name: mission-prio-lq
+    kueue.x-k8s.io/queue-name: __LQ__
+    orbital.test/run-id: __RUN_ID__
 spec:
   parallelism: 1
   completions: 1
