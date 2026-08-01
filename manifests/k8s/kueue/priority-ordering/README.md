@@ -14,10 +14,14 @@ writes the four cluster-scoped classes:
 
 | Mission priority | ORCHIDE tier | WorkloadPriorityClass | value |
 |---|---|---|---|
-| 76-100 | 1 | `mission-critical` | 400 |
-| 51-75  | 2 | `mission-high`     | 300 |
-| 26-50  | 3 | `mission-normal`   | 200 |
-| 1-25   | 4 | `mission-low`      | 100 |
+| 76-100 | 1 | `orbital-mission-critical` | 400 |
+| 51-75  | 2 | `orbital-mission-high`     | 300 |
+| 26-50  | 3 | `orbital-mission-normal`   | 200 |
+| 1-25   | 4 | `orbital-mission-low`      | 100 |
+
+A `WorkloadPriorityClass` is cluster-scoped, so the project stays in the default name:
+`mission-critical` is one another installation or an operator can reasonably have
+created already. `--priority-class-prefix` sets a different one.
 
 ## What the original case study did and did not show
 
@@ -32,8 +36,8 @@ The ClusterQueue's CPU `nominalQuota` is **1**, so exactly one `cpu=1` Job is
 admissible at a time, and **no preemption** is configured.
 
 1. A blocker Job holds the single CPU slot.
-2. Submit the **LOW** Job (priority 50 -> `mission-normal`, value 200) **first**.
-3. Wait, then submit the **HIGH** Job (priority 90 -> `mission-critical`, value 400) **second**.
+2. Submit the **LOW** Job (priority 50 -> `...mission-normal`, value 200) **first**.
+3. Wait, then submit the **HIGH** Job (priority 90 -> `...mission-critical`, value 400) **second**.
 4. Both are PENDING (quota held). Delete the blocker.
 5. Kueue admits the highest-priority **pending** workload first.
 
@@ -47,13 +51,21 @@ so priority decided the order. Both Jobs are produced by the compiler
 bash scripts/validate_kueue_priority.sh
 ```
 
+Every object the run creates carries that run's identifier in its name and an
+`orbital.test/run-id` label, and teardown selects on the label rather than replaying a
+manifest, so a namespace, queue or class that was already on the cluster is neither
+adopted nor removed. The run refuses to start if any of its names is already taken.
+Set `RUN_ID` to reproduce a specific run's names.
+
 ## Result (live, this cluster)
 
-Verified on Kubernetes v1.36.3 + Kueue v0.19.0, reproduced twice:
+Verified on Kubernetes v1.36.3 + Kueue v0.19.0. `results/` holds the captured run,
+including the compiler commit it was taken from; re-run it after any change to the
+compiler or the harness rather than citing an older capture.
 
 ```
-LOW  workload priority = 200 (mission-normal)   submitted first
-HIGH workload priority = 400 (mission-critical) submitted last
+LOW  workload priority = 200 (...mission-normal)   submitted first
+HIGH workload priority = 400 (...mission-critical) submitted last
 both PENDING under full quota
 -> after freeing quota, HIGH admitted before LOW
 [PASS] priority drove ordering, not creation order

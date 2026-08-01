@@ -98,7 +98,12 @@ wl_for_job() { # $1 job name -> workload name (via job-uid label)
 }
 wl_admitted() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.status.conditions[?(@.type=="Admitted")].status}' 2>/dev/null; }
 wl_priority() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priority}' 2>/dev/null; }
-wl_class() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClassName}' 2>/dev/null; }
+# v1beta2 carries the class as a reference, not a bare name: the group is what
+# separates a WorkloadPriorityClass from a Pod PriorityClass, and only the first
+# feeds queue sorting.
+wl_class() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClassRef.name}' 2>/dev/null; }
+wl_class_group() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClassRef.group}' 2>/dev/null; }
+wl_class_kind() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClassRef.kind}' 2>/dev/null; }
 wl_created() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null; }
 wait_wl() { # $1 job name -> echo workload name once it exists (up to 30s)
   local w=""; local d=$((SECONDS+30))
@@ -202,6 +207,10 @@ HC=$(wl_class "$HIGH_WL"); LC=$(wl_class "$LOW_WL")
 [ "$HC" = "$HIGH_CLASS" ] && [ "$LC" = "$LOW_CLASS" ] \
   && report PASS "workloads reference the emitted classes" \
   || report FAIL "class references: HIGH=${HC:-<none>} LOW=${LC:-<none>}"
+HG=$(wl_class_group "$HIGH_WL"); HK=$(wl_class_kind "$HIGH_WL")
+[ "$HG" = "kueue.x-k8s.io" ] && [ "$HK" = "WorkloadPriorityClass" ] \
+  && report PASS "the reference is a WorkloadPriorityClass, not a Pod PriorityClass" \
+  || report FAIL "unexpected class reference: group=${HG:-<none>} kind=${HK:-<none>}"
 # Arrival order is the thing priority has to beat, so read it rather than assume the
 # sleep achieved it.
 HT=$(wl_created "$HIGH_WL"); LT=$(wl_created "$LOW_WL")
