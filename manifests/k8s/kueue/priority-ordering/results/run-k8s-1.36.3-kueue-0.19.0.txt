@@ -1,19 +1,22 @@
 # Live proof: mission priority, not arrival order, drives Kueue admission.
 #
-# Captured on the rebased stack, so the harness and the compiler under test are
-# the ones this PR proposes rather than an earlier pair.
-#   compiler commit : b886815 (dirty tree)
-#   Kubernetes      : v1.36.3
-#   Kueue image     : registry.k8s.io/kueue/kueue:v0.19.0
-#   node            : thc1006-d630mt v1.36.3
+# Captured from a clean working tree on the commit the run itself names below, so
+# this result can be rebuilt from a commit rather than from a state nobody kept.
+#   Kubernetes  : v1.36.3
+#   Kueue image : registry.k8s.io/kueue/kueue:v0.19.0
+#   image ID    : registry.k8s.io/kueue/kueue@sha256:6fe2cbe4c7799eed1a8d49898c38b8bd73f1572df1825d7cf266ec9e2af70bec
+#   node        : thc1006-d630mt v1.36.3
 #
-# Every object is named for the run and labelled orbital.test/run-id, and teardown
-# selects on that label: the cluster's own dra-paper-cq and dra-unified-cq
-# ClusterQueues were present throughout and untouched.
-
-=== run r17855926262478873 ===
-  namespace=prio-r17855926262478873 clusterQueue=prio-cq-r17855926262478873 classes=orbital-r17855926262478873-mission-critical,orbital-r17855926262478873-mission-normal
-  compiler commit: b886815 (dirty tree)
+# Every object the run creates is named for it and carries an orbital.test/run-id
+# label, and teardown selects on that label. These ClusterQueues belong to the
+# cluster, were present throughout, and were untouched:
+#   dra-paper-cq dra-unified-cq gmat-forge-cluster-queue orbital-demo-cq
+#
+=== run r17856201642634482 ===
+  namespace=prio-r17856201642634482 clusterQueue=prio-cq-r17856201642634482 classes=orbital-r17856201642634482-mission-critical,orbital-r17856201642634482-mission-normal
+  compiler commit: 7d755140d3b68ed5668eceaca89615486919822a
+  working tree   : clean
+  harness sha256 : 6985957b8dd71fdfc32e6e01abeda3b0cc4ca47353f782f63c750fbd824ed1bf
 === 0. prerequisites ===
 [PASS] kubectl available
 [PASS] Kueue controller present
@@ -23,26 +26,26 @@
 [PASS] queue applied
 === 2. emit + apply the WorkloadPriorityClasses from the compiler ===
 [PASS] WorkloadPriorityClasses applied
-[PASS] orbital-r17855926262478873-mission-critical + orbital-r17855926262478873-mission-normal exist
-[PASS] class values as mapped (orbital-r17855926262478873-mission-critical=400, orbital-r17855926262478873-mission-normal=200)
+[PASS] orbital-r17856201642634482-mission-critical + orbital-r17856201642634482-mission-normal exist
+[PASS] class values as mapped (orbital-r17856201642634482-mission-critical=400, orbital-r17856201642634482-mission-normal=200)
 === 3. render HIGH (priority 90) and LOW (priority 50) Jobs ===
 === 4. blocker holds the cpu=1 quota ===
 [PASS] blocker admitted (holds quota)
 === 5. submit LOW first, then HIGH (reverse of priority) ===
-  LOW  job=prio-low-low-2026-04-15t10-00-00z-z4wwb workload=job-prio-low-low-2026-04-15t10-00-00z-z4wwb-47cb9 priority=200 class=orbital-r17855926262478873-mission-normal
-  HIGH job=prio-high-high-2026-04-15t10-00-00z-rf46c workload=job-prio-high-high-2026-04-15t10-00-00z-rf46c-4b84d priority=400 class=orbital-r17855926262478873-mission-critical
+  LOW  job=prio-low-low-2026-04-15t10-00-00z-jcdhg workload=job-prio-low-low-2026-04-15t10-00-00z-jcdhg-3fc7d priority=200 class=orbital-r17856201642634482-mission-normal
+  HIGH job=prio-high-high-2026-04-15t10-00-00z-tvng8 workload=job-prio-high-high-2026-04-15t10-00-00z-tvng8-7602c priority=400 class=orbital-r17856201642634482-mission-critical
 === 5b. the chain the claim rests on ===
 [PASS] workload priorities resolved (HIGH=400 LOW=200)
 [PASS] workloads reference the emitted classes
 [PASS] the reference is a WorkloadPriorityClass, not a Pod PriorityClass
-[PASS] LOW was created before HIGH (2026-08-01T13:57:08Z < 2026-08-01T13:57:15Z)
+[PASS] LOW was created before HIGH (2026-08-01T21:36:06Z < 2026-08-01T21:36:12Z)
 === 6. both PENDING while blocker holds quota ===
 [PASS] LOW and HIGH both pending under full quota
 === 7. free quota (delete blocker); the higher-priority pending workload wins ===
   first admitted after quota freed: HIGH
-[PASS] HIGH (orbital-r17855926262478873-mission-critical, submitted LAST) admitted before LOW -> priority drove ordering
+[PASS] HIGH (orbital-r17856201642634482-mission-critical, submitted LAST) admitted before LOW -> priority drove ordering
 
 === Summary ===
 PASS: 14  FAIL: 0
 RESULT: PASS
-=== cleanup (run r17855926262478873) ===
+=== cleanup (run r17856201642634482) ===
