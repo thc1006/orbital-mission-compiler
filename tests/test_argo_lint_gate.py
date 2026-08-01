@@ -990,23 +990,23 @@ def test_plain_render_argo_takes_the_publish_lock(tmp_path, monkeypatch, capsys)
     assert taken == [os.path.realpath(out)]
 
 
-def test_plain_render_argo_still_renders_where_the_lock_cannot_be_taken(tmp_path, monkeypatch, capsys):
-    """The gate exits 2 without the lock; the plain writer has no verdict to protect.
+def test_plain_render_argo_renders_where_no_process_can_lock(tmp_path, monkeypatch, capsys):
+    """A platform with no flock has no gated writer to interleave with.
 
-    A platform with no flock cannot run the gate at all, so there is no gated writer
-    to interleave with, and refusing to render would be a new failure for a command
-    that never promised exclusivity.
+    Nothing can take the lock there, so nothing is holding the directory, and
+    refusing to render would be a new failure for a command that never promised
+    exclusivity of its own.
     """
     import contextlib
 
     from orbital_mission_compiler import cli
 
     @contextlib.contextmanager
-    def _unavailable(out_dir):
-        raise cli.PublishLockUnavailable("no flock here")
+    def _unsupported(out_dir):
+        raise cli.PublishLockUnsupported("no flock here")
         yield  # pragma: no cover - unreachable, keeps this a generator
 
-    monkeypatch.setattr(cli, "_publish_lock", _unavailable)
+    monkeypatch.setattr(cli, "_publish_lock", _unsupported)
     out = tmp_path / "out"
     cmd_render_argo(_render_argo_args(VALID_PLAN, out))
     payload = json.loads(capsys.readouterr().out)
@@ -1014,3 +1014,89 @@ def test_plain_render_argo_still_renders_where_the_lock_cannot_be_taken(tmp_path
     assert payload["status"] == "ok"
     assert payload["files"]
     assert list(out.glob("*.yaml"))
+
+
+def test_plain_render_argo_refuses_when_the_lock_exists_and_will_not_open(tmp_path, monkeypatch, capsys):
+    """A lock it cannot open is one somebody else is holding.
+
+    That is the case the lock was added for: a gated run created it, is holding it,
+    and is about to publish into this directory. Writing anyway would replace the
+    files between its snapshot and its publication, so the verdict it reports would
+    describe a directory that no longer exists. An earlier revision caught the same
+    exception for both causes and carried on, which failed open exactly here.
+    """
+    import contextlib
+
+    from orbital_mission_compiler import cli
+
+    @contextlib.contextmanager
+    def _held(out_dir):
+        raise cli.PublishLockUnavailable("another user holds the lock file")
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    monkeypatch.setattr(cli, "_publish_lock", _held)
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit) as excinfo:
+        cmd_render_argo(_render_argo_args(VALID_PLAN, out))
+    assert excinfo.value.code == 2
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["reason"] == "publish-lock-unavailable"
+    assert not out.exists() or not list(out.glob("*.yaml"))
+
+
+def test_the_unsupported_case_is_a_kind_of_unavailable(tmp_path):
+    """The gate needs exclusivity for either cause, so it still catches both."""
+    from orbital_mission_compiler import cli
+
+    assert issubclass(cli.PublishLockUnsupported, cli.PublishLockUnavailable)
+
+
+def test_a_platform_without_fcntl_reports_the_unsupported_kind(tmp_path, monkeypatch):
+    """Which exception the fcntl branch raises is what makes the two cases differ.
+
+    The tests either side of this one substitute the lock, so neither reaches the
+    raise itself: raising the parent here would make a platform that simply cannot
+    lock refuse to render, and nothing would have noticed.
+    """
+    import builtins
+
+    from orbital_mission_compiler import cli
+
+    real_import = builtins.__import__
+
+    def _no_fcntl(name, *rest):
+        if name == "fcntl":
+            raise ImportError("no fcntl on this platform")
+        return real_import(name, *rest)
+
+    monkeypatch.setattr(builtins, "__import__", _no_fcntl)
+    with pytest.raises(cli.PublishLockUnsupported):
+        with cli._publish_lock(tmp_path / "out"):
+            pass  # pragma: no cover - the lock never opens
+
+
+def test_an_unopenable_lock_reports_the_plain_unavailable_kind(tmp_path):
+    """A lock file this process cannot open is one another process is holding."""
+    import hashlib
+    import os
+    import tempfile
+
+    from orbital_mission_compiler import cli
+
+    out = tmp_path / "out"
+    digest = hashlib.sha256(os.path.realpath(out).encode("utf-8")).hexdigest()[:16]
+    lock = Path(tempfile.gettempdir()) / f"orbital-publish-{digest}.lock"
+    lock.write_text("")
+    os.chmod(lock, 0o000)
+    try:
+        if os.access(lock, os.R_OK):  # running as root; the mode means nothing
+            pytest.skip("cannot make a file unopenable as this user")
+        with pytest.raises(cli.PublishLockUnavailable) as excinfo:
+            with cli._publish_lock(out):
+                pass  # pragma: no cover - the lock never opens
+        assert not isinstance(excinfo.value, cli.PublishLockUnsupported)
+    finally:
+        os.chmod(lock, 0o600)
+        lock.unlink()

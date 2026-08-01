@@ -294,8 +294,27 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
     lock_stack = contextlib.ExitStack()
     try:
         lock_stack.enter_context(_publish_lock(Path(args.output_dir)))
-    except PublishLockUnavailable:
+    except PublishLockUnsupported:
+        # Nothing on this platform can lock, so nothing is holding the directory.
         pass
+    except PublishLockUnavailable as exc:
+        # The lock exists and this process cannot open it, which is the case it was
+        # added for: a gated run created it, is holding it, and is about to publish
+        # into this directory. Writing anyway would replace the files between its
+        # snapshot and its publication, so the verdict it reports would describe a
+        # directory that no longer exists. An earlier revision caught the parent
+        # exception here and carried on, which failed open exactly when it mattered.
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "reason": "publish-lock-unavailable",
+                    "detail": str(exc),
+                },
+                indent=2,
+            )
+        )
+        raise SystemExit(2) from exc
     with lock_stack:
         written = _render_argo(args, args.output_dir)
         result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
@@ -327,7 +346,16 @@ def _nearest_existing_ancestor(path: Path) -> Path:
 
 
 class PublishLockUnavailable(Exception):
-    """The publish lock cannot be taken on this platform."""
+    """This process cannot take the publish lock for the output directory."""
+
+
+class PublishLockUnsupported(PublishLockUnavailable):
+    """No process on this platform can take the lock, so none is holding it.
+
+    Kept apart from its parent because the two mean opposite things to a writer
+    that is not itself a gate. Nothing can lock here, so there is no gated run to
+    interleave with and an unlocked write is as safe as it ever was. A lock that
+    exists and cannot be opened is the other case entirely: something took it."""
 
 
 @contextlib.contextmanager
@@ -351,7 +379,7 @@ def _publish_lock(out_dir: Path) -> Iterator[None]:
         # Structured, not a traceback. The gate promises a single JSON document
         # on stdout and exit 2 when it cannot run; a platform without flock is
         # one more way it cannot run, not a different kind of event.
-        raise PublishLockUnavailable(
+        raise PublishLockUnsupported(
             "the publish lock needs fcntl, which this platform does not provide, "
             "so --argo-lint cannot serialise publishing here"
         ) from exc
