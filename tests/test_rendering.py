@@ -145,8 +145,29 @@ def test_a_step_naming_both_is_rendered_as_written():
         assert container["args"] == ["--x"]
 
 
-def test_a_step_naming_neither_still_gets_the_demo_pair():
-    """The sample plans lean on this, so it stays for the empty case only."""
+def test_a_step_naming_neither_leaves_the_image_defaults_alone():
+    """Kubernetes runs the image's ENTRYPOINT and CMD when the spec names neither.
+
+    Substituting a shell here would stop an image that carries its own entrypoint
+    from ever running its application: an inference server declaring
+    ENTRYPOINT ["/app/inference-server"] would be replaced by an echo. The compiler
+    cannot know what an arbitrary image is for, so it says nothing.
+    """
     for container in (_argo_container([], []), _kueue_container([], [])):
-        assert container["command"] == ["sh", "-c"]
-        assert container["args"] == ['echo "run my-step"']
+        assert "command" not in container
+        assert "args" not in container
+
+
+def test_the_demo_plans_still_render_the_command_they_always_did():
+    """The demo command moved into the plans, so what they render is unchanged.
+
+    Their images do not exist, so this is about the sample staying a working
+    example rather than about anything running.
+    """
+    for plan in ("demo_gpu_no_fallback", "demo_gpu_fallback_fixed"):
+        wf = render_argo_workflow(_intents(f"configs/mission_plans/{plan}.yaml")[0])
+        containers = [t["container"] for t in wf["spec"]["templates"] if "container" in t]
+        assert containers
+        for container in containers:
+            assert container["command"] == ["sh", "-c"]
+            assert container["args"][0].startswith('echo "run ')

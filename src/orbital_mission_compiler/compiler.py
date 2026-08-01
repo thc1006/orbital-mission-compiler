@@ -454,7 +454,12 @@ def _container_entrypoint(step: WorkflowStep) -> dict[str, list[str]]:
     to the demo pair the sample plans rely on.
     """
     if not step.command and not step.args:
-        return {"command": ["sh", "-c"], "args": [f'echo "run {step.name}"']}
+        # Neither given means the image's own ENTRYPOINT and CMD, which is what
+        # Kubernetes does with an empty container spec. Substituting a shell here
+        # would stop an image that carries its own entrypoint from ever running its
+        # application, and the compiler has no way to know what that image is for.
+        # A plan that wants a demo command says so; the sample plans do.
+        return {}
     spec: dict[str, list[str]] = {}
     if step.command:
         spec["command"] = list(step.command)

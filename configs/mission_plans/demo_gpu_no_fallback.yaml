@@ -18,13 +18,19 @@ events:
         landscape_type: ocean
         steps:
           - name: preprocess
+            command: ["sh", "-c"]
+            args: ['echo "run preprocess"']
             image: ghcr.io/example/preprocess:0.1.0
             resource_class: cpu
           - name: detect-ships
+            command: ["sh", "-c"]
+            args: ['echo "run detect-ships"']
             image: ghcr.io/example/ship-detector:0.1.0
             resource_class: gpu
             needs_acceleration: true
             # fallback_resource_class intentionally omitted -> Rule 4 fires
           - name: postprocess
+            command: ["sh", "-c"]
+            args: ['echo "run postprocess"']
             image: ghcr.io/example/postprocess:0.1.0
             resource_class: cpu
