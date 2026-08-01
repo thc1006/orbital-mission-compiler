@@ -142,7 +142,13 @@ wait_wl() { # $1 job name -> echo workload name once it exists (up to 30s)
 
 echo "=== run ${RUN_ID} ==="
 echo "  namespace=${NS} clusterQueue=${CQ} classes=${HIGH_CLASS},${LOW_CLASS}"
-echo "  compiler commit: $(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)$( [ -n "$(git -C "$HERE" status --porcelain 2>/dev/null)" ] && echo ' (dirty tree)' )"
+# The full object name, and whether the tree it came from was clean. A short hash
+# names a commit only until the repository grows, and a capture taken from a dirty
+# tree cannot be rebuilt from any commit at all -- which matters here, because the
+# captured run is what this experiment produces.
+echo "  compiler commit: $(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)"
+echo "  working tree   : $( [ -n "$(git -C "$HERE" status --porcelain 2>/dev/null)" ] && echo 'DIRTY -- this capture cannot be rebuilt from a commit' || echo 'clean' )"
+echo "  harness sha256 : $(sha256sum "$0" 2>/dev/null | cut -d' ' -f1 || echo unknown)"
 
 echo "=== 0. prerequisites ==="
 command -v kubectl >/dev/null 2>&1 && report PASS "kubectl available" || { report FAIL "kubectl missing"; exit 2; }
