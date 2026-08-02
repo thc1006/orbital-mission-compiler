@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from orbital_mission_compiler.cli import build_parser, cmd_render_argo
 from orbital_mission_compiler.compiler import (
@@ -1089,15 +1090,12 @@ def test_a_platform_without_fcntl_reports_the_unsupported_kind(tmp_path, monkeyp
 
 def test_an_unopenable_lock_reports_the_plain_unavailable_kind(tmp_path):
     """A lock file this process cannot open is one another process is holding."""
-    import hashlib
     import os
-    import tempfile
 
     from orbital_mission_compiler import cli
 
     out = tmp_path / "out"
-    digest = hashlib.sha256(os.path.realpath(out).encode("utf-8")).hexdigest()[:16]
-    lock = Path(tempfile.gettempdir()) / f"orbital-publish-{digest}.lock"
+    lock = cli.publish_lock_path(out)
     lock.write_text("")
     os.chmod(lock, 0o000)
     try:
@@ -1115,12 +1113,10 @@ def test_an_unopenable_lock_reports_the_plain_unavailable_kind(tmp_path):
 
 
 def _lock_path_for(out: Path) -> Path:
-    import hashlib
-    import os
-    import tempfile
+    """Asked of the code rather than recomputed, so it cannot drift from it."""
+    from orbital_mission_compiler import cli
 
-    digest = hashlib.sha256(os.path.realpath(out).encode("utf-8")).hexdigest()[:16]
-    return Path(tempfile.gettempdir()) / f"orbital-publish-{digest}.lock"
+    return cli.publish_lock_path(out)
 
 
 @pytest.mark.parametrize("umask", [0o022, 0o077])
@@ -1612,3 +1608,334 @@ def test_documents_are_read_the_way_kubectl_reads_them(tmp_path, name, body, exp
     (d / name).write_text(body, encoding="utf-8")
     problems = _unreadable_documents(d)
     assert bool(problems) is expect_reject, problems
+
+
+def _plan_that_renders_nothing(tmp_path: Path, source: str = VALID_PLAN) -> Path:
+    """The same mission, in a revision that legitimately produces no workload.
+
+    Reached by turning every event into a download with no services. Emptying an
+    acquisition event's services instead is refused by policy rule 3, and dropping
+    the events is refused by rule 2, so this is the one shape that is schema-valid,
+    policy-clean and renders nothing.
+    """
+    plan = yaml.safe_load(Path(source).read_text(encoding="utf-8"))
+    for event in plan["events"]:
+        event["event_type"] = "download"
+        event["services"] = []
+        event["ground_visibility"] = True
+        event.setdefault("duration_seconds", 30.0)
+        event.pop("instrument", None)
+    out = tmp_path / "renders-nothing.yaml"
+    out.write_text(yaml.safe_dump(plan, sort_keys=False), encoding="utf-8")
+    return out
+
+
+def test_prune_retires_the_last_artifact_when_the_plan_asks_for_none(tmp_path, capsys):
+    """An empty desired set is a state to reconcile, not an absence of scope.
+
+    The render before this one owned a Workflow. This revision of the same mission
+    owns nothing, so --prune has to retire it: what stays behind is deployable, and
+    `kubectl apply -f <dir>` would put back exactly the workload the plan dropped.
+    """
+    out = tmp_path / "out"
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--prune", "--policy-engine", "baseline",
+    ]))
+    capsys.readouterr()
+    previous = sorted(p.name for p in out.glob("*.yaml"))
+    assert previous, "the first render produced nothing to retire"
+
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", str(_plan_that_renders_nothing(tmp_path)),
+        "--output-dir", str(out), "--prune", "--policy-engine", "baseline",
+    ]))
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["files"] == [], report
+    assert sorted(Path(p).name for p in report.get("pruned", [])) == previous, report
+    assert sorted(p.name for p in out.glob("*.yaml")) == [], sorted(out.iterdir())
+
+
+def test_gated_prune_retires_the_last_artifact_when_the_plan_asks_for_none(tmp_path, capsys):
+    """Nothing to lint is not a reason to leave the previous generation deployed.
+
+    The gate exits before it reaches the lock, so today the artifact the plan no
+    longer asks for survives a run that was asked to prune it.
+    """
+    out = tmp_path / "out"
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--prune", "--policy-engine", "baseline",
+    ]))
+    capsys.readouterr()
+    previous = sorted(p.name for p in out.glob("*.yaml"))
+    assert previous
+
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", str(_plan_that_renders_nothing(tmp_path)),
+        "--output-dir", str(out), "--argo-lint", "--prune",
+        "--policy-engine", "baseline",
+    ]))
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["status"] == "ok", report
+    assert report["lint"] == "not-applicable", report
+    assert sorted(Path(p).name for p in report.get("pruned", [])) == previous, report
+    assert sorted(p.name for p in out.glob("*.yaml")) == []
+
+
+def test_prune_retires_the_priority_class_bundle_once_emission_stops(tmp_path, capsys):
+    """The bundle is cluster-scoped, which is not the same as unowned.
+
+    It carries no mission fingerprint, so mission-scoped stale detection cannot see
+    it, and turning --emit-priority-classes off leaves the classes on disk for the
+    next `kubectl apply` to reinstate.
+    """
+    from orbital_mission_compiler.cli import cmd_render_kueue
+
+    out = tmp_path / "out"
+    base = [
+        "render-kueue", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--priority-class", "--prune", "--policy-engine", "baseline",
+    ]
+    cmd_render_kueue(build_parser().parse_args(base + ["--emit-priority-classes"]))
+    capsys.readouterr()
+    bundle = out / "workload-priority-classes.yaml"
+    assert bundle.exists(), sorted(out.iterdir())
+
+    cmd_render_kueue(build_parser().parse_args(base))
+    report = json.loads(capsys.readouterr().out)
+
+    assert bundle.name in [Path(p).name for p in report.get("pruned", [])], report
+    assert not bundle.exists(), sorted(out.iterdir())
+
+
+OTHER_PLAN = "configs/mission_plans/sample_gpu_cpu_fallback.yaml"
+
+
+def test_an_empty_render_prunes_only_its_own_mission(tmp_path, capsys):
+    """The declared scope is what keeps an empty desired set from sweeping.
+
+    Deriving the scope from the input rather than from what was written is what
+    makes a render-nothing revision able to reconcile at all. The same change is
+    what could let it reconcile far too much: with no scope, or the wrong one, a
+    directory shared with another mission is a directory it would empty.
+    """
+    out = tmp_path / "shared"
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", OTHER_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline",
+    ]))
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline",
+    ]))
+    capsys.readouterr()
+    before = sorted(p.name for p in out.glob("*.yaml"))
+    others = [n for n in before if "mission-alpha" not in n]
+    assert others, before
+
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", str(_plan_that_renders_nothing(tmp_path)),
+        "--output-dir", str(out), "--prune", "--policy-engine", "baseline",
+    ]))
+    report = json.loads(capsys.readouterr().out)
+
+    pruned = [Path(p).name for p in report.get("pruned", [])]
+    # Both halves. An empty prune satisfies "nothing of another mission's went"
+    # without reconciling anything, which is the bug this whole change is about.
+    assert pruned, report
+    assert all("mission-alpha" in n for n in pruned), pruned
+    remaining = sorted(p.name for p in out.glob("*.yaml"))
+    for name in others:
+        assert name in remaining, f"{name} belongs to another mission and was pruned"
+
+
+def test_an_empty_render_leaves_the_other_renderers_output_alone(tmp_path, capsys):
+    """An empty desired set is still only this renderer's desired set."""
+    from orbital_mission_compiler.cli import cmd_render_kueue
+
+    out = tmp_path / "shared"
+    cmd_render_kueue(build_parser().parse_args([
+        "render-kueue", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline",
+    ]))
+    capsys.readouterr()
+    kueue_files = sorted(p.name for p in out.glob("*.yaml"))
+    assert kueue_files
+
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", str(_plan_that_renders_nothing(tmp_path)),
+        "--output-dir", str(out), "--prune", "--policy-engine", "baseline",
+    ]))
+    report = json.loads(capsys.readouterr().out)
+
+    assert not report.get("pruned"), report
+    assert sorted(p.name for p in out.glob("*.yaml")) == kueue_files
+
+
+def test_claiming_the_bundle_does_not_let_kueue_prune_a_workflow(tmp_path, capsys):
+    """Claiming artifacts without a mission must not widen the renderer scope.
+
+    render-kueue now takes cluster-scoped artifacts into its stale scope so the
+    priority-class bundle can be retired. Attribution by exclusive kind is what
+    still has to keep it away from an Argo Workflow standing in the same
+    directory, whether or not that Workflow carries a mission.
+    """
+    from orbital_mission_compiler.cli import cmd_render_kueue
+
+    out = tmp_path / "shared"
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", OTHER_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline",
+    ]))
+    capsys.readouterr()
+    workflows = sorted(p.name for p in out.glob("*.yaml"))
+    assert workflows
+
+    cmd_render_kueue(build_parser().parse_args([
+        "render-kueue", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--priority-class", "--prune", "--policy-engine", "baseline",
+    ]))
+    report = json.loads(capsys.readouterr().out)
+
+    assert not report.get("pruned"), report
+    for name in workflows:
+        assert (out / name).exists(), f"{name} is the other renderer's and was pruned"
+
+
+def test_the_lock_wait_outlasts_the_lint_it_is_held_across():
+    """Two constants in two modules that have to stay in step.
+
+    The gate takes the publish lock before it reads the destination and holds it
+    through `argo lint`. A default wait shorter than the linter's own budget makes
+    a second healthy writer give up while the first is still inside its allowance,
+    so contention reads as a failure on the defaults alone.
+    """
+    from orbital_mission_compiler.cli import _DEFAULT_LOCK_TIMEOUT
+    from orbital_mission_compiler.compiler import ARGO_LINT_TIMEOUT_SECONDS
+
+    assert _DEFAULT_LOCK_TIMEOUT >= ARGO_LINT_TIMEOUT_SECONDS, (
+        f"a writer waits {_DEFAULT_LOCK_TIMEOUT}s for a lock held across a lint "
+        f"allowed {ARGO_LINT_TIMEOUT_SECONDS}s"
+    )
+
+
+def test_a_symlinked_manifest_in_the_destination_is_refused(tmp_path, capsys):
+    """The gate cannot promise bytes it does not control.
+
+    A symlink is carried into the lint by its target's bytes, while the output
+    keeps the link. Whoever owns the target can replace it after the verdict, so
+    what gets applied is not what passed. The gate fails closed everywhere else;
+    it has to here too.
+    """
+    out = tmp_path / "out"
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline",
+    ]))
+    capsys.readouterr()
+    target = tmp_path / "elsewhere.yaml"
+    target.write_text((next(out.glob("*.yaml"))).read_text(encoding="utf-8"), encoding="utf-8")
+    link = out / "linked.yaml"
+    link.symlink_to(target)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cmd_render_argo(build_parser().parse_args([
+            "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+            "--argo-lint", "--argo-bin", str(_fake_argo(tmp_path, 0)),
+            "--policy-engine", "baseline",
+        ]))
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_info.value.code == 2, report
+    assert report["status"] == "error", report
+    assert report.get("reason") == "symlinked-manifest", report
+    assert link.is_symlink(), "the destination was modified by a refused render"
+
+
+def test_a_cleanup_failure_after_a_passing_lint_stays_structured(tmp_path, capsys, monkeypatch):
+    """Three outcomes a caller has to be able to tell apart.
+
+    The linter rejected. The linter could not reach a verdict. The linter passed
+    and something after it failed with the output untouched. Cleanup of the
+    carried copies runs after the verdict and outside the structured path, so an
+    unlink that fails there reports the third as a traceback.
+    """
+    out = tmp_path / "out"
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline",
+    ]))
+    capsys.readouterr()
+    # Carried, not staged: the gate only copies an existing manifest whose name
+    # this render does not itself produce, so a same-named file exercises nothing.
+    produced = next(out.glob("*.yaml"))
+    (out / "kept-under-another-name.yaml").write_text(
+        produced.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    before = {p.name: p.read_text(encoding="utf-8") for p in out.glob("*.yaml")}
+
+    real_unlink = Path.unlink
+
+    def refuse(self, *a, **k):
+        if ".argo-lint-staging-" in str(self):
+            raise OSError(13, "Permission denied")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cmd_render_argo(build_parser().parse_args([
+            "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+            "--argo-lint", "--argo-bin", str(_fake_argo(tmp_path, 0)),
+            "--policy-engine", "baseline",
+        ]))
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_info.value.code == 2, report
+    assert report["status"] == "error", report
+    assert report["lint"] == "passed", report
+    assert report.get("reason") == "staging-cleanup-failed", report
+    assert {p.name: p.read_text(encoding="utf-8") for p in out.glob("*.yaml")} == before
+
+
+def test_a_cleanup_failure_does_not_erase_a_lint_rejection(tmp_path, capsys, monkeypatch):
+    """A rejection is a verdict, and a failed cleanup does not unmake it.
+
+    Exit 1 says the linter rejected something and exit 2 says it never answered.
+    Reporting the rejection in the body while exiting 2 tells the caller both, and
+    the one that matters is the one CI reads.
+    """
+    out = tmp_path / "out"
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline",
+    ]))
+    capsys.readouterr()
+    produced = next(out.glob("*.yaml"))
+    (out / "kept-under-another-name.yaml").write_text(
+        produced.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    real_unlink = Path.unlink
+
+    def refuse(self, *a, **k):
+        if ".argo-lint-staging-" in str(self):
+            raise OSError(13, "Permission denied")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+
+    with pytest.raises(SystemExit) as exit_info:
+        cmd_render_argo(build_parser().parse_args([
+            "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+            "--argo-lint", "--argo-bin", str(_fake_argo(tmp_path, 1)),
+            "--policy-engine", "baseline",
+        ]))
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_info.value.code == 1, report
+    assert report["lint"] == "failed", report
+    assert report.get("reason") == "staging-cleanup-failed", report

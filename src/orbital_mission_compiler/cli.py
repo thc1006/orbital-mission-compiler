@@ -11,13 +11,14 @@ import stat
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from pathlib import Path
 
 import yaml
 
 from .compiler import (
     ArgoLintUnavailable,
+    ARGO_LINT_TIMEOUT_SECONDS,
     DEFAULT_POLICY_BUNDLE,
     DEFAULT_POLICY_DECISION,
     PolicyEngineUnavailableError,
@@ -25,6 +26,7 @@ from .compiler import (
     compile_file,
     enforce_policy_or_raise,
     load_mission_plan,
+    mission_fingerprint,
     compile_plan_to_intents,
     render_kueue_job,
     render_resource_claim_templates,
@@ -36,6 +38,7 @@ from .compiler import (
     resolve_argo_bin,
     argo_lint_path,
     stale_rendered_artifacts,
+    _artifact_mission,
     attribute_stale,
     render_workload_priority_classes,
     typed_violations_from_decision,
@@ -62,7 +65,15 @@ _POLICY_ENGINE_HELP = (
 # Long enough that a normal concurrent render finishes first, short enough that a
 # hung one is reported rather than waited on. Overridable because "normal" depends
 # on how much a caller renders at once.
-_DEFAULT_LOCK_TIMEOUT = 30.0
+# Long enough to outlast the thing the lock is held across. The gate takes the
+# lock before it reads the destination and keeps it through `argo lint`, so a
+# wait shorter than the linter's own budget makes a second healthy writer give up
+# while the first is still inside its allowance -- contention reported as a
+# failure, on the defaults, most of the time. Derived rather than written down
+# twice, so raising the lint timeout cannot leave this behind; the margin covers
+# the publish that follows the verdict.
+_LOCK_PUBLISH_MARGIN_SECONDS = 30.0
+_DEFAULT_LOCK_TIMEOUT = float(ARGO_LINT_TIMEOUT_SECONDS) + _LOCK_PUBLISH_MARGIN_SECONDS
 # flock failures that mean "no lock is obtainable here", as opposed to "someone
 # holds it" or "something went wrong". Everything outside both lists is an error,
 # because proceeding unlocked on an unclassified failure is the one outcome that
@@ -115,11 +126,25 @@ ARGO_EXCLUSIVE_KINDS = {"Workflow"}
 KUEUE_EXCLUSIVE_KINDS = {"Job", "WorkloadPriorityClass"}
 
 
+def _render_scope(source: str | Path) -> frozenset[str]:
+    """The missions this render reconciles, taken from the plan.
+
+    Read from the input rather than from what was written, so a revision that
+    legitimately renders nothing still has a scope to reconcile against. The
+    fingerprint is what the artifacts carry, so that is what the scope holds.
+    """
+    return frozenset({mission_fingerprint(load_mission_plan(source).mission_id)})
+
+
 def _report_stale(
     result: dict[str, object], output_dir: str, written: list[Path], prune: bool,
-    exclusive_kinds: set[str],
+    exclusive_kinds: set[str], *, mission_ids: Collection[str] | None = None,
+    include_unmissioned: bool = False,
 ) -> None:
-    stale = stale_rendered_artifacts(output_dir, written)
+    stale = stale_rendered_artifacts(
+        output_dir, written,
+        mission_ids=mission_ids, include_unmissioned=include_unmissioned,
+    )
     if not stale:
         return
     mine, unattributable = attribute_stale(stale, exclusive_kinds)
@@ -137,6 +162,22 @@ def _report_stale(
     if not mine:
         return
     if prune:
+        # A cluster-scoped artifact belongs to no mission, so the mission filter
+        # that keeps one mission's --prune away from another's files does not
+        # cover it. Two missions rendering into one directory therefore share the
+        # priority-class bundle, and the second render removing it is correct for
+        # its own desired set while leaving the first mission's Jobs pointing at
+        # classes that are no longer there. Correct and silent is the wrong half
+        # of that, so it is said out loud.
+        shared = [p for p in mine if _artifact_mission(p) is None]
+        if shared:
+            print(
+                f"warning: removing {len(shared)} cluster-scoped artifact(s) that carry no "
+                f"mission: {', '.join(p.name for p in shared)}. Any other mission rendering "
+                f"into {output_dir} was relying on them; re-run that render with "
+                f"--emit-priority-classes to put them back.",
+                file=sys.stderr,
+            )
         removed: list[str] = []
         for index, path in enumerate(mine):
             try:
@@ -406,7 +447,10 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
         written = _render_argo(args, args.output_dir)
         result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
         try:
-            _report_stale(result, args.output_dir, written, args.prune, ARGO_EXCLUSIVE_KINDS)
+            _report_stale(
+                result, args.output_dir, written, args.prune, ARGO_EXCLUSIVE_KINDS,
+                mission_ids=_render_scope(args.input),
+            )
         except PruneIncomplete as exc:
             print(json.dumps(_prune_failure_report(exc, written), indent=2))
             raise SystemExit(2) from exc
@@ -597,8 +641,45 @@ def _unreadable_documents(directory: Path) -> list[str]:
     return problems
 
 
+def _default_lock_dir() -> str:
+    """Where the publish lock lives when the caller does not say.
+
+    A fixed path rather than tempfile.gettempdir(), which honours TMPDIR and so
+    hands two renders of one output directory two different lock files. Falls
+    back to the temp directory only where the fixed one is unusable, which is
+    also where there is no shared location to be had.
+    """
+    fixed = Path("/tmp")  # noqa: S108 - shared by design; see the caller's O_NOFOLLOW
+    if fixed.is_dir() and os.access(fixed, os.W_OK):
+        return str(fixed)
+    return tempfile.gettempdir()
+
+
+class _SymlinkedManifest(Exception):
+    """A manifest in the destination that is a link to bytes the gate cannot hold."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(path)
+        self.path = path
+
+
+def publish_lock_path(out_dir: Path | str, lock_dir: str | None = None) -> Path:
+    """Where two renders of this output directory agree the lock is.
+
+    Derived in one place so a caller asking the question and the code taking the
+    lock cannot answer it differently. Tests recomputing it from a copy of this
+    is how a change of location left four of them passing only because the
+    environment happened to agree.
+    """
+    digest = hashlib.sha256(os.path.realpath(out_dir).encode("utf-8")).hexdigest()[:16]
+    return Path(lock_dir or _default_lock_dir()) / f"orbital-publish-{digest}.lock"
+
+
 @contextlib.contextmanager
-def _publish_lock(out_dir: Path, lock_timeout: float = _DEFAULT_LOCK_TIMEOUT) -> Iterator[None]:
+def _publish_lock(
+    out_dir: Path, lock_timeout: float = _DEFAULT_LOCK_TIMEOUT,
+    lock_dir: str | None = None,
+) -> Iterator[None]:
     """Serialise publishing into one output directory.
 
     Two renders publishing at once interleave their files and the directory ends
@@ -606,12 +687,23 @@ def _publish_lock(out_dir: Path, lock_timeout: float = _DEFAULT_LOCK_TIMEOUT) ->
     the output rather than inside it, so taking it does not create the directory
     a failed run has to leave absent.
     """
-    # Keyed by the output path but kept in the system temp directory, for two
-    # reasons. It has to be somewhere that exists whether or not the output
-    # directory does -- anchoring it to the nearest existing ancestor would give
-    # two processes different lock files when one of them runs before the
-    # directory is created and the other after, which is exactly when they would
-    # collide. And a lock file is not something to leave in an operator's output.
+    # Keyed by the output path but kept outside it, for two reasons. It has to be
+    # somewhere that exists whether or not the output directory does -- anchoring
+    # it to the nearest existing ancestor would give two processes different lock
+    # files when one of them runs before the directory is created and the other
+    # after, which is exactly when they would collide. And a lock file is not
+    # something to leave in an operator's output.
+    #
+    # Not tempfile.gettempdir(), which reads TMPDIR: two renders of the same
+    # output directory under different TMPDIR values took two lock files with the
+    # same name in different directories and both entered publication at once,
+    # measured. The key was already shared; only the namespace was not. A fixed
+    # location restores the guarantee on one host.
+    #
+    # It does not restore it between containers that share only the output volume,
+    # because they share no other filesystem and no default can invent one. That
+    # is what --lock-dir is for, pointed at the shared volume; nothing here can
+    # detect the mismatch, so it is stated rather than guessed at.
     try:
         import fcntl  # Unix-only, and only this feature needs it
     except ImportError as exc:
@@ -627,8 +719,7 @@ def _publish_lock(out_dir: Path, lock_timeout: float = _DEFAULT_LOCK_TIMEOUT) ->
     # resolve symlinks, so /data/out and /data/tmp/../out would take different
     # locks on the same directory -- the case the lock exists for.
     canonical = os.path.realpath(out_dir)
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
-    lock_path = Path(tempfile.gettempdir()) / f"orbital-publish-{digest}.lock"
+    lock_path = publish_lock_path(out_dir, lock_dir)
     # Openable by whoever can write the output, because that is who has to take it.
     # An earlier revision created it 0600 and never removed it, so once one user had
     # rendered, every other user was refused for good -- flock is released when the
@@ -879,11 +970,42 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             raise SystemExit(2) from exc
 
         if not written:
-            print(json.dumps({
-                "status": "error", "lint": "not-run", "reason": "no-manifests",
-                "message": "the plan rendered no Argo Workflow, so nothing was linted",
-            }, indent=2))
-            raise SystemExit(2)
+            # A plan may legitimately render nothing, and what that means here
+            # depends on what this command was asked to do. Without --prune there
+            # is nothing to publish and nothing was verified, which is what exit 2
+            # has always said. With --prune the command was asked to make the
+            # directory match the plan, and an empty desired set is a state to
+            # reconcile rather than a reason to leave the previous generation on
+            # disk for the next apply to redeploy. The verdict stays honest either
+            # way: a set that was never linted is reported as not-applicable, and
+            # never as passed.
+            if not args.prune:
+                print(json.dumps({
+                    "status": "error", "lint": "not-run", "reason": "no-manifests",
+                    "message": "the plan rendered no Argo Workflow, so nothing was linted",
+                }, indent=2))
+                raise SystemExit(2)
+            try:
+                lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout))
+            except PublishLockUnavailable as exc:
+                print(json.dumps({
+                    "status": "error", "lint": "not-run", "reason": "publish-lock-unavailable",
+                    "message": str(exc),
+                }, indent=2))
+                raise SystemExit(2) from exc
+            empty_result: dict[str, object] = {
+                "status": "ok", "lint": "not-applicable", "files": [],
+            }
+            try:
+                _report_stale(
+                    empty_result, args.output_dir, [], args.prune, ARGO_EXCLUSIVE_KINDS,
+                    mission_ids=_render_scope(args.input),
+                )
+            except PruneIncomplete as exc:
+                print(json.dumps(_prune_failure_report(exc, []), indent=2))
+                raise SystemExit(2) from exc
+            print(json.dumps(empty_result, indent=2))
+            return
 
         # Taken before the destination is read, not just before it is written.
         # The verdict is about a directory state, and a state read outside the
@@ -936,7 +1058,10 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                     {
                         p.name
                         for p in attribute_stale(
-                            stale_rendered_artifacts(out_dir, written), ARGO_EXCLUSIVE_KINDS
+                            stale_rendered_artifacts(
+                                out_dir, written, mission_ids=_render_scope(args.input),
+                            ),
+                            ARGO_EXCLUSIVE_KINDS,
                         )[0]
                     }
                     if args.prune else set()
@@ -944,11 +1069,29 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                 for existing in existing_manifests:
                     if existing.name in staged_names or existing.name in leaving:
                         continue
+                    if existing.is_symlink():
+                        # Refused rather than followed. Both is_file() and copy2()
+                        # resolve the link, so the verdict would be about the
+                        # target's bytes while the output keeps a link whoever owns
+                        # the target can repoint afterwards. The gate exists to say
+                        # that what was linted is what gets applied, and about a
+                        # symlink it cannot.
+                        raise _SymlinkedManifest(str(existing))
                     if not existing.is_file():
                         continue
                     copy = staging / existing.name
                     shutil.copy2(existing, copy)
                     carried.append(copy)
+        except _SymlinkedManifest as exc:
+            print(json.dumps({
+                "status": "error", "lint": "not-run", "reason": "symlinked-manifest",
+                "message": (
+                    f"{exc.path} is a symbolic link, so the gate cannot promise the "
+                    "bytes it lints are the bytes that will be applied. Replace it "
+                    "with the file itself, or move it out of the output directory."
+                ),
+            }, indent=2))
+            raise SystemExit(2) from exc
         except OSError as exc:
             # Reading the destination can fail on its own: a manifest removed
             # between the glob and the copy, a directory that became
@@ -979,8 +1122,29 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             raise SystemExit(1)
 
         rc, output = argo_lint_path(staging, argo_bin=args.argo_bin, resolved=resolved)
-        for copy in carried:
-            copy.unlink()
+        try:
+            for copy in carried:
+                copy.unlink()
+        except OSError as exc:
+            # Inside the contract, like everything else this command can fail at.
+            # The verdict is already in hand and the output has not been touched,
+            # which is a third outcome a caller has to be able to tell from "the
+            # linter rejected" and "the linter never answered". Escaping as a
+            # traceback tells them none of that.
+            # The verdict outranks the cleanup. Exit 1 means the linter rejected
+            # something and exit 2 means it never answered, so exiting 2 after a
+            # rejection would throw away the one thing the caller most needs and
+            # contradict the body of this very report.
+            verdict_known = rc != 0
+            print(json.dumps({
+                "status": "error", "lint": "failed" if verdict_known else "passed",
+                "reason": "staging-cleanup-failed", "output_modified": False,
+                "message": (
+                    f"the lint finished and {out_dir} was left unchanged, but the "
+                    f"staged copies in {staging} could not be removed: {exc}"
+                ),
+            }, indent=2))
+            raise SystemExit(1 if verdict_known else 2) from exc
         carried = []
         # A file the CLI cannot parse is logged and skipped, and the run still
         # exits 0 as long as something else in the directory lints -- which is
@@ -1012,7 +1176,10 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                 [(out_dir / path.name, path.read_text(encoding="utf-8")) for path in written]
             )
             published = _publish(written, out_dir, leftover_backups)
-            _report_stale(result_stale, args.output_dir, published, args.prune, ARGO_EXCLUSIVE_KINDS)
+            _report_stale(
+                result_stale, args.output_dir, published, args.prune,
+                ARGO_EXCLUSIVE_KINDS, mission_ids=_render_scope(args.input),
+            )
         except ValueError as exc:
             print(json.dumps({
                 "status": "error", "lint": "passed", "reason": "not-owned",
@@ -1243,7 +1410,11 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         # afterwards, so a gated render could pass its lint, publish, and have its
         # files deleted by this one, while both reported success.
         try:
-            _report_stale(stale_result, args.output_dir, written, args.prune, KUEUE_EXCLUSIVE_KINDS)
+            _report_stale(
+                stale_result, args.output_dir, written, args.prune,
+                KUEUE_EXCLUSIVE_KINDS, mission_ids=_render_scope(args.input),
+                include_unmissioned=True,
+            )
         except PruneIncomplete as exc:
             print(json.dumps(_prune_failure_report(exc, written), indent=2))
             raise SystemExit(2) from exc

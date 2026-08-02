@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Collection
 from importlib import resources
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1554,7 +1555,13 @@ def _artifact_mission(path: Path) -> str | None:
     return missions.pop() if len(missions) == 1 else None
 
 
-def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> list[Path]:
+def stale_rendered_artifacts(
+    output_dir: str | Path,
+    written: list[Path],
+    *,
+    mission_ids: Collection[str] | None = None,
+    include_unmissioned: bool = False,
+) -> list[Path]:
     """Artifacts from an earlier render that this one did not replace.
 
     A render writes the files the current plan produces; it does not empty the
@@ -1577,13 +1584,23 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
     # in staging -- against resolved paths every one of them would compare as
     # unrelated and the whole previous generation would read as stale.
     current = {p.name for p in written}
-    # Scoped to the missions this render just wrote. Ownership alone is not
-    # enough to delete by: another mission's manifests in the same directory
-    # carry the same managed-by label and are equally ours, but they are not
-    # this render's to remove. Objects without a mission -- the cluster-scoped
-    # WorkloadPriorityClasses the other renderer emits -- are never in scope.
-    missions = {m for m in (_artifact_mission(p) for p in written) if m}
-    if not missions:
+    # Scoped to the missions this render reconciles. Ownership alone is not enough
+    # to delete by: another mission's manifests in the same directory carry the
+    # same managed-by label and are equally ours, but they are not this render's
+    # to remove.
+    #
+    # Declared by the caller, not read back from `written`. A plan whose next
+    # revision legitimately produces nothing wrote no file to read a mission out
+    # of, so the derived scope came back empty and the artifacts that revision
+    # drops stayed on disk: --prune reported nothing to do, and applying the
+    # directory went on redeploying exactly the workload the plan had removed. An
+    # empty desired set is a state to reconcile, not an absence of scope. Deriving
+    # it from `written` remains the fallback for callers that hold no plan.
+    missions = (
+        set(mission_ids) if mission_ids is not None
+        else {m for m in (_artifact_mission(p) for p in written) if m}
+    )
+    if not missions and not include_unmissioned:
         return []
     # Listed rather than globbed. `Path.glob` swallows the OSError scandir
     # raises, so an output directory that cannot be read comes back as an empty
@@ -1609,7 +1626,16 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
         if p.suffix in (".yaml", ".yml", ".json")
         and p.name not in current
         and _is_rendered_artifact(p)
-        and _artifact_mission(p) in missions
+        # An artifact with no mission is not an unowned one. The
+        # WorkloadPriorityClass bundle is cluster-scoped, so it carries no
+        # fingerprint and mission scoping alone can never retire it: turning
+        # --emit-priority-classes off left the classes on disk for the next apply
+        # to reinstate. A caller that writes such artifacts says so, and
+        # `attribute_stale` still holds each renderer to the kinds only it emits.
+        and (
+            _artifact_mission(p) in missions
+            or (include_unmissioned and _artifact_mission(p) is None)
+        )
     )
 
 
