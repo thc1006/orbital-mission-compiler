@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -390,19 +391,40 @@ def _publish_lock(out_dir: Path) -> Iterator[None]:
     canonical = os.path.realpath(out_dir)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     lock_path = Path(tempfile.gettempdir()) / f"orbital-publish-{digest}.lock"
+    # Openable by whoever can write the output, because that is who has to take it.
+    # An earlier revision created it 0600 and never removed it, so once one user had
+    # rendered, every other user was refused for good -- flock is released when the
+    # descriptor closes, so the file outliving the run says nothing about a holder,
+    # and treating "cannot open" as "somebody holds it" turned a race into a lockout.
+    #
+    # O_NOFOLLOW because the permissive mode is what 0600 was standing in for: the
+    # path is predictable and lives in a shared directory, so the open must refuse a
+    # symlink someone else planted rather than follow it. The temp directory's sticky
+    # bit is what stops another user replacing the file once it exists.
+    flags = os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     try:
-        handle = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        handle = os.open(lock_path, flags, 0o666)
     except OSError as exc:
-        # The path is derived from the output directory and lives in the shared
-        # system temp directory, so whoever renders first owns the file at mode
-        # 0600 and a second user cannot open it. That is one more way the gate
-        # cannot run, not a different kind of event, so it gets the same
-        # structured exit as a missing fcntl.
         raise PublishLockUnavailable(
-            f"the publish lock at {lock_path} could not be opened, so --argo-lint "
-            f"cannot serialise publishing here: {exc}"
+            f"the publish lock at {lock_path} could not be opened, so publishing "
+            f"cannot be serialised here: {exc}"
         ) from exc
     try:
+        info = os.fstat(handle)
+        if not stat.S_ISREG(info.st_mode):
+            raise PublishLockUnavailable(
+                f"the publish lock at {lock_path} is not a regular file"
+            )
+        # The mode argument to open() is masked by the process umask, which on a
+        # default 022 leaves 0644 -- readable by the next user but not writable, and
+        # this is opened O_RDWR, so they still could not take it. Set it explicitly
+        # once, and only on the file this process created; if it belongs to someone
+        # else it is already whatever they made it and is not ours to change.
+        if info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) != 0o666:
+            try:
+                os.fchmod(handle, 0o666)
+            except OSError:  # pragma: no cover - a filesystem that will not take it
+                pass
         fcntl.flock(handle, fcntl.LOCK_EX)
         yield
     finally:

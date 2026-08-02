@@ -1100,3 +1100,72 @@ def test_an_unopenable_lock_reports_the_plain_unavailable_kind(tmp_path):
     finally:
         os.chmod(lock, 0o600)
         lock.unlink()
+
+# ── The lock has to be takeable by the next user, not just the first ────
+
+
+def _lock_path_for(out: Path) -> Path:
+    import hashlib
+    import os
+    import tempfile
+
+    digest = hashlib.sha256(os.path.realpath(out).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"orbital-publish-{digest}.lock"
+
+
+@pytest.mark.parametrize("umask", [0o022, 0o077])
+def test_the_lock_file_stays_openable_by_another_user(tmp_path, umask):
+    """The file outlives the run, so its mode decides who may render next.
+
+    flock is released when the descriptor closes, so a lock file left behind says
+    nothing about a holder. Created 0600 it locked every other user out for good,
+    and the mode argument to open() is masked by the umask, so asking for 0666 is
+    not enough on its own.
+    """
+    import os
+    import stat
+
+    from orbital_mission_compiler import cli
+
+    out = tmp_path / "out"
+    lock = _lock_path_for(out)
+    if lock.exists():
+        lock.unlink()
+
+    previous = os.umask(umask)
+    try:
+        with cli._publish_lock(out):
+            pass
+        mode = stat.S_IMODE(lock.stat().st_mode)
+        assert mode == 0o666, f"umask {oct(umask)} left the lock at {oct(mode)}"
+        # Taking it a second time has to work on the file that is already there.
+        with cli._publish_lock(out):
+            pass
+    finally:
+        os.umask(previous)
+        if lock.exists():
+            lock.unlink()
+
+
+def test_a_symlink_at_the_lock_path_is_refused(tmp_path):
+    """The path is predictable and shared, and the mode is now permissive.
+
+    0600 was standing in for this: the open must refuse a symlink somebody planted
+    rather than follow it into a file that is none of its business.
+    """
+    from orbital_mission_compiler import cli
+
+    out = tmp_path / "out"
+    lock = _lock_path_for(out)
+    if lock.exists():
+        lock.unlink()
+    victim = tmp_path / "victim"
+    victim.write_text("untouched")
+    lock.symlink_to(victim)
+    try:
+        with pytest.raises(cli.PublishLockUnavailable):
+            with cli._publish_lock(out):
+                pass  # pragma: no cover - the lock never opens
+        assert victim.read_text() == "untouched"
+    finally:
+        lock.unlink()
