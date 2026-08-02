@@ -1574,3 +1574,41 @@ def test_an_artifact_neither_renderer_claims_is_reported_not_deleted(tmp_path, c
     report = json.loads(capsys.readouterr().out)
     assert fallback.exists(), "an unattributable artifact must not be deleted"
     assert fallback.name in " ".join(report.get("stale_not_ours", [])), report
+
+
+@pytest.mark.parametrize(
+    "name,body,expect_reject",
+    [
+        ("tabbed.yaml", '{\n\t"apiVersion": "v1",\n\t"kind": "ConfigMap",\n\t"metadata": {"name": "a"}\n}\n', False),
+        ("yaml.json", "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\n", False),
+        ("bom.json", "\ufeff{\"apiVersion\":\"v1\",\"kind\":\"ConfigMap\",\"metadata\":{\"name\":\"c\"}}", False),
+        ("leadws.json", '   \n  {"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"d"}}\n', False),
+        ("arr.json", '[{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"e"}}]', True),
+        ("empty.json", "", False),
+    ],
+    ids=["tab-json-in-yaml-file", "yaml-in-json-file", "bom", "leading-whitespace",
+         "top-level-array", "empty"],
+)
+def test_documents_are_read_the_way_kubectl_reads_them(tmp_path, name, body, expect_reject):
+    """Each expectation here was taken from kubectl, not decided here.
+
+    `kubectl apply --dry-run=client --validate=strict` was run on these exact
+    bytes: it accepts tab-indented JSON in a .yaml file, YAML in a .json file, a
+    UTF-8 BOM, and whitespace before the opening brace; it rejects a top-level
+    array. An empty file is accepted as a document -- kubectl only objects when
+    the WHOLE set is empty ("no objects passed to apply"), which is a property of
+    the set and not of the file, and a render always contributes real manifests.
+
+    An earlier version dispatched on the file extension. kubectl dispatches on
+    content: NewYAMLOrJSONDecoder calls hasJSONPrefix, which skips leading
+    whitespace and asks whether the first byte is `{`. Extension-based dispatch
+    rejected two files that deploy, which is the same class of false verdict this
+    function has now been corrected for twice.
+    """
+    from orbital_mission_compiler.cli import _unreadable_documents
+
+    d = tmp_path / "staging"
+    d.mkdir()
+    (d / name).write_text(body, encoding="utf-8")
+    problems = _unreadable_documents(d)
+    assert bool(problems) is expect_reject, problems

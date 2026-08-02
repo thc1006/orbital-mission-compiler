@@ -434,16 +434,22 @@ class PublishLockUnsupported(PublishLockUnavailable):
 def _load_documents(path: Path, text: str) -> list:
     """Read one file the way the tool that will apply it reads that file.
 
-    A `.json` file goes through the JSON parser, not the YAML one. PyYAML is
-    YAML 1.1 and rejects a tab as indentation; kubectl sends a file beginning with
-    `{` to a pure JSON decoder, where tabs are ordinary whitespace. So
-    `json.MarshalIndent(v, "", "\t")` output -- the Go default -- parses for
-    kubectl and fails for PyYAML, and treating that as a malformed manifest is the
-    same false verdict the duplicate-key rule was removed for. Worse here: the file
-    is carried in from the output directory on every gated render, so one such file
-    would fail every future render permanently.
+    kubectl dispatches on CONTENT, not on the extension: NewYAMLOrJSONDecoder
+    calls hasJSONPrefix, which skips leading whitespace and asks whether the first
+    byte is `{`. Everything else goes to the YAML decoder. Verified against
+    kubectl on this cluster -- a `.yaml` holding tab-indented JSON is accepted, a
+    `.json` holding YAML is accepted, and a UTF-8 BOM is accepted.
+
+    An earlier version of this dispatched on the extension, which is the same
+    mistake in a new place: it rejected a `.json` file containing YAML and a
+    `.json` file with a BOM, both of which deploy. The rule has to be the one
+    kubectl uses, not one that sounds equivalent.
     """
-    if path.suffix == ".json":
+    # The BOM is stripped before anything looks at the first character, because
+    # kubectl's reader tolerates it and neither Python parser does.
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    if text.lstrip()[:1] == "{":
         return [json.loads(text)] if text.strip() else []
     return list(yaml.safe_load_all(text))
 
@@ -615,6 +621,13 @@ def _publish_lock(out_dir: Path, lock_timeout: float = _DEFAULT_LOCK_TIMEOUT) ->
                 # lockd, most concretely -- and retrying for the whole timeout only
                 # to report "held by another render" is an assertion, and a false
                 # one. That case is what PublishLockUnsupported is for.
+                if exc.errno == errno.EINTR:
+                    # A signal arrived mid-call. Python retries most syscalls for
+                    # us (PEP 475) but the guarantee is not universal, and an
+                    # interruption says nothing about whether the lock is takeable
+                    # -- classifying it as "this filesystem cannot lock" would end
+                    # the run on a stray SIGWINCH.
+                    continue
                 if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
                     raise PublishLockUnsupported(
                         f"the publish lock at {lock_path} cannot be taken on this "
