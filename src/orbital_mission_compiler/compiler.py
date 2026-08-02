@@ -815,10 +815,34 @@ def render_resource_claim_templates(
     return templates
 
 
-ORCHIDE_PRIORITY_CLASS_PREFIX = "orbital-orchide-"
-# Bump when the tier->value mapping below changes, so a cluster can detect a Job
-# labelled against a stale class set.
-PRIORITY_CLASS_MAPPING_VERSION = "v1"
+# Kueue WorkloadPriorityClass name + value per ORCHIDE priority tier (1=highest).
+# Mission-plan priority (0-100) maps to a tier via scale_priority_orchide:
+# 76-100 -> tier 1 (mission-critical), 51-75 -> 2 (mission-high),
+# 26-50 -> 3 (mission-normal), 1-25 -> 4 (mission-low). Semantic names are used
+# instead of bare tier numbers so a cluster operator reading a Job's
+# kueue.x-k8s.io/priority-class label knows what it means without a legend.
+_PRIORITY_CLASS_TIERS: dict[int, tuple[str, int]] = {
+    1: ("mission-critical", 400),
+    2: ("mission-high", 300),
+    3: ("mission-normal", 200),
+    4: ("mission-low", 100),
+}
+_PRIORITY_CLASS_BUCKETS = {1: "76-100", 2: "51-75", 3: "26-50", 4: "1-25"}
+# WorkloadPriorityClasses are cluster-scoped, so a name like "mission-critical" is one
+# another installation, or an operator, can reasonably have created already: applying
+# ours would rewrite theirs. The default keeps the project in the name, and an
+# installation sharing a cluster with a second copy can set its own.
+ORCHIDE_PRIORITY_CLASS_PREFIX = "orbital-"
+# Bump when the tier->name/value mapping above changes, so a cluster can detect a Job
+# labelled against a stale class set. v1 named the tiers after the bare ORCHIDE numbers
+# and v2 names them after what they mean; no released version emits a priority class at
+# all, so v1 exists only in this repository's own history and no cluster can be holding
+# one. The label is here for the next rename, not for that one.
+#
+# Bumping it is not optional bookkeeping. It is the only signal separating two class
+# sets that share a name, and the live proof compares the value on a Job against the
+# value on the class it references -- a comparison a missed bump makes meaningless.
+PRIORITY_CLASS_MAPPING_VERSION = "v2"
 
 
 # An RFC 1123 label, which is what both a WorkloadPriorityClass name and the
@@ -827,13 +851,13 @@ _K8S_LABEL_RE = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?\Z")
 
 
 def _priority_class_name(orchide_priority: int, prefix: str = ORCHIDE_PRIORITY_CLASS_PREFIX) -> str:
-    """Kueue WorkloadPriorityClass name for an ORCHIDE 1-4 tier.
+    """Kueue WorkloadPriorityClass name for an ORCHIDE 1-4 tier (1=highest).
 
     Rejects a prefix that would produce a name the API server refuses, rather
     than emitting YAML that fails only on apply. The same string becomes a label
     value on the Job, so it must satisfy the 63-character label bound too.
     """
-    name = f"{prefix}{orchide_priority}"
+    name = f"{prefix}{_PRIORITY_CLASS_TIERS[orchide_priority][0]}"
     if len(name) > 63 or not _K8S_LABEL_RE.fullmatch(name):
         raise ValueError(
             f"priority-class prefix {prefix!r} yields invalid name {name!r}: must be an "
@@ -849,13 +873,13 @@ def render_workload_priority_classes(
     """Kueue WorkloadPriorityClass objects for the four ORCHIDE priority tiers.
 
     A rendered Kueue Job references one of these via the
-    ``kueue.x-k8s.io/priority-class`` label, so a mission plan's priority feeds
-    Kueue's queue-sorting and **contributes to preemption eligibility** (whether a
-    preemption actually occurs still depends on the ClusterQueue/cohort preemption
-    configuration). Higher ORCHIDE tier maps to a higher Kueue value (ORCHIDE~1 is
-    highest). These are cluster-scoped: apply them once per cluster before
-    submitting Jobs (``kubectl apply`` is idempotent); a configurable ``prefix``
-    keeps parallel installations from colliding on the fixed names.
+    ``kueue.x-k8s.io/priority-class`` label -- the mechanism Kueue actually reads --
+    so a mission plan's priority drives Kueue's in-ClusterQueue workload sorting and
+    contributes to preemption eligibility (whether a preemption occurs still depends
+    on the ClusterQueue/cohort preemption policy). Higher ORCHIDE tier maps to a
+    higher Kueue value (tier 1 -> 400, highest). These are cluster-scoped: apply them
+    once per cluster before submitting Jobs (``kubectl apply`` is idempotent); a
+    configurable ``prefix`` keeps parallel installations from colliding on the names.
     """
     return [
         {
@@ -868,10 +892,13 @@ def render_workload_priority_classes(
                     "orbital/priority-mapping-version": PRIORITY_CLASS_MAPPING_VERSION,
                 },
             },
-            "value": (5 - tier) * 100,  # ORCHIDE 1 -> 400 (highest), 4 -> 100
-            "description": f"ORCHIDE priority tier {tier} (1=highest)",
+            "value": _PRIORITY_CLASS_TIERS[tier][1],
+            "description": (
+                f"ORCHIDE priority tier {tier} (1=highest); "
+                f"mission-plan priority {_PRIORITY_CLASS_BUCKETS[tier]}"
+            ),
         }
-        for tier in (1, 2, 3, 4)
+        for tier in _PRIORITY_CLASS_TIERS
     ]
 
 
@@ -1087,6 +1114,17 @@ def render_kueue_job(
     if priority_class:
         job["metadata"]["labels"]["kueue.x-k8s.io/priority-class"] = _priority_class_name(
             scale_priority_orchide(intent.priority), priority_class_prefix
+        )
+        # Which mapping the class name was chosen under. A class name alone cannot
+        # say that: the names are stable across a rename of what they mean, and the
+        # object they point at is cluster-scoped and outlives the Job. A label rather
+        # than an annotation because selecting on it is the use -- `kubectl get jobs
+        # -A -l orbital/priority-mapping-version=v2` is how a cluster would find the
+        # Jobs still on this mapping once a later one renames the classes under them.
+        # v2 because no released version emits a priority class at all, so nothing
+        # older than this can be in the field to search for.
+        job["metadata"]["labels"]["orbital/priority-mapping-version"] = (
+            PRIORITY_CLASS_MAPPING_VERSION
         )
     return job
 
