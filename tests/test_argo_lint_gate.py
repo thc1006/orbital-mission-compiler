@@ -929,9 +929,13 @@ def test_a_file_the_linter_cannot_parse_is_not_a_pass(tmp_path, capsys):
 
 
 def test_the_lock_file_being_unopenable_is_a_structured_error(tmp_path, monkeypatch, capsys):
-    """The lock lives at a derivable path in the shared temp directory and is
-    created 0600 by whoever renders first, so a second user cannot open it. That
-    is one more way the gate cannot run, not a traceback."""
+    """The lock lives at a derivable path in the shared temp directory, so a second
+    user can be refused on it -- by a mode another user set, by a directory they
+    cannot traverse, or by anything else the OS decides. That is one more way the
+    gate cannot run, and it reports as a structured error rather than a traceback.
+
+    The gate creates the file 0666 for exactly this reason; a permission refusal is
+    still possible and is what this covers, not the mode the gate itself chooses."""
     exe = _fake_argo(tmp_path, 0)
     args = build_parser().parse_args([
         "render-argo", "--input", str(_multi_service_plan(tmp_path, ["a"])),
