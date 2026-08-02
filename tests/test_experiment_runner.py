@@ -281,6 +281,57 @@ def test_stderr_reaches_the_transcript(tmp_path, monkeypatch):
     assert outcome == "not-citable" and "exit 9" in detail, (outcome, detail)
 
 
+def _tiny_repo(tmp_path, body: str) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "scripts" / "x.sh").write_text(body, encoding="utf-8")
+    (repo / ".gitignore").write_text("out/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check=True)
+    return repo
+
+
+def test_a_citable_result_is_not_written_into_the_tree_until_the_end(tmp_path, monkeypatch):
+    """Because the NEXT experiment's harness reads the tree with a plain git status.
+
+    The runner forgives paths it filed itself, and it can only ever forgive them
+    for its own check: a harness prints its own `working tree:` line and cannot be
+    told. So filing between experiments made every experiment after the first
+    report DIRTY and have its transcript rejected -- for a file this runner had
+    just created, in the same invocation.
+    """
+    repo = _tiny_repo(
+        tmp_path,
+        "#!/bin/sh\n"
+        "echo '  compiler commit: '$(git -C \"$(dirname \"$0\")/..\" rev-parse HEAD)\n"
+        "echo '  working tree   : clean'\n"
+        "echo '  harness sha256 : '$(sha256sum \"$0\" | cut -d' ' -f1)\n"
+        "echo \"  compiler module: $REPO_MARKER\"\n"
+        "echo '  kube-apiserver : v1.36.3'\n",
+    )
+    monkeypatch.setattr(runner, "REPO", repo)
+    exp = runner.Experiment(
+        name="x",
+        script=Path("scripts/x.sh"),
+        env={"REPO_MARKER": str(repo / "src" / "orbital_mission_compiler" / "compiler.py")},
+        result_path=Path("docs/results/x.txt"),
+    )
+    pending: list = []
+    outcome, _ = runner.run(exp, repo / "out", set(), pending)
+
+    assert outcome == "ok", outcome
+    assert not (repo / "docs" / "results" / "x.txt").exists(), (
+        "the result must still be queued, not in the tree"
+    )
+    assert [p for p, _ in pending] == [Path("docs/results/x.txt")]
+
+    runner.file_results(pending)
+    assert (repo / "docs" / "results" / "x.txt").exists()
+
+
 def test_a_rejected_run_does_not_leave_the_previous_result_in_place(tmp_path, monkeypatch):
     """Otherwise a regression keeps yesterday's passing transcript on disk."""
     repo = tmp_path / "repo"

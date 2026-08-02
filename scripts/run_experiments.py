@@ -342,9 +342,20 @@ def _dirt(ignoring: set[str]) -> list[str]:
     return entries
 
 
-def run(exp: Experiment, results_dir: Path, filed: set[str] | None = None) -> tuple[str, str]:
-    """Returns (outcome, detail). Outcome is one of ok / failed / not-citable / skipped."""
+def run(
+    exp: Experiment,
+    results_dir: Path,
+    filed: set[str] | None = None,
+    pending: list[tuple[Path, str]] | None = None,
+) -> tuple[str, str]:
+    """Returns (outcome, detail). Outcome is one of ok / failed / not-citable / skipped.
+
+    A citable transcript destined for the tree is appended to `pending` rather than
+    written; see the comment there. Callers that do not pass one get a throwaway
+    list, so a single-experiment caller still gets its verdict.
+    """
     filed = filed if filed is not None else set()
+    pending = pending if pending is not None else []
     script = REPO / exp.script
     if not script.exists():
         return "skipped", f"{exp.script} is not on this branch"
@@ -462,16 +473,35 @@ def run(exp: Experiment, results_dir: Path, filed: set[str] | None = None) -> tu
         return "failed", f"exit {returncode}; transcript at {out}"
 
     if exp.result_path is not None:
-        # The transcript verbatim, with nothing written around it. A preamble
-        # summarising the environment is exactly the hand-authored claim the
-        # checks above exist to replace, and it goes stale the moment the run
-        # changes underneath it.
-        target = REPO / exp.result_path
+        # Queued, not written. Filing here dirties the working tree, and the NEXT
+        # experiment's harness prints its own `working tree:` line from a plain
+        # `git status` that knows nothing about this runner's forgiveness -- so it
+        # reported DIRTY and its transcript was rejected, for a file this runner had
+        # just created. `_dirt(ignoring)` closed that for the runner's own check and
+        # could never close it for the harnesses, because they cannot be told.
+        #
+        # So nothing lands in the tree until every experiment has finished. It also
+        # means an invocation that dies halfway leaves no half-filed set behind.
+        pending.append((exp.result_path, transcript))
+        return "ok", f"{out} -> will be filed at {exp.result_path}"
+    return "ok", str(out)
+
+
+def file_results(pending: list[tuple[Path, str]]) -> list[str]:
+    """Write the queued transcripts into the tree. Returns what was written.
+
+    The transcript verbatim, with nothing written around it. A preamble
+    summarising the environment is exactly the hand-authored claim the checks
+    above exist to replace, and it goes stale the moment the run changes
+    underneath it.
+    """
+    written = []
+    for result_path, transcript in pending:
+        target = REPO / result_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(transcript, encoding="utf-8")
-        filed.add(str(exp.result_path))
-        return "ok", f"{out} -> filed at {exp.result_path} (commit it to keep the tree clean)"
-    return "ok", str(out)
+        written.append(str(result_path))
+    return written
 
 
 def main() -> int:
@@ -527,9 +557,12 @@ def main() -> int:
     except ValueError:
         pass  # a results directory outside the repository cannot dirty it
     worst = 0
+    # Filled by the experiments, written only once all of them have finished, so
+    # that no experiment observes a tree another one has just changed.
+    pending: list[tuple[Path, str]] = []
     for exp in chosen:
         print(f"=== {exp.name} ===", flush=True)
-        outcome, detail = run(exp, results_dir, filed)
+        outcome, detail = run(exp, results_dir, filed, pending)
         print(f"  {outcome}: {detail}", flush=True)
         if outcome == "failed":
             worst = max(worst, 1)
@@ -537,6 +570,9 @@ def main() -> int:
             # Deliberately louder than a failure. A failed experiment is a result;
             # an uncitable transcript is a result that looks like one and is not.
             worst = max(worst, 2)
+
+    for written in file_results(pending):
+        print(f"  filed: {written} (commit it to keep the tree clean)", flush=True)
     return worst
 
 
