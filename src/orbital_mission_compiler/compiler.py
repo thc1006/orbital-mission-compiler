@@ -1114,8 +1114,10 @@ def render_kueue_job(
         # say that: the names are stable across a rename of what they mean, and the
         # object they point at is cluster-scoped and outlives the Job. A label rather
         # than an annotation because selecting on it is the use -- `kubectl get jobs
-        # -l orbital/priority-mapping-version=v1` is how a cluster finds the Jobs
-        # still referencing a class set that has been renamed under them.
+        # -A -l orbital/priority-mapping-version=v2` is how a cluster would find the
+        # Jobs still on this mapping once a later one renames the classes under them.
+        # v2 because no released version emits a priority class at all, so nothing
+        # older than this can be in the field to search for.
         job["metadata"]["labels"]["orbital/priority-mapping-version"] = (
             PRIORITY_CLASS_MAPPING_VERSION
         )
