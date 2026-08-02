@@ -134,6 +134,10 @@ wl_class() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClas
 wl_class_group() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClassRef.group}' 2>/dev/null; }
 wl_class_kind() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClassRef.kind}' 2>/dev/null; }
 wl_created() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null; }
+# The label the compiler puts on a Job it renders with --priority-class, naming the
+# mapping that chose the class. Read off the Job rather than the Workload: Kueue copies
+# the priority and the class reference onto the Workload, not the Job's own labels.
+job_mapping() { kubectl get job "$1" -n "$NS" -o "jsonpath={.metadata.labels['orbital/priority-mapping-version']}" 2>/dev/null; }
 wait_wl() { # $1 job name -> echo workload name once it exists (up to 30s)
   local w=""; local d=$((SECONDS+30))
   while [ $SECONDS -lt $d ]; do w=$(wl_for_job "$1"); [ -n "$w" ] && break; sleep 2; done
@@ -243,6 +247,21 @@ HC=$(wl_class "$HIGH_WL"); LC=$(wl_class "$LOW_WL")
 [ "$HC" = "$HIGH_CLASS" ] && [ "$LC" = "$LOW_CLASS" ] \
   && report PASS "workloads reference the emitted classes" \
   || report FAIL "class references: HIGH=${HC:-<none>} LOW=${LC:-<none>}"
+# Which mapping produced those class names, read back off the live Jobs. The compiler
+# supplies the value it stamps, so a later bump to v3 does not make this fail; what it
+# catches is a Job reaching the cluster without the label, or the two disagreeing --
+# either of which would leave `kubectl get jobs -l orbital/priority-mapping-version=...`
+# unable to find what a rename left behind.
+MAPPING_VERSION=$(PYTHONPATH="${HERE}/src" ${PYTHON_BIN} -c \
+  'from orbital_mission_compiler.compiler import PRIORITY_CLASS_MAPPING_VERSION as v; print(v)' 2>/dev/null)
+HM=$(job_mapping "$HIGH_JOB"); LM=$(job_mapping "$LOW_JOB")
+if [ -z "$MAPPING_VERSION" ]; then
+  report FAIL "the compiler exposes no mapping version to compare against"
+elif [ "$HM" = "$MAPPING_VERSION" ] && [ "$LM" = "$MAPPING_VERSION" ]; then
+  report PASS "both Jobs carry the mapping that named their class (${MAPPING_VERSION})"
+else
+  report FAIL "mapping version on the Jobs: HIGH=${HM:-<none>} LOW=${LM:-<none>}, compiler says ${MAPPING_VERSION}"
+fi
 HG=$(wl_class_group "$HIGH_WL"); HK=$(wl_class_kind "$HIGH_WL")
 [ "$HG" = "kueue.x-k8s.io" ] && [ "$HK" = "WorkloadPriorityClass" ] \
   && report PASS "the reference is a WorkloadPriorityClass, not a Pod PriorityClass" \
