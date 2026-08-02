@@ -57,16 +57,25 @@ _PRUNE_HELP = (
 
 # The Kueue Job carries generateName and no name, which is what lets one rendered
 # file be submitted repeatedly as distinct Jobs. kubectl apply needs a name, so
-# `apply -f` over this output fails on the Job -- after having applied everything
-# ahead of it, including the cluster-scoped priority classes. `kubectl create -f`
-# takes the whole set. Repeat deployments are the awkward case, because create is
-# not idempotent for the named documents: apply those and create the Job, which is
-# what scripts/validate_live_cluster.sh does.
+# `apply -f` over this output cannot create the Job.
+#
+# It does not stop there either. kubectl's apply builder runs with
+# ContinueOnError, so it applies every OTHER document -- the ones before the Job
+# and the ones after it, including the four cluster-scoped priority classes -- and
+# reports the failure at the end with exit 1. Verified with --dry-run=server: two
+# named ConfigMaps applied, the generateName one refused, exit 1. So the outcome
+# is not "a partial deployment up to the failure": it is the whole set except the
+# Job, which is the one document that carries the workload.
+#
+# `kubectl create -f` takes all of it. Repeat deployments are the awkward case,
+# because create is not idempotent for the named documents: apply those and create
+# the Job, which is what scripts/validate_live_cluster.sh does.
 _KUEUE_DEPLOY_NOTE = (
     "Deploy this output with 'kubectl create -f <dir>': the Job uses generateName, "
-    "so 'kubectl apply' rejects it after applying the documents ahead of it. To "
-    "redeploy, apply the named documents (listed under 'apply') and create the Job "
-    "(listed under 'create'), since create is not idempotent."
+    "so 'kubectl apply' cannot create it -- and applies everything else anyway, "
+    "leaving the priority classes and claim templates on the cluster without the "
+    "workload. To redeploy, apply the named documents (listed under 'apply') and "
+    "create the Job (listed under 'create'), since create is not idempotent."
 )
 
 
