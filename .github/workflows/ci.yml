@@ -49,9 +49,56 @@ jobs:
         with:
           version: ${{ env.OPA_VERSION }}
 
+      # Installed before the tests, not after: the real-CLI cases decide whether to
+      # run by looking for the binary at import time, so with the install later they
+      # skipped themselves and the one that proves the linter actually rejects a bad
+      # manifest never ran in CI.
+      # The Argo smoke's only real gate is `argo lint`. Without the CLI the script
+      # prints "skipped argo lint" and the step still passes, so a rendered
+      # manifest that Argo would reject reads as a green smoke.
+      - name: Cache the Argo CLI archive
+        uses: actions/cache@v4
+        id: argo-cache
+        with:
+          # The archive, not the unpacked binary: the published checksum is of the
+          # gzip, so caching that is what lets every run re-verify what it uses.
+          path: ~/.cache/argo/argo-linux-amd64.gz
+          key: argo-${{ env.ARGO_VERSION }}-linux-amd64
+
+      - name: Download the Argo CLI
+        if: steps.argo-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/argo"
+          curl -fSL -o "$HOME/.cache/argo/argo-linux-amd64.gz" \
+            "https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}/argo-linux-amd64.gz"
+
+      # Verified on every run, cache hit or miss. A cache entry that was poisoned
+      # or corrupted after it was written would otherwise become the binary that
+      # decides whether manifests are published, on the strength of a check that
+      # happened once.
+      - name: Verify the Argo checksum and install
+        run: |
+          set -euo pipefail
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          BASE="https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}"
+          curl -fSL -o "$TMP_DIR/checksums.txt" "${BASE}/argo-workflows-cli-checksums.txt"
+          grep 'argo-linux-amd64.gz$' "$TMP_DIR/checksums.txt" > "$TMP_DIR/expected.sha256"
+          test -s "$TMP_DIR/expected.sha256"
+          cp "$HOME/.cache/argo/argo-linux-amd64.gz" "$TMP_DIR/"
+          (cd "$TMP_DIR" && sha256sum -c expected.sha256)
+          gunzip -f "$TMP_DIR/argo-linux-amd64.gz"
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 "$TMP_DIR/argo-linux-amd64" "$HOME/.local/bin/argo"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/argo" version --short
+
       - name: Unit tests with coverage
         run: |
-          python3 -m pytest -q --cov=orbital_mission_compiler --cov-report=term-missing --cov-report=xml --cov-fail-under=70
+          # -rs lists why anything skipped, so a test quietly opting out of this
+          # job is visible in the log rather than folded into a count.
+          python3 -m pytest -q -rs --cov=orbital_mission_compiler --cov-report=term-missing --cov-report=xml --cov-fail-under=70
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -124,47 +171,6 @@ jobs:
             echo "OK: $deny was rejected as expected"
           done
 
-      # The Argo smoke's only real gate is `argo lint`. Without the CLI the script
-      # prints "skipped argo lint" and the step still passes, so a rendered
-      # manifest that Argo would reject reads as a green smoke.
-      - name: Cache the Argo CLI archive
-        uses: actions/cache@v4
-        id: argo-cache
-        with:
-          # The archive, not the unpacked binary: the published checksum is of the
-          # gzip, so caching that is what lets every run re-verify what it uses.
-          path: ~/.cache/argo/argo-linux-amd64.gz
-          key: argo-${{ env.ARGO_VERSION }}-linux-amd64
-
-      - name: Download the Argo CLI
-        if: steps.argo-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.cache/argo"
-          curl -fSL -o "$HOME/.cache/argo/argo-linux-amd64.gz" \
-            "https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}/argo-linux-amd64.gz"
-
-      # Verified on every run, cache hit or miss. A cache entry that was poisoned
-      # or corrupted after it was written would otherwise become the binary that
-      # decides whether manifests are published, on the strength of a check that
-      # happened once.
-      - name: Verify the Argo checksum and install
-        run: |
-          set -euo pipefail
-          TMP_DIR="$(mktemp -d)"
-          trap 'rm -rf "$TMP_DIR"' EXIT
-          BASE="https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}"
-          curl -fSL -o "$TMP_DIR/checksums.txt" "${BASE}/argo-workflows-cli-checksums.txt"
-          grep 'argo-linux-amd64.gz$' "$TMP_DIR/checksums.txt" > "$TMP_DIR/expected.sha256"
-          test -s "$TMP_DIR/expected.sha256"
-          cp "$HOME/.cache/argo/argo-linux-amd64.gz" "$TMP_DIR/"
-          (cd "$TMP_DIR" && sha256sum -c expected.sha256)
-          gunzip -f "$TMP_DIR/argo-linux-amd64.gz"
-          mkdir -p "$HOME/.local/bin"
-          install -m 0755 "$TMP_DIR/argo-linux-amd64" "$HOME/.local/bin/argo"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/argo" version --short
-
       - name: Argo smoke (valid plans render, deny fixtures produce no artifact)
         env:
           # Fail rather than skip: see the cache step above.
@@ -228,6 +234,71 @@ jobs:
           # out of it and ignores the ResourceClaimTemplate.
           argo lint --offline "$dra_out"/*.yaml
           rm -rf "$dra_out"
+
+          # The gate itself, driven by the CLI rather than by a fake: render
+          # through `--argo-lint` so the staging/publish path and the real
+          # linter are both exercised, including on the multi-doc bundle.
+          gate_out="$(mktemp -d)"
+          python3 -m orbital_mission_compiler.cli render-argo \
+            --input configs/mission_plans/sample_gpu_cpu_fallback.yaml \
+            --output-dir "$gate_out/published" --namespace gate-ns \
+            --dra-fallback --argo-lint > "$gate_out/result.json"
+          python3 - "$gate_out" <<'PYGATE'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          # stdout is a single JSON document: a caller can parse it whole.
+          data = json.loads((root / "result.json").read_text())
+          assert data["status"] == "ok" and data["lint"] == "passed", data
+          assert data["files"], data
+          for f in data["files"]:
+              assert pathlib.Path(f).exists(), f
+          assert not list(root.glob(".argo-lint-staging-*")), "staging left behind"
+          print(f"argo lint gate OK: {len(data['files'])} manifest(s) published")
+          PYGATE
+          rm -rf "$gate_out"
+
+          # And the gate must actually refuse something: a manifest the linter
+          # rejects has to exit 1 and leave the output directory alone.
+          bad_out="$(mktemp -d)"
+          mkdir -p "$bad_out/published"
+          printf 'kind: Workflow\n' > "$bad_out/published/keep-me.yaml"
+          cat > "$bad_out/broken-plan.yaml" <<'PYPLAN'
+          mission_id: lint-gate-negative
+          events:
+            - timestamp: '2026-08-01T00:00:00Z'
+              event_type: acquisition
+              instrument: cam
+              duration_seconds: 60
+              services:
+                - service_id: s
+                  priority: 50
+                  steps:
+                    - name: a
+                      image: busybox:1.36
+                      resource_class: cpu
+          PYPLAN
+          # Point --argo-bin at a linter that always rejects, so this asserts the
+          # failure path without needing a manifest the real linter dislikes.
+          printf '#!/bin/sh\necho "simulated lint rejection"\nexit 1\n' > "$bad_out/argo-reject"
+          chmod +x "$bad_out/argo-reject"
+          set +e
+          python3 -m orbital_mission_compiler.cli render-argo \
+            --input "$bad_out/broken-plan.yaml" --output-dir "$bad_out/published" \
+            --argo-lint --argo-bin "$bad_out/argo-reject" > "$bad_out/bad.json"
+          rc=$?
+          set -e
+          test "$rc" -eq 1 || { echo "FAIL: lint rejection should exit 1, got $rc" >&2; exit 1; }
+          python3 - "$bad_out" <<'PYBAD'
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          data = json.loads((root / "bad.json").read_text())
+          assert data["status"] == "lint-failed" and data["files"] == [], data
+          published = sorted(p.name for p in (root / "published").glob("*.yaml"))
+          assert published == ["keep-me.yaml"], f"output directory was modified: {published}"
+          print("argo lint gate refuses and leaves the output directory unchanged")
+          PYBAD
+          rm -rf "$bad_out"
+
           for deny in "${DENY_FIXTURES[@]}"; do
             echo "Asserting render-argo refuses the deny fixture: $deny"
             out="$(mktemp -d)"

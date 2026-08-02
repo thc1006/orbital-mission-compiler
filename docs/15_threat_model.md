@@ -54,6 +54,7 @@ The compiler operates across four trust boundaries:
 | T7 | **Repudiation** | Untraceable compilation decisions | Operator disputes which plan/policy version produced specific artifacts | Python `logging` module; rendered YAML includes `metadata.labels` for identity (`mission-id`, `service-id`, `priority`) and `metadata.annotations` for operational hints (`orbital/priority`, `orbital/execution-mode`, `orbital/requires-gpu`, `orbital/fallback-enabled`) | **No immutable audit trail**; no compilation receipt linking input hash → output hash → policy version |
 | T8 | **Elevation of Privilege** | MCP tool used to compile arbitrary plans | AI agent invokes tools with manipulated path arguments | CWE-22 path validation confines the agent to the configured plan root (`ORBITAL_MCP_PLAN_ROOT`, default `configs/mission_plans/`) | MCP stdio transport has no authentication; any connected client has full tool access; authorization depends on transport layer |
 | T9 | **Tampering** | OPA binary supply chain compromise | Attacker replaces `opa` binary on system PATH | `shutil.which("opa")` locates binary; CI pins OPA version (v1.15.1) with HTTPS download | **No runtime checksum verification** of OPA binary; local development relies on system PATH trust |
+| T11 | **Tampering** | Argo CLI substitution on the lint gate | `render-argo --argo-lint` publishes only what the linter accepts, so whatever `--argo-bin` resolves to decides whether artifacts are emitted; an attacker who replaces `argo` on PATH, or a caller who points `--argo-bin` at their own script, gets an unconditional pass | CI installs a pinned v4.0.1 verified against the release checksum file; the gate separates a verdict (exit 1) from a gate that could not run (anything else) so a broken substitute cannot read as a pass | **No runtime checksum locally.** The lint semantics are whichever CLI version resolves, so a version skew changes what is accepted. Treat the local PATH as trusted input |
 | T10 | **Tampering** | Kubernetes YAML injection via unsanitized fields | Malicious values in mission plan string fields pass through to Argo/Kueue annotations | `sanitize_k8s_name()` applies RFC 1123 sanitization to names and labels | Annotation values and container args are not fully sanitized; K8s API server provides final validation layer |
 
 ---
@@ -81,6 +82,7 @@ The compiler implements hardening for the following CWEs. Test coverage is summa
 |---|---|---|
 | **T6: No artifact signing** | Rendered YAML can be tampered before deployment | Add SHA-256 digest in compilation receipt; sign with ed25519 key |
 | **T7: No audit trail** | Cannot prove which input + policy produced specific output | Emit structured compilation receipt (input_hash, policy_hash, output_hash, timestamp) |
+| **T11: No Argo checksum locally** | A substituted linter turns the publish gate into an unconditional pass | Pin and checksum the CLI in CI (done); treat a local `--argo-bin` as trusted input |
 | **T9: No OPA checksum** | Compromised OPA binary would silently pass all policies | Pin OPA binary hash in CI; verify at runtime via `hashlib` check |
 
 ### Accepted risks (mitigated by external systems)

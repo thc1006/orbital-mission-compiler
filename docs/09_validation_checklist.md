@@ -113,3 +113,16 @@ make eval                       # golden translation checks
 6. No unused dependencies in `pyproject.toml`
 7. All docs consistent with ORCHIDE-aligned mission statement
 8. `git status` clean (no uncommitted changes)
+
+### Static lint of the rendered Argo YAML
+
+`render-argo --argo-lint` runs the official linter over the manifests before they
+are published, and publishes nothing the linter rejects. It is **opt-in**: the
+Argo CLI stays an optional dependency, so a render without the flag emits
+artifacts no lint stage has seen. Treat CI, which sets it, as the boundary where
+this layer is actually enforced -- not every invocation of the compiler.
+
+- [x] Rendered Argo YAML lints clean (`argo lint --offline`, CI, pinned v4.0.1)
+- [x] A manifest the linter rejects is not published (CI negative case)
+- [ ] The lint gate is enforced on every entrypoint (it is not: the library
+      writer and the MCP `render_argo` tool do not run it)

@@ -109,9 +109,9 @@ class TestExistingMitigations:
 
 
 class TestThreatCoverage:
-    """All 10 threats (T1-T10) must be documented."""
+    """All 11 threats (T1-T11) must be documented."""
 
-    def test_all_ten_threats_present_and_unique(self):
+    def test_all_threats_present_and_unique(self):
         doc = _read_doc()
         found_ids = []
         for line in doc.splitlines():
@@ -120,7 +120,8 @@ class TestThreatCoverage:
                 cell = parts[1].strip()
                 if cell.startswith("T") and cell[1:].isdigit():
                     found_ids.append(cell)
-        required = {f"T{i}" for i in range(1, 11)}
+        # T11 is the Argo CLI trust root the lint gate introduced.
+        required = {f"T{i}" for i in range(1, 12)}
         missing = sorted(required - set(found_ids))
         assert not missing, f"Missing threats: {missing}"
         duplicates = sorted(t for t in required if found_ids.count(t) > 1)

@@ -35,7 +35,7 @@ PYTHON_BIN=$PWD/.venv-verify/bin/python \
 PATH="$PWD/.venv-verify/bin:$PATH" \
 KUBECONFIG=/tmp/kubeconfig-host \
 bash scripts/validate_live_cluster.sh
-# Expected: PASS: 13  FAIL: 0  RESULT: PASS
+# Expected: PASS: 12  FAIL: 0  RESULT: PASS
 ```
 
 ---
@@ -212,23 +212,29 @@ for any diagnostic that touches Tailscale.
 
 ---
 
-## §F. Verified live reproduction outcome (2026-05-09)
+## §F. Verified live reproduction outcome (2026-08-02)
 
 `scripts/validate_live_cluster.sh` against the host kubeadm cluster:
 
 ```
-PASS: 13  FAIL: 0
+PASS: 12  FAIL: 0
 RESULT: PASS
 ```
 
 Specifically:
-- kubectl + argo CLI v4.0.1 available
+- kubectl + argo CLI available
 - Argo workflow-controller running
 - Kueue controller-manager running
 - Mission plan compiled (Pydantic schema)
-- Argo Workflow rendered, `argo lint` passed
+- Argo Workflow rendered and lint passed
 - Argo Workflow submitted, ran, **Succeeded**
 - Kueue Job rendered, submitted, **admitted**, **completed**
+
+The count was 13 when this section was first written on 2026-05-09. Rendering and
+linting are one step now that the render command carries the gate, so they report
+once instead of twice; nothing was dropped. A fourteenth check exists for applying
+a `ResourceClaimTemplate` and does not fire here, because the plan this script uses
+renders a Job and nothing else.
 
 This independently validates paper §V-D claim "Rendered Argo Workflow
 YAML is validated by argo lint" and "live cluster validation."

@@ -95,6 +95,9 @@ This repo produces rendered YAML artifacts. It does not deploy to or control a l
 
 The policy layer runs on **every** plan before any artifact is produced. The CLI `compile` / `render-argo` / `render-kueue` commands and the MCP `compile_plan` / `render_argo` tools are **fail-closed by default**: a plan that violates a policy rule yields no artifact and a non-zero exit (CLI) or a `{"status": "denied", ...}` result (MCP), with the typed violations (`rule`/`rule_id`/`severity`/`provenance`/`path`/`message`) surfaced for triage.
 
+`render-argo --argo-lint` additionally runs the official `argo lint` over the rendered manifests and publishes them only if it passes; a rejected render leaves the output directory unchanged. It is opt-in, so the Argo CLI stays optional.
+
+
 Two interchangeable policy engines back the gate, selected with `--policy-engine`:
 
 - **`opa`** (default for the CLI artifact commands) executes the versioned, independently-auditable Rego bundle — the same policy-as-code artifact an external reviewer runs with `opa eval`, honouring `--bundle` / `--decision`. It **fails closed** if `opa` is unavailable or returns no decision (a distinct non-zero exit); it never silently downgrades.
