@@ -772,7 +772,14 @@ def render_resource_claim_templates(
         if rct is not None:
             templates.append(rct)
             # Fall through: also emit the exactly GPU RCT below (Kueue route).
-    requires_gpu = intent.resource_hints.get("requires_gpu", False)
+    # Derived from the steps, not read from resource_hints. The schema keeps the
+    # two in agreement at construction, but only there: resource_hints is a plain
+    # dict and steps a plain list, so `intent.resource_hints["requires_gpu"] = False`
+    # or `intent.steps.append(...)` afterwards puts them back out of step -- and
+    # render_kueue_job has always decided from the primary step. Reading the same
+    # source as the Job is what makes a dangling claim reference impossible rather
+    # than merely rejected on the way in.
+    requires_gpu = any(step.resource_class == ResourceClass.GPU for step in intent.steps)
     if requires_gpu:
         templates.append({
             "apiVersion": "resource.k8s.io/v1",
@@ -887,7 +894,19 @@ def kueue_step_projection(intent: WorkflowIntent) -> dict[str, Any] | None:
 
 
 def _primary_step(intent: WorkflowIntent) -> WorkflowStep:
-    """The one step a Kueue Job runs: GPU first, then FPGA, then the first step."""
+    """The one step a Kueue Job runs: GPU first, then FPGA, then the first step.
+
+    The schema requires at least one step, but only when the intent is built:
+    `steps` is a plain list, so `.clear()` or a `model_copy(update={"steps": []})`
+    afterwards reaches here. Say which intent has no step rather than raising
+    IndexError from inside a renderer, which is what sent a reader looking at the
+    renderer instead of at the caller.
+    """
+    if not intent.steps:
+        raise ValueError(
+            f"workflow {intent.workflow_name!r} has no steps, so there is no step for "
+            "a Kueue Job to run"
+        )
     gpu = [s for s in intent.steps if s.resource_class == ResourceClass.GPU]
     fpga = [s for s in intent.steps if s.resource_class == ResourceClass.FPGA]
     if gpu:

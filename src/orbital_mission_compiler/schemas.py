@@ -403,9 +403,12 @@ class WorkflowIntent(StrictModel):
     @field_validator("priority", mode="before")
     @classmethod
     def _priority_is_not_a_bool(cls, value: Any) -> Any:
+        # The same grammar AIService applies, not just the same range. Without
+        # _plain_decimal this accepted '1_0' as ten while the plan it was compiled
+        # from rejected it -- an intent that is wider than its own source.
         if isinstance(value, bool):
             raise ValueError("priority must be a number, not a boolean")
-        return value
+        return _plain_decimal(value, "priority")
 
     @model_validator(mode="after")
     def _hints_describe_the_steps(self) -> WorkflowIntent:
@@ -419,10 +422,21 @@ class WorkflowIntent(StrictModel):
                 # Filled in rather than demanded, so a caller building an intent by
                 # hand gets the same artifacts as one that came through the parser.
                 self.resource_hints[key] = value
-            elif bool(self.resource_hints[key]) is not value:
+                continue
+            given = self.resource_hints[key]
+            # A real bool, not something truthy. `"false"` is truthy in Python, so a
+            # truth-value comparison called it consistent with a GPU step -- and then
+            # model_dump(mode="json") handed the policy engine the STRING "false",
+            # where a rule written `== true` reads something else again.
+            if not isinstance(given, bool):
                 raise ValueError(
-                    f"resource_hints[{key!r}] is {self.resource_hints[key]!r}, but the "
-                    f"steps say {value}; the steps decide, and a renderer reading the "
-                    "hint would disagree with one reading the steps"
+                    f"resource_hints[{key!r}] is {given!r}; it describes the steps and "
+                    "must be true or false, not a value that merely reads as one"
+                )
+            if given is not value:
+                raise ValueError(
+                    f"resource_hints[{key!r}] is {given!r}, but the steps say {value}; "
+                    "the steps decide, and a renderer reading the hint would disagree "
+                    "with one reading the steps"
                 )
         return self

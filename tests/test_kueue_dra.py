@@ -522,3 +522,86 @@ class TestFirstAvailable:
             for c in job["spec"]["template"]["spec"]["containers"][0]["resources"]["claims"]
         ]
         assert set(container_claims) == {c["name"] for c in pod_claims}
+
+
+class TestInvariantsSurviveMutation:
+    """The renderers must agree about an intent that changed after it was built.
+
+    A pydantic model validates at construction. `resource_hints` is a plain dict
+    and `steps` a plain list, so both can be changed afterwards, and the renderers
+    are public and take whatever they are handed. An invariant that holds only at
+    construction is not an invariant the renderers can rely on.
+    """
+
+    def _gpu_intent(self):
+        return WorkflowIntent(
+            mission_id="m", service_id="s", priority=50, workflow_name="w",
+            steps=[WorkflowStep(name="g", image="i", resource_class=ResourceClass.GPU)],
+        )
+
+    def test_editing_the_hints_afterwards_cannot_strand_the_claim(self):
+        """The exact bug the schema validator was added for, reachable around it.
+
+        render_resource_claim_templates used to read resource_hints["requires_gpu"]
+        while render_kueue_job read the primary step, so setting the hint to False
+        after construction brought the dangling reference straight back. Both now
+        read the steps.
+        """
+        intent = self._gpu_intent()
+        intent.resource_hints["requires_gpu"] = False
+        emitted = {t["metadata"]["name"] for t in render_resource_claim_templates(intent)}
+        claims = render_kueue_job(intent)["spec"]["template"]["spec"].get("resourceClaims", [])
+        dangling = [
+            c["resourceClaimTemplateName"] for c in claims
+            if c["resourceClaimTemplateName"] not in emitted
+        ]
+        assert not dangling, dangling
+
+    def test_adding_a_gpu_step_afterwards_still_gets_a_template(self):
+        intent = WorkflowIntent(
+            mission_id="m", service_id="s", priority=50, workflow_name="w",
+            steps=[WorkflowStep(name="c", image="i")],
+        )
+        intent.steps.append(
+            WorkflowStep(name="g", image="i", resource_class=ResourceClass.GPU)
+        )
+        emitted = {t["metadata"]["name"] for t in render_resource_claim_templates(intent)}
+        claims = render_kueue_job(intent)["spec"]["template"]["spec"].get("resourceClaims", [])
+        assert emitted and all(
+            c["resourceClaimTemplateName"] in emitted for c in claims
+        ), (emitted, claims)
+
+    def test_emptying_the_steps_afterwards_names_the_intent(self):
+        """IndexError from inside a renderer sent readers to the wrong file."""
+        intent = self._gpu_intent()
+        intent.steps.clear()
+        with pytest.raises(ValueError, match="has no steps"):
+            render_kueue_job(intent)
+
+    @pytest.mark.parametrize("value", ["false", "true", 1, 0, [0], {}], ids=repr)
+    def test_a_hint_that_is_not_a_boolean_is_refused(self, value):
+        """Truthiness is not the question the hint answers.
+
+        `"false"` is truthy in Python, so a truth-value comparison called it
+        consistent with a GPU step -- and model_dump(mode="json") then handed the
+        policy engine the string, where a rule written `== true` reads something
+        else again.
+        """
+        with pytest.raises(ValidationError, match="must be true or false"):
+            WorkflowIntent(
+                mission_id="m", service_id="s", priority=50, workflow_name="w",
+                steps=[WorkflowStep(name="g", image="i", resource_class=ResourceClass.GPU)],
+                resource_hints={"requires_gpu": value},
+            )
+
+    def test_priority_uses_the_same_grammar_as_the_plan_it_came_from(self):
+        """Same range was not the same rule.
+
+        AIService rejects '1_0' because Python reads it as ten while a person reads
+        it as one-zero; the intent compiled from that plan accepted it.
+        """
+        with pytest.raises(ValidationError):
+            WorkflowIntent(
+                mission_id="m", service_id="s", priority="1_0", workflow_name="w",
+                steps=[WorkflowStep(name="c", image="i")],
+            )

@@ -299,7 +299,14 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
     create_files: list[str] = []
     for path, text in planned:
         docs = [d for d in yaml.safe_load_all(text) if d]
-        named = all((d.get("metadata") or {}).get("name") for d in docs)
+        # `all()` over no documents is True, which would put a file holding nothing
+        # in the group whose meaning is "every document here has a name". kubectl
+        # answers `error: no objects passed to apply` for such a directory, so the
+        # vacuous case belongs on the other side. A document that is not a mapping
+        # has no metadata to ask about and is not applyable either.
+        named = bool(docs) and all(
+            isinstance(d, dict) and (d.get("metadata") or {}).get("name") for d in docs
+        )
         (apply_files if named else create_files).append(str(path))
     result["apply"] = apply_files
     result["create"] = create_files
