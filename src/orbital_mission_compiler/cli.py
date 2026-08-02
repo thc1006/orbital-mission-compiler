@@ -955,13 +955,46 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
             "status": "error", "reason": "publish-lock-unavailable", "message": str(exc),
         }, indent=2))
         raise SystemExit(2) from exc
+    leftover_backups: list[str] = []
     with lock_stack:
         preflight_unique([path for path, _ in planned])
         preflight_writable(planned)
-        written = []
-        for out, text in planned:
-            atomic_write(out, text)
-            written.append(out)
+        # Staged, then published as a set. Each atomic_write is atomic on its own,
+        # but the set is what a caller deploys: a failure on the third of four
+        # files left the directory holding some manifests from this render and
+        # some from the last, with nothing saying so. The Job and the classes it
+        # references are exactly such a set -- a Job from the new render beside
+        # priority classes from the old one names values that have moved.
+        staging = Path(tempfile.mkdtemp(
+            prefix=".kueue-render-staging-", dir=_nearest_existing_ancestor(out_dir)
+        ))
+        try:
+            staged: list[Path] = []
+            for out, text in planned:
+                staged_file = staging / out.name
+                atomic_write(staged_file, text)
+                staged.append(staged_file)
+            try:
+                written = _publish(staged, out_dir, leftover_backups)
+            except PublishRolledBackPartially as exc:
+                print(json.dumps({
+                    "status": "error", "reason": "rollback-incomplete",
+                    "output_modified": True,
+                    "recovery_directory": str(exc.recovery),
+                    "unrestored": exc.unrestored,
+                    "unremoved_published": exc.unremoved,
+                    "message": str(exc),
+                }, indent=2))
+                raise SystemExit(2) from exc
+            except OSError as exc:
+                print(json.dumps({
+                    "status": "error", "reason": "publish-failed",
+                    "message": f"the manifests could not be published to {out_dir}, which "
+                               f"was rolled back to its previous contents: {exc}",
+                }, indent=2))
+                raise SystemExit(2) from exc
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
     result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
     # Which verb each file takes, so a caller does not have to open them to find
     # out. A file holding any document without metadata.name cannot be applied.
@@ -999,6 +1032,14 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
             f"runs that step twice. See 'step_projection'.",
             file=sys.stderr,
         )
+    if leftover_backups:
+        result["backup_not_removed"] = leftover_backups
+        for backup in leftover_backups:
+            print(
+                f"warning: the previous manifests are still in {backup}; publication "
+                "succeeded and this directory is now yours to remove",
+                file=sys.stderr,
+            )
     try:
         _report_stale(result, args.output_dir, written, args.prune)
     except PruneIncomplete as exc:

@@ -1286,3 +1286,69 @@ def test_a_document_kubectl_would_reject_fails_the_gate_before_argo_runs(
     assert expected in report["lint_output"], report["lint_output"]
     assert not (tmp_path / "argv.txt").exists(), "the CLI must not have been consulted"
     assert [p.name for p in out.glob("*.yaml")] == ["zz-bad.yaml"], "nothing was published"
+
+
+@pytest.mark.parametrize("fail_on", [1, 2], ids=["second-file", "third-file"])
+def test_render_kueue_leaves_one_generation_or_the_other(tmp_path, monkeypatch, capsys, fail_on):
+    """A failure part-way through publication is not allowed to mix the two.
+
+    Each file was written atomically on its own, but the set is what a caller
+    deploys. A failure on the Nth left the directory holding some manifests from
+    this render and some from the last, and nothing said so -- and for this
+    command the set is a Job beside the priority classes it references, so a mixed
+    directory is a Job naming values that have moved.
+
+    The injected failure is on os.replace, which is the step that publishes.
+    """
+    import os as _os
+
+    from orbital_mission_compiler import cli
+    from orbital_mission_compiler.cli import cmd_render_kueue
+
+    out = tmp_path / "out"
+    out.mkdir()
+    plan = _multi_service_plan(tmp_path, ["a", "b", "c"])
+
+    def _args():
+        return build_parser().parse_args([
+            "render-kueue", "--input", str(plan), "--output-dir", str(out),
+            "--emit-priority-classes", "--policy-engine", "baseline",
+        ])
+
+    cmd_render_kueue(_args())
+    capsys.readouterr()
+    before = {p.name: p.read_text(encoding="utf-8") for p in sorted(out.glob("*.yaml"))}
+    assert len(before) > fail_on, "need more files than the injected failure point"
+
+    real_replace = _os.replace
+    calls = {"n": 0, "fired": False}
+
+    def flaky(src, dst, *a, **kw):
+        # Only the publishing replaces are counted. atomic_write uses os.replace
+        # as well, and the staging directory lives inside the output directory, so
+        # a prefix test would also catch the staging writes and fail the render
+        # before it ever reached the step under test.
+        #
+        # And it fires exactly once. Rollback republishes through the same call,
+        # so a wrapper that kept failing would break the restore too and this would
+        # be measuring a disk that never recovers rather than a single write that
+        # failed -- which is the case the rollback exists for.
+        if Path(dst).parent == out and not Path(dst).name.startswith("."):
+            calls["n"] += 1
+            if calls["n"] > fail_on and not calls["fired"]:
+                calls["fired"] = True
+                raise OSError(28, "No space left on device")
+        return real_replace(src, dst, *a, **kw)
+
+    monkeypatch.setattr(cli.os, "replace", flaky)
+    with pytest.raises(SystemExit) as exc:
+        cmd_render_kueue(_args())
+    assert exc.value.code == 2
+    capsys.readouterr()
+    monkeypatch.undo()
+
+    after = {p.name: p.read_text(encoding="utf-8") for p in sorted(out.glob("*.yaml"))}
+    assert after == before, (
+        "the directory must hold exactly the previous generation after a failed "
+        f"publish, got {sorted(set(after) ^ set(before))} differing"
+    )
