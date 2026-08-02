@@ -448,33 +448,78 @@ class PublishLockUnsupported(PublishLockUnavailable):
 def _load_documents(path: Path, text: str) -> list:
     """Read one file the way the tool that will apply it reads that file.
 
-    kubectl dispatches on CONTENT, not on the extension: NewYAMLOrJSONDecoder
-    calls hasJSONPrefix, which skips leading whitespace and asks whether the first
-    byte is `{`. Everything else goes to the YAML decoder. Verified against
-    kubectl on this cluster -- a `.yaml` holding tab-indented JSON is accepted, a
-    `.json` holding YAML is accepted, and a UTF-8 BOM is accepted.
+    kubectl dispatches on CONTENT: NewYAMLOrJSONDecoder calls hasJSONPrefix, which
+    trims by Go's unicode.IsSpace -- NBSP included -- and asks whether the first
+    byte is `{`. If it is, the file goes to a JSON decoder that reads a STREAM, so
+    concatenated objects are several documents; otherwise to the YAML decoder.
 
-    An earlier version of this dispatched on the extension, which is the same
-    mistake in a new place: it rejected a `.json` file containing YAML and a
-    `.json` file with a BOM, both of which deploy. The rule has to be the one
-    kubectl uses, not one that sounds equivalent.
+    Both details were got wrong once each, in opposite directions, and both are
+    now pinned by tests/test_kubectl_parity.py rather than by this docstring.
     """
-    # The BOM is stripped before anything looks at the first character, because
-    # kubectl's reader tolerates it and neither Python parser does.
     if text.startswith("\ufeff"):
         text = text[1:]
-    # ASCII whitespace, because that is what json.loads skips. `str.lstrip()` also
-    # skips NBSP and U+2003, so a file starting with one of those was sent to a
-    # parser that then refused it at column 1.
-    if text.lstrip(" \t\n\r")[:1] == "{":
+    # str.lstrip() strips what Go's unicode.IsSpace strips, which is the set
+    # hasJSONPrefix uses. Narrowing it to what json.loads skips moved this away
+    # from kubectl rather than toward it.
+    stripped = text.lstrip()
+    if stripped[:1] == "{":
         try:
-            return [json.loads(text)] if text.strip() else []
+            return _json_stream(stripped)
         except json.JSONDecodeError:
-            # A YAML flow mapping also starts with `{`, and it is legal YAML that
-            # kubectl accepts. NewYAMLOrJSONDecoder is a JSON decoder with a YAML
-            # fallback, not a JSON-only path, so this has one too.
+            # A YAML flow mapping also opens with `{`, and kubectl reaches it the
+            # same way when the JSON decode fails.
             pass
     return list(yaml.safe_load_all(text))
+
+
+def _json_stream(text: str) -> list:
+    """Every JSON value in the text, as kubectl's streaming decoder reads them."""
+    decoder = json.JSONDecoder()
+    docs: list = []
+    index = 0
+    while True:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            return docs
+        value, index = decoder.raw_decode(text, index)
+        docs.append(value)
+
+
+def _document_problems(doc: object, where: str) -> list[str]:
+    """Why kubectl would refuse this document, or nothing.
+
+    Each rule below is measured against `kubectl apply --dry-run=client
+    --validate=strict` in tests/test_kubectl_parity.py. Rules asserted here and
+    checked nowhere drifted from kubectl five times.
+    """
+    if not isinstance(doc, dict):
+        return [f"{where}: is a {type(doc).__name__}, not an object"]
+    if not isinstance(doc.get("apiVersion"), str) or not doc["apiVersion"]:
+        return [f"{where}: has no apiVersion, or one that is not a string"]
+    if not isinstance(doc.get("kind"), str) or not doc["kind"]:
+        return [f"{where}: has no kind, or one that is not a string"]
+    if doc["kind"] == "List":
+        # A List carries no metadata of its own and kubectl validates its members,
+        # so exempting it wholesale -- as an earlier revision did -- accepted a
+        # List of invalid objects, which is the false pass this gate exists to
+        # prevent, reached from the other side.
+        items = doc.get("items")
+        if not isinstance(items, list) or not items:
+            return [f"{where}: is a List with no items"]
+        problems: list[str] = []
+        for i, item in enumerate(items):
+            problems += _document_problems(item, f"{where} item {i + 1}")
+        return problems
+    meta = doc.get("metadata")
+    if not isinstance(meta, dict) or not meta:
+        return [f"{where}: has no metadata, or one that is not an object"]
+    if not meta.get("name") and not meta.get("generateName"):
+        # `kubectl apply` reads the live object by name before merging, so a
+        # document with metadata but no name cannot be applied. The docstring gave
+        # this reason for months while nothing checked it.
+        return [f"{where}: has metadata but no name"]
+    return []
 
 
 def _unreadable_documents(directory: Path) -> list[str]:
@@ -548,24 +593,7 @@ def _unreadable_documents(directory: Path) -> list[str]:
         for index, doc in enumerate(docs):
             if doc is None:
                 continue
-            where = f"{path.name} document {index + 1}"
-            if not isinstance(doc, dict):
-                problems.append(f"{where}: is a {type(doc).__name__}, not an object")
-                continue
-            # Value, not membership. `metadata: null` and `apiVersion: null`
-            # satisfied `k not in doc` and were published with "lint: passed",
-            # while kubectl rejects both -- `metadata: null` IS the no-metadata
-            # case the table says to refuse.
-            if doc.get("apiVersion") and doc.get("kind") == "List":
-                # `kubectl get -o yaml` emits this for any multi-object export, so
-                # it is an ordinary thing to find in an output directory, and it
-                # carries no metadata of its own. kubectl accepts it; refusing it
-                # failed every future gated render, because the file is carried in
-                # from the output directory each time.
-                continue
-            missing = [k for k in ("apiVersion", "kind", "metadata") if not doc.get(k)]
-            if missing:
-                problems.append(f"{where}: has no {', '.join(missing)}")
+            problems += _document_problems(doc, f"{path.name} document {index + 1}")
     return problems
 
 
@@ -1009,11 +1037,20 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             ))
             raise SystemExit(2) from exc
         except OSError as exc:
-            print(json.dumps({
+            # The leftover backup belongs in this report too. _publish tries to
+            # discard it on the failure path as well, and when that also fails a
+            # hidden directory holding a complete copy of the previous generation
+            # is left inside the caller's output -- while this message asserts the
+            # directory was restored to exactly those contents. Saying both is the
+            # only accurate answer.
+            failed: dict[str, object] = {
                 "status": "error", "lint": "passed", "reason": "publish-failed",
                 "message": f"the manifests passed lint but could not be published to "
                            f"{out_dir}, which was rolled back to its previous contents: {exc}",
-            }, indent=2))
+            }
+            if leftover_backups:
+                failed["backup_not_removed"] = leftover_backups
+            print(json.dumps(failed, indent=2))
             raise SystemExit(2) from exc
     except ArgoLintUnavailable as exc:
         print(json.dumps({"status": "error", "lint": "unavailable", "message": str(exc)}, indent=2))
@@ -1177,11 +1214,17 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
                 }, indent=2))
                 raise SystemExit(2) from exc
             except OSError as exc:
-                print(json.dumps({
+                failed: dict[str, object] = {
                     "status": "error", "reason": "publish-failed",
                     "message": f"the manifests could not be published to {out_dir}, which "
                                f"was rolled back to its previous contents: {exc}",
-                }, indent=2))
+                }
+                if leftover_backups:
+                    # See the gate's handler: a rollback that left a second copy of
+                    # the previous generation behind must say so, or the message
+                    # asserting a restore is only half the story.
+                    failed["backup_not_removed"] = leftover_backups
+                print(json.dumps(failed, indent=2))
                 raise SystemExit(2) from exc
         finally:
             shutil.rmtree(staging, ignore_errors=True)
