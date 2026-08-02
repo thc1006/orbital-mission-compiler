@@ -41,6 +41,7 @@ def _transcript(**overrides) -> str:
         "commit": f"  compiler commit: {HEAD}",
         "tree": "  working tree   : clean",
         "checksum": f"  harness sha256 : {DIGEST}",
+        "module": f"  compiler module: {REPO}/src/orbital_mission_compiler/compiler.py",
         "env": "  kube-apiserver : v1.36.3",
     }
     parts.update(overrides)
@@ -69,12 +70,16 @@ def test_a_complete_transcript_is_citable(exp):
         ("checksum", "  harness sha256 : " + "f" * 64, "edited while it ran"),
         ("env", None, "the apiserver version"),
         ("env", "  kube-apiserver : unknown", "the apiserver version"),
+        ("module", None, "no 'compiler module' line"),
+        ("module", "  compiler module: /elsewhere/orbital_mission_compiler/compiler.py",
+         "not in this repository"),
     ],
     ids=[
         "no-commit", "wrong-commit", "commit-unknown",
         "no-tree-state", "tree-DIRTY", "tree-lowercase-dirty", "tree-unknown",
         "no-checksum", "wrong-checksum",
         "no-environment", "environment-unknown",
+        "no-module", "module-from-another-tree",
     ],
 )
 def test_each_missing_guarantee_is_reported(exp, field, replacement, expected):
