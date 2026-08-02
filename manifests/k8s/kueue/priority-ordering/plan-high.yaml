@@ -1,4 +1,4 @@
-# Mission priority 90 -> ORCHIDE tier 1 -> WorkloadPriorityClass mission-critical.
+# Mission priority 90 -> ORCHIDE tier 1 -> WorkloadPriorityClass ...mission-critical (orbital- prefixed; this harness prefixes per run).
 mission_id: prio-high
 events:
   - timestamp: "2026-04-15T10:00:00Z"

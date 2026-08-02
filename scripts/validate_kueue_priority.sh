@@ -137,10 +137,49 @@ wl_class() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClas
 wl_class_group() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClassRef.group}' 2>/dev/null; }
 wl_class_kind() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClassRef.kind}' 2>/dev/null; }
 wl_created() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null; }
-# The label the compiler puts on a Job it renders with --priority-class, naming the
-# mapping that chose the class. Read off the Job rather than the Workload: Kueue copies
-# the priority and the class reference onto the Workload, not the Job's own labels.
-job_mapping() { kubectl get job "$1" -n "$NS" -o "jsonpath={.metadata.labels['orbital/priority-mapping-version']}" 2>/dev/null; }
+# Queued-and-waiting stated positively. Inferring it from "Admitted is not True" also
+# accepts a workload that is structurally inadmissible, and a lookup that failed.
+wl_quota_reserved() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.status.conditions[?(@.type=="QuotaReserved")].status}' 2>/dev/null; }
+wl_quota_reason() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.status.conditions[?(@.type=="QuotaReserved")].reason}' 2>/dev/null; }
+wl_admitted_at() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.status.conditions[?(@.type=="Admitted")].lastTransitionTime}' 2>/dev/null; }
+# The label naming the mapping that chose a class, read off two objects the compiler
+# produces separately: the Job (via --priority-class) and the WorkloadPriorityClass
+# itself (via --emit-priority-classes). Comparing those two is the point -- comparing
+# either one against the constant that stamped it only asks the module whether it
+# agrees with itself.
+#
+# The key is written in the escaped bracket form even though it has no dot today. A
+# dotted key in the plain form resolves to empty with status 0, so a prefix moved to
+# a DNS subdomain, which is the Kubernetes convention, would silently turn every
+# reading below into "the label is missing" and blame the compiler for it.
+# Read through `-o json` and pick the key out in Python rather than with kubectl's
+# jsonpath. Two reasons, both of which turn a real failure into a silent empty string
+# under jsonpath: a key containing a dot needs escaping and resolves to empty with
+# status 0 without it, so moving the prefix to a DNS subdomain -- the Kubernetes
+# convention -- would quietly make every reading below say "missing". And an absent
+# label, a label whose value is the empty string (which the API server accepts), and a
+# failed lookup all come back as the same empty string, so the check cannot say which
+# it saw. This reports <absent> and <empty> as distinct, non-empty tokens that no
+# comparison against a real version can accidentally satisfy.
+MAPPING_LABEL="orbital/priority-mapping-version"
+_label_of() { # $1 kubectl args... -> the label value, or <absent>/<empty>/<unreadable>
+  kubectl "$@" -o json 2>/dev/null | "${PYTHON_BIN}" -c '
+import json, sys
+key = sys.argv[1]
+try:
+    obj = json.load(sys.stdin)
+except Exception:
+    print("<unreadable>"); raise SystemExit(0)
+labels = (obj.get("metadata") or {}).get("labels") or {}
+if key not in labels:
+    print("<absent>")
+else:
+    print(labels[key] if labels[key] != "" else "<empty>")
+' "${MAPPING_LABEL}" 2>/dev/null || echo "<unreadable>"
+}
+job_mapping() { _label_of get job "$1" -n "$NS"; }
+class_mapping() { _label_of get workloadpriorityclass "$1"; }
+class_value() { kubectl get workloadpriorityclass "$1" -o jsonpath='{.value}' 2>/dev/null; }
 wait_wl() { # $1 job name -> echo workload name once it exists (up to 30s)
   local w=""; local d=$((SECONDS+30))
   while [ $SECONDS -lt $d ]; do w=$(wl_for_job "$1"); [ -n "$w" ] && break; sleep 2; done
@@ -156,6 +195,29 @@ echo "  namespace=${NS} clusterQueue=${CQ} classes=${HIGH_CLASS},${LOW_CLASS}"
 echo "  compiler commit: $(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)"
 echo "  working tree   : $( [ -n "$(git -C "$HERE" status --porcelain 2>/dev/null)" ] && echo 'DIRTY -- this capture cannot be rebuilt from a commit' || echo 'clean' )"
 echo "  harness sha256 : $(sha256sum "$0" 2>/dev/null | cut -d' ' -f1 || echo unknown)"
+# Which interpreter, and which copy of the compiler it actually imported. The commit
+# above names the tree; it does not establish that the tree is what ran. `python -c`
+# puts the current directory ahead of PYTHONPATH, so a stray orbital_mission_compiler/
+# beside the caller shadows the checked-out one, and every value below would then come
+# from code no commit describes while the header still cited a commit.
+echo "  interpreter    : $("${PYTHON_BIN}" -c 'import sys; print(sys.executable)' 2>/dev/null || echo unknown)"
+echo "  compiler module: $(PYTHONPATH="${HERE}/src" "${PYTHON_BIN}" -c 'import orbital_mission_compiler.compiler as m; print(m.__file__)' 2>/dev/null || echo unresolved)"
+
+# The environment the result is about. Written by the run rather than typed into the
+# capture afterwards: a version recorded by hand is a claim about the cluster, not
+# evidence from it, and this transcript is what the experiment produces.
+echo "=== environment ==="
+echo "  kubectl client : $(kubectl version --client -o json 2>/dev/null | "${PYTHON_BIN}" -c 'import json,sys; print(json.load(sys.stdin)["clientVersion"]["gitVersion"])' 2>/dev/null || echo unknown)"
+echo "  kube-apiserver : $(kubectl version -o json 2>/dev/null | "${PYTHON_BIN}" -c 'import json,sys; print(json.load(sys.stdin)["serverVersion"]["gitVersion"])' 2>/dev/null || echo unknown)"
+echo "  nodes          : $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}={.status.nodeInfo.kubeletVersion} {end}' 2>/dev/null || echo unknown)"
+echo "  kueue image    : $(kubectl get deployment -n kueue-system kueue-controller-manager -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].image}' 2>/dev/null || echo unknown)"
+echo "  kueue imageID  : $(kubectl get pods -n kueue-system -l control-plane=controller-manager -o jsonpath='{.items[0].status.containerStatuses[?(@.name=="manager")].imageID}' 2>/dev/null || echo unknown)"
+# The sort this experiment measures is affected by Kueue's own configuration, so the
+# gates and the config are captured rather than assumed to be defaults.
+echo "  kueue gates    : $(kubectl get deployment -n kueue-system kueue-controller-manager -o jsonpath='{range .spec.template.spec.containers[?(@.name=="manager")].args[*]}{@}{"\n"}{end}' 2>/dev/null | grep -- '--feature-gates' || echo '(none set; built-in defaults apply)')"
+kubectl get configmap -n kueue-system kueue-manager-config -o yaml > "${OUT}/kueue-manager-config.yaml" 2>/dev/null \
+  && echo "  kueue config   : captured to $(basename "${OUT}")/kueue-manager-config.yaml" \
+  || echo "  kueue config   : not readable"
 
 echo "=== 0. prerequisites ==="
 command -v kubectl >/dev/null 2>&1 && report PASS "kubectl available" || { report FAIL "kubectl missing"; exit 2; }
@@ -206,24 +268,70 @@ fi
 kubectl get workloadpriorityclass "$HIGH_CLASS" "$LOW_CLASS" >/dev/null 2>&1 \
   && report PASS "${HIGH_CLASS} + ${LOW_CLASS} exist" || report FAIL "priority classes missing"
 
-# The ordering claim rests on these two values, so read them back rather than trusting
-# the mapping: a rename that silently changed a value would otherwise pass unnoticed.
-HIGH_VALUE=$(kubectl get workloadpriorityclass "$HIGH_CLASS" -o jsonpath='{.value}' 2>/dev/null)
-LOW_VALUE=$(kubectl get workloadpriorityclass "$LOW_CLASS" -o jsonpath='{.value}' 2>/dev/null)
-if [ "$HIGH_VALUE" = "400" ] && [ "$LOW_VALUE" = "200" ]; then
-  report PASS "class values as mapped (${HIGH_CLASS}=400, ${LOW_CLASS}=200)"
+# Read every emitted value back, not only the two this proof goes on to use. Checking
+# the pair the experiment reads leaves the other two tiers unpinned anywhere: the unit
+# suite asserts the four are strictly decreasing, which a changed value can satisfy, so
+# a mapping could be altered without bumping the version -- the one thing the version
+# exists to make detectable -- and both the tests and this run would still pass.
+VALUES_BAD=""
+for spec in "mission-critical:400" "mission-high:300" "mission-normal:200" "mission-low:100"; do
+  cls="${CLASS_PREFIX}${spec%%:*}"; want="${spec##*:}"; got=$(class_value "$cls")
+  [ "$got" = "$want" ] || VALUES_BAD="${VALUES_BAD} ${cls}=${got:-<none>}(want ${want})"
+done
+if [ -z "$VALUES_BAD" ]; then
+  report PASS "all four emitted classes carry the mapped values (400/300/200/100)"
 else
-  report FAIL "unexpected class values: ${HIGH_CLASS}=${HIGH_VALUE:-<none>} ${LOW_CLASS}=${LOW_VALUE:-<none>}"
+  report FAIL "class values off the mapping:${VALUES_BAD}"
+fi
+
+# And that the classes now on the cluster are the ones this tree describes. Read from
+# the source rather than hard-coded, so a deliberate bump to v3 does not fail the run;
+# what it catches is a cluster holding a generation the tree no longer emits.
+MAPPING_VERSION=$(PYTHONPATH="${HERE}/src" "${PYTHON_BIN}" -c \
+  'from orbital_mission_compiler.compiler import PRIORITY_CLASS_MAPPING_VERSION as v; print(v)' \
+  2>"${OUT}/mapping-version.err")
+if [ -z "$MAPPING_VERSION" ]; then
+  # Distinguished because the two have different culprits: a compiler that stopped
+  # exposing the constant, and an interpreter that could not import the compiler at
+  # all. Reporting the second as the first sends the reader to the wrong file.
+  if [ -s "${OUT}/mapping-version.err" ]; then
+    report FAIL "the compiler could not be imported by ${PYTHON_BIN} (see ${OUT}/mapping-version.err)"
+  else
+    report FAIL "the compiler exposes no mapping version to compare against"
+  fi
+else
+  CLASS_MAP_BAD=""
+  for spec in mission-critical mission-high mission-normal mission-low; do
+    cls="${CLASS_PREFIX}${spec}"; got=$(class_mapping "$cls")
+    [ "$got" = "$MAPPING_VERSION" ] || CLASS_MAP_BAD="${CLASS_MAP_BAD} ${cls}=${got}"
+  done
+  if [ -z "$CLASS_MAP_BAD" ]; then
+    report PASS "all four classes are labelled with the mapping this tree emits (${MAPPING_VERSION})"
+  else
+    report FAIL "classes labelled off ${MAPPING_VERSION}:${CLASS_MAP_BAD}"
+  fi
 fi
 
 echo "=== 3. render HIGH (priority 90) and LOW (priority 50) Jobs ==="
+RENDER_BAD=""
 for p in high low; do
-  PYTHONPATH="${HERE}/src" ${PYTHON_BIN} -m orbital_mission_compiler.cli render-kueue \
+  PYTHONPATH="${HERE}/src" "${PYTHON_BIN}" -m orbital_mission_compiler.cli render-kueue \
     --input "${MANIFESTS}/plan-${p}.yaml" --output-dir "${OUT}/${p}" --queue "$LQ" --namespace "$NS" \
-    --priority-class --priority-class-prefix "$CLASS_PREFIX" --policy-engine baseline >/dev/null 2>&1
+    --priority-class --priority-class-prefix "$CLASS_PREFIX" --policy-engine baseline \
+    >"${OUT}/render-${p}.log" 2>&1 || RENDER_BAD="${RENDER_BAD} ${p}(exit $?)"
 done
 HIGH_JOB_FILE=$(find "${OUT}/high" -name '*-kueue.yaml' | head -1)
 LOW_JOB_FILE=$(find "${OUT}/low" -name '*-kueue.yaml' | head -1)
+# The render had no assertion of its own, so a failure here was only noticed several
+# steps later, as a Workload that never appeared. Both the exit status and the artifact
+# are checked, because a command can succeed and still write nothing this run can use.
+[ -n "$HIGH_JOB_FILE" ] || RENDER_BAD="${RENDER_BAD} high(no -kueue.yaml)"
+[ -n "$LOW_JOB_FILE" ] || RENDER_BAD="${RENDER_BAD} low(no -kueue.yaml)"
+if [ -z "$RENDER_BAD" ]; then
+  report PASS "both Jobs rendered by the compiler"
+else
+  report FAIL "render failed:${RENDER_BAD} (logs in ${OUT})"
+fi
 
 echo "=== 4. blocker holds the cpu=1 quota ==="
 render_template "${MANIFESTS}/01-blocker-job.yaml" | kubectl apply -f - >/dev/null
@@ -250,25 +358,44 @@ HC=$(wl_class "$HIGH_WL"); LC=$(wl_class "$LOW_WL")
 [ "$HC" = "$HIGH_CLASS" ] && [ "$LC" = "$LOW_CLASS" ] \
   && report PASS "workloads reference the emitted classes" \
   || report FAIL "class references: HIGH=${HC:-<none>} LOW=${LC:-<none>}"
-# Which mapping produced those class names, read back off the live Jobs. The compiler
-# supplies the value it stamps, so a later bump to v3 does not make this fail; what it
-# catches is a Job reaching the cluster without the label, or the two disagreeing --
-# either of which would leave `kubectl get jobs -l orbital/priority-mapping-version=...`
-# unable to find what a rename left behind.
-MAPPING_VERSION=$(PYTHONPATH="${HERE}/src" ${PYTHON_BIN} -c \
-  'from orbital_mission_compiler.compiler import PRIORITY_CLASS_MAPPING_VERSION as v; print(v)' 2>/dev/null)
-HM=$(job_mapping "$HIGH_JOB"); LM=$(job_mapping "$LOW_JOB")
-if [ -z "$MAPPING_VERSION" ]; then
-  report FAIL "the compiler exposes no mapping version to compare against"
-elif [ "$HM" = "$MAPPING_VERSION" ] && [ "$LM" = "$MAPPING_VERSION" ]; then
-  report PASS "both Jobs carry the mapping that named their class (${MAPPING_VERSION})"
+# A Job and the class it names come from two different compiler entry points
+# (--priority-class and --emit-priority-classes) and arrive as separate objects, so
+# their agreeing is a statement about what the cluster holds. Comparing either one
+# against the constant that stamped it only asks the module whether it agrees with
+# itself. A Job outliving a rename is the case the label exists to make findable, and
+# it is findable only if the Job and the class name the same generation.
+if [ -z "$HIGH_JOB" ] || [ -z "$LOW_JOB" ]; then
+  # Section 6 makes the same distinction for the Workloads. A Job that was never
+  # created reads back as no label at all, which must not be reported as a compiler
+  # that forgot to stamp one.
+  report FAIL "no Job to read a mapping version from: HIGH=(${HIGH_JOB}) LOW=(${LOW_JOB})"
 else
-  report FAIL "mapping version on the Jobs: HIGH=${HM:-<none>} LOW=${LM:-<none>}, compiler says ${MAPPING_VERSION}"
+  HM=$(job_mapping "$HIGH_JOB"); LM=$(job_mapping "$LOW_JOB")
+  HCM=$(class_mapping "$HIGH_CLASS"); LCM=$(class_mapping "$LOW_CLASS")
+  # <absent>, <empty> and <unreadable> are reported as themselves; an equality test
+  # alone would accept two objects that are both missing the label.
+  case "$HM" in "<"*) MAPPING_READABLE=no ;; *) MAPPING_READABLE=yes ;; esac
+  if [ "$MAPPING_READABLE" = yes ] && [ "$HM" = "$HCM" ] && [ "$LM" = "$LCM" ] && [ "$HM" = "$LM" ]; then
+    report PASS "each Job carries the mapping its own class carries (${HM})"
+  else
+    report FAIL "mapping labels disagree: HIGH job=${HM} class=${HCM}; LOW job=${LM} class=${LCM}"
+  fi
 fi
-HG=$(wl_class_group "$HIGH_WL"); HK=$(wl_class_kind "$HIGH_WL")
-[ "$HG" = "kueue.x-k8s.io" ] && [ "$HK" = "WorkloadPriorityClass" ] \
-  && report PASS "the reference is a WorkloadPriorityClass, not a Pod PriorityClass" \
-  || report FAIL "unexpected class reference: group=${HG:-<none>} kind=${HK:-<none>}"
+# Read the reference on both Workloads. The ordering claim rests on two priorities, and
+# a LOW whose value arrived through the pod-template fallback would leave the comparison
+# measuring something other than this mapping.
+REF_BAD=""
+for pair in "HIGH ${HIGH_WL}" "LOW ${LOW_WL}"; do
+  set -- $pair
+  g=$(wl_class_group "$2"); k=$(wl_class_kind "$2")
+  { [ "$g" = "kueue.x-k8s.io" ] && [ "$k" = "WorkloadPriorityClass" ]; } \
+    || REF_BAD="${REF_BAD} $1(group=${g:-<none>} kind=${k:-<none>})"
+done
+if [ -z "$REF_BAD" ]; then
+  report PASS "both references are WorkloadPriorityClasses, not Pod PriorityClasses"
+else
+  report FAIL "unexpected class reference:${REF_BAD}"
+fi
 # Arrival order is the thing priority has to beat, so read it rather than assume the
 # sleep achieved it.
 HT=$(wl_created "$HIGH_WL"); LT=$(wl_created "$LOW_WL")
@@ -281,12 +408,18 @@ fi
 echo "=== 6. both PENDING while blocker holds quota ==="
 sleep 5
 la=$(wl_admitted "$LOW_WL"); ha=$(wl_admitted "$HIGH_WL")
-# Require both Workloads to actually EXIST and be un-admitted -- a missing Workload
-# (empty name) must NOT be mistaken for "pending".
-if [ -n "$LOW_WL" ] && [ -n "$HIGH_WL" ] && [ "$la" != "True" ] && [ "$ha" != "True" ]; then
-  report PASS "LOW and HIGH both pending under full quota"
+lq=$(wl_quota_reserved "$LOW_WL"); hq=$(wl_quota_reserved "$HIGH_WL")
+lr=$(wl_quota_reason "$LOW_WL"); hr=$(wl_quota_reason "$HIGH_WL")
+# Both Workloads must EXIST, be un-admitted, and say so themselves through a
+# QuotaReserved condition that is present and False. A missing Workload must not be
+# mistaken for a pending one, and neither must a workload that is waiting for
+# something other than quota.
+if [ -n "$LOW_WL" ] && [ -n "$HIGH_WL" ] \
+   && [ "$la" != "True" ] && [ "$ha" != "True" ] \
+   && [ "$lq" = "False" ] && [ "$hq" = "False" ]; then
+  report PASS "LOW and HIGH both waiting on quota (QuotaReserved=False; LOW ${lr:-<no reason>}, HIGH ${hr:-<no reason>})"
 else
-  report FAIL "expected both workloads present and pending, got LOW=($LOW_WL)=$la HIGH=($HIGH_WL)=$ha"
+  report FAIL "expected both workloads present and waiting on quota, got LOW=($LOW_WL) admitted=${la:-<none>} quotaReserved=${lq:-<none>}(${lr:-<none>}) HIGH=($HIGH_WL) admitted=${ha:-<none>} quotaReserved=${hq:-<none>}(${hr:-<none>})"
 fi
 
 echo "=== 7. free quota (delete blocker); the higher-priority pending workload wins ==="
@@ -308,6 +441,31 @@ case "$FIRST" in
   LOW)  report FAIL "LOW admitted first -> creation order, not priority, decided" ;;
   *)    report FAIL "neither workload was admitted within the window" ;;
 esac
+
+echo "=== 7b. LOW was queued behind HIGH, not unable to run at all ==="
+# Winning a race against something that could never have run is not winning. Without
+# this, any asymmetry that made LOW permanently inadmissible -- a larger request, a
+# flavor that does not match, a class name that resolves to nothing -- produces exactly
+# the PASS above, and the earlier steps cannot tell the two apart: "not admitted yet"
+# and "never admissible" both satisfy them.
+d=$((SECONDS+120)); la=""
+while [ $SECONDS -lt $d ]; do la=$(wl_admitted "$LOW_WL"); [ "$la" = "True" ] && break; sleep 3; done
+if [ "$la" = "True" ]; then
+  report PASS "LOW admitted once HIGH released the quota -> it was queued, not inadmissible"
+else
+  report FAIL "LOW never admitted (admitted=${la:-<none>}, quotaReserved=$(wl_quota_reserved "$LOW_WL"):$(wl_quota_reason "$LOW_WL")) -> the ordering result compares against a workload that may never have been runnable"
+fi
+# Second-resolution condition timestamps, kept because they are the cluster's own
+# account of the order rather than the polling loop's.
+echo "  admitted at: HIGH=$(wl_admitted_at "$HIGH_WL") LOW=$(wl_admitted_at "$LOW_WL")"
+
+# The objects the claim is about, kept so a reader can check the resource shapes were
+# symmetric, what quota each reserved, and that neither carried a requeue backoff --
+# none of which is recoverable once the namespace goes.
+kubectl get workloads.kueue.x-k8s.io -n "$NS" -o yaml > "${OUT}/workloads.yaml" 2>/dev/null \
+  && echo "  workloads captured to $(basename "${OUT}")/workloads.yaml" || true
+kubectl get clusterqueue "$CQ" -o yaml > "${OUT}/clusterqueue.yaml" 2>/dev/null \
+  && echo "  defaulted ClusterQueue captured to $(basename "${OUT}")/clusterqueue.yaml" || true
 
 echo "" ; echo "=== Summary ===" ; echo "PASS: ${PASS}  FAIL: ${FAIL}"
 # Teardown runs via the EXIT trap (also covers interrupts).

@@ -1,4 +1,4 @@
-# Mission priority 50 -> ORCHIDE tier 3 -> WorkloadPriorityClass mission-normal.
+# Mission priority 50 -> ORCHIDE tier 3 -> WorkloadPriorityClass ...mission-normal (orbital- prefixed; this harness prefixes per run).
 mission_id: prio-low
 events:
   - timestamp: "2026-04-15T10:00:00Z"
