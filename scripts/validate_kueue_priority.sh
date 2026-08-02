@@ -390,13 +390,30 @@ fi
 # The verbs this run needs, checked before it needs them. Namespace-level access
 # says nothing about the cluster-scoped objects, which are the ones a failed
 # teardown would leave behind.
+# `kubectl auth can-i` answers on stdout -- "yes" or "no" -- and exits 1 only for
+# "no". Reading the exit code alone is not enough here, because a resource type the
+# server does not have still answers "yes" with exit 0: RBAC grants verbs on a
+# resource NAME, and a name nothing implements is grantable. That case is reported
+# on stderr instead. So the check is stdout "yes" AND nothing on stderr, which
+# separates permitted, denied, and misspelled. --all-namespaces is the documented
+# form for a cluster-scoped resource; without it kubectl warns about scope and the
+# warning would read as a missing type.
 RBAC_MISSING=""
+can_i() { # $1 verb, $2 resource -> 0 when permitted and the type is real
+  local out err
+  err=$(kget auth can-i "$1" "$2" --all-namespaces 2>&1 >/dev/null)
+  out=$(kget auth can-i "$1" "$2" --all-namespaces 2>/dev/null)
+  [ "$out" = "yes" ] && [ -z "$err" ]
+}
 for spec in "create:workloadpriorityclasses" "delete:workloadpriorityclasses" \
             "create:clusterqueues" "delete:clusterqueues" \
             "create:resourceflavors" "delete:resourceflavors" \
-            "create:namespaces" "delete:namespaces"; do
+            "create:namespaces" "delete:namespaces" \
+            "create:localqueues" "delete:localqueues" \
+            "create:jobs" "delete:jobs" \
+            "get:workloads" "get:workloadpriorityclasses" "get:clusterqueues"; do
   verb="${spec%%:*}"; res="${spec##*:}"
-  kget auth can-i "$verb" "$res" >/dev/null 2>&1 || RBAC_MISSING="${RBAC_MISSING} ${verb}/${res}"
+  can_i "$verb" "$res" || RBAC_MISSING="${RBAC_MISSING} ${verb}/${res}"
 done
 if [ -z "$RBAC_MISSING" ]; then
   report PASS "the cluster-scoped verbs this run needs are permitted"
