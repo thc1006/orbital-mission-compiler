@@ -104,6 +104,21 @@ The four stages remain independent modules callable in isolation (schema, policy
 
 On denial the compiler writes **no** new artifact; a file that already exists at the output path is left untouched (it is not deleted, to avoid destroying a prior valid artifact). Consumers should key on the exit code / `denied` status, not on file existence alone.
 
+### Opt-in render flags
+
+All of these are off by default, so the default render is unchanged by them.
+
+| Flag | Command | What it does |
+|---|---|---|
+| `--priority-class` | `render-kueue` | Labels the Job `kueue.x-k8s.io/priority-class` (mission priority → ORCHIDE tier → class name), which is the field Kueue resolves into the `spec.priority` it sorts a ClusterQueue on. The named class must already exist, so pair it with `--emit-priority-classes` and apply those first; Kueue rejects a Job naming a class it cannot find. |
+| `--emit-priority-classes` | `render-kueue` | Also writes `workload-priority-classes.yaml`, the four cluster-scoped `WorkloadPriorityClass` objects, one per ORCHIDE tier. |
+| `--priority-class-prefix` | `render-kueue` | Prefix for both the class names and the Job label, defaulting to `orbital-`. The objects are cluster-scoped, so an installation sharing a cluster with another copy sets its own here rather than overwriting the other's classes. |
+| `--dra-fallback` | `render-argo` | Wires the accelerator-fallback step to a DRA `firstAvailable` ResourceClaimTemplate through `podSpecPatch`, and emits the template alongside the Workflow as one multi-doc file. This is scheduler-level GPU→CPU fallback; the default remains the runtime environment-variable switch. A `firstAvailable` claim is **not** Kueue quota-counted, and the CPU leg needs a cluster running dra-driver-cpu — see `docs/07_installation_matrix.md`. |
+
+`--priority-class` makes a plan's priority visible to Kueue's queue sorting. Whether an
+onboard executor acts on that priority is out of scope here, and preemption and cohort
+borrowing, which read the same field, are not exercised by this repository's live checks.
+
 ## Project structure
 
 ```
