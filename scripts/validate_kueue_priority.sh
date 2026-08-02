@@ -307,10 +307,10 @@ else
 fi
 
 echo "=== 2. emit + apply the WorkloadPriorityClasses from the compiler ==="
-PYTHONPATH="${HERE}/src" ${PYTHON_BIN} -m orbital_mission_compiler.cli render-kueue \
+PYTHONPATH="${HERE}/src" "${PYTHON_BIN}" -m orbital_mission_compiler.cli render-kueue \
   --input "${MANIFESTS}/plan-high.yaml" --output-dir "${OUT}/wpc" --queue "$LQ" --namespace "$NS" \
   --emit-priority-classes --priority-class --priority-class-prefix "$CLASS_PREFIX" \
-  --policy-engine baseline >/dev/null 2>&1
+  --policy-engine baseline >"${OUT}/render-wpc.log" 2>&1
 # The compiler does not know about this run, so the ownership label is added here.
 if "${PYTHON_BIN}" - "${OUT}/wpc/workload-priority-classes.yaml" "$RUN_ID" <<'PY' | kubectl apply -f - >/dev/null
 import sys, yaml
