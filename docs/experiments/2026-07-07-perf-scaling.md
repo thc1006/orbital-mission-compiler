@@ -69,3 +69,40 @@ Run with `PATH="$PWD/.venv-verify/bin:$PATH" .venv-verify/bin/python <this-snipp
 - **OPA is sub-linear** (18.8 → 115 ms): a fixed subprocess-startup floor dominates.
 - **compile/render** are order-of-magnitude costs only — their 20–45% relative std
   is host background-load jitter, not intrinsic to the fixed-work phases.
+
+
+## What commit these numbers measured, and a re-measurement
+
+This table records the host, the iteration count and the exact snippet, and not
+the commit. Every phase in it is a function this repository has changed since, so
+a reader re-running the snippet cannot tell a regression from a different
+codebase. That gap is closed going forward rather than backwards:
+`scripts/benchmark_scaling.py` now prints the commit, the working-tree state, its
+own checksum, the interpreter, the copy of the compiler it imported and the CPU it
+read from the machine, and `scripts/run_experiments.py` files its transcript only
+when all of those are present. The result lives at
+[`results/scaling.txt`](results/scaling.txt).
+
+Reading the current transcript against the frozen table above (same host, same 30
+iterations; `Render` above is `argo + kueue`, reported separately in the transcript):
+
+- **Parse is unchanged** -- 1305 ms against 1323 at N=1000, 123 against 127 at N=100.
+  That is the question that prompted the re-measurement: the schema now runs a model
+  validator on every compiled intent, and it does not show. So the added validation is
+  below this host's jitter.
+- **The render phases got measurably more expensive.** Kueue rendering at N=1000 has
+  roughly doubled across this stack, and Argo and compile rose with it. This is the
+  same trade recorded in [the OPA-vs-baseline note](2026-07-07-opa-vs-baseline.md):
+  the structured-violation work allocates and formats per occurrence where the earlier
+  code appended a string, and the Kueue renderer now derives its claim templates from
+  the steps rather than from a hint. Both are deliberate, and both are still a rounding
+  error beside the 1.3-second parse that dominates every row.
+- **OPA moves with the host, not with the code.** It has read 115, 174 and 155 ms at
+  N=1000 across three measurements of a phase none of these changes touch. This box
+  runs the single-node cluster used in SV-D/SV-E throughout, and the note above already
+  records that its sub-100 ms phases carry background-load jitter. Attributing that
+  spread would need a quiet host and a bisect, and neither has been done -- so it is
+  reported and not explained.
+- The paper's Table V is frozen with the camera-ready and none of this touches it. The
+  numbers here are for a future arXiv version, and the point of recording the commit is
+  that the next comparison can be attributed rather than guessed at.
