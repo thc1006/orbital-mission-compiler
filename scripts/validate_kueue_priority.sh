@@ -109,12 +109,19 @@ SENTINEL="${OUT}/.kueue-priority-run"
 # directory or symlink called .kueue-priority-run satisfied it too, which let a
 # planted path licence the deletion of whatever sat beside it.
 if [ -e "$OUT" ]; then
-  if [ ! -f "$SENTINEL" ] || [ "$(cat "$SENTINEL" 2>/dev/null)" != "owned-by-${RUN_ID}" ]; then
-    printf '%s exists and is not this run\x27s to delete; refusing\n' "$OUT" >&2
-    printf 'RESULT: FAIL\n'; exit 2
-  fi
-  printf 'a previous run with id %s left %s behind; reusing it\n' "${RUN_ID}" "$OUT" >&2
+  # Refuse, always. An earlier version accepted the directory when the marker
+  # named this RUN_ID -- but two runs sharing a RUN_ID is precisely the collision
+  # the marker exists to catch, so the check passed exactly when it mattered and
+  # the second run deleted the first's live output while printing "reusing it".
+  # There is no safe way to tell "my own leftovers" from "another run of me still
+  # working", so neither is deleted.
+  printf '%s already exists; refusing to delete it. Choose a different RUN_ID or\n' "$OUT" >&2
+  printf 'remove it yourself once you are sure no run is using it.\n' >&2
+  printf 'RESULT: FAIL\n'; exit 2
 fi
+# -L before -e above would not have been enough either: a symlink AT $OUT is
+# followed by mkdir -p and by every redirection into it, so the run would write
+# through it. Refusing any pre-existing path covers that too.
 rm -rf "$OUT" || { printf 'could not clear %s\n' "$OUT" >&2; printf 'RESULT: FAIL\n'; exit 2; }
 # F7: unchecked, these two failures surfaced much later as a compiler that
 # "exposes no mapping version" -- a filesystem error reported as a code fault.
@@ -207,6 +214,7 @@ _warn_leftovers() {
   [ "${CLEANUP_FAILED}" -eq 0 ] || echo "cleanup left objects from run ${RUN_ID} behind" >&2
 }
 trap 'cleanup; _warn_leftovers' EXIT
+trap 'cleanup; trap - EXIT; _warn_leftovers; exit 129' HUP
 trap 'cleanup; trap - EXIT; _warn_leftovers; exit 130' INT
 trap 'cleanup; trap - EXIT; _warn_leftovers; exit 143' TERM
 
@@ -334,11 +342,33 @@ jobs_present() { # $@ job names, possibly empty -> the ones that exist, on stdou
   [ ${#named[@]} -eq 0 ] && return 0
   kubectl get jobs "${named[@]}" -n "$NS" --ignore-not-found -o name 2>/dev/null
 }
-del_jobs() { # $@ job names, possibly empty
+del_jobs() { # $@ job names, possibly empty. Waits, by default.
+  # Synchronous on purpose. The observation window opens as soon as the blocker's
+  # delete returns, so returning early starts the measurement while the blocker may
+  # still hold the quota -- and that made races 2..N a different procedure from
+  # race 1, tallied together. Callers that genuinely do not need to wait pass
+  # NOWAIT=1.
   local n
   for n in "$@"; do
-    [ -n "$n" ] && kubectl delete job "$n" -n "$NS" --ignore-not-found --wait=false >/dev/null 2>&1
+    [ -n "$n" ] || continue
+    if [ "${NOWAIT:-0}" = "1" ]; then
+      kubectl delete job "$n" -n "$NS" --ignore-not-found --wait=false >/dev/null 2>&1
+    else
+      kubectl delete job "$n" -n "$NS" --ignore-not-found >/dev/null 2>&1
+    fi
   done
+  return 0
+}
+
+_drain() { # $@ job names -> 0 when they are gone, 1 when the wait ran out
+  local d remaining
+  d=$((SECONDS+90))
+  while [ $SECONDS -lt $d ]; do
+    remaining=$(jobs_present "$@") || { sleep 3; continue; }
+    [ -z "$remaining" ] && return 0
+    sleep 3
+  done
+  return 1
 }
 
 race_once() { # $1 blocker name, $2 low job file, $3 high job file -> HIGH|LOW|BOTH|NONE
@@ -350,6 +380,7 @@ race_once() { # $1 blocker name, $2 low job file, $3 high job file -> HIGH|LOW|B
   while [ $SECONDS -lt $d ]; do ba=$(wl_admitted "$(wl_for_job "$blocker")"); [ "$ba" = "True" ] && break; sleep 2; done
   if [ "$ba" != "True" ]; then
     del_jobs "$blocker"
+    _drain "$blocker"
     echo "NOBLOCK"; return
   fi
   lj=$(kubectl create -f "$lowf" -o jsonpath='{.metadata.name}' 2>/dev/null)
@@ -359,6 +390,7 @@ race_once() { # $1 blocker name, $2 low job file, $3 high job file -> HIGH|LOW|B
   hw=$(wait_wl "$hj")
   if [ -z "$lw" ] || [ -z "$hw" ]; then
     del_jobs "$blocker" "$lj" "$hj"
+    _drain "$blocker" "$lj" "$hj"
     echo "NOWL"; return
   fi
   del_jobs "$blocker"
@@ -371,18 +403,14 @@ race_once() { # $1 blocker name, $2 low job file, $3 high job file -> HIGH|LOW|B
     sleep 2
   done
   del_jobs "$lj" "$hj"
-  # Wait for THIS cycle's Jobs to go, so the next cycle's blocker can be admitted.
-  # The earlier version waited for the namespace to hold no Jobs at all, which can
-  # never happen: the detailed pass's own LOW and HIGH Jobs live until teardown, so
-  # every repeat burned its full 90 seconds and established nothing. A read that
-  # failed is not "drained" either -- it is a read that did not answer.
-  d=$((SECONDS+90))
-  while [ $SECONDS -lt $d ]; do
-    local remaining
-    remaining=$(jobs_present "$blocker" "$lj" "$hj") || { sleep 3; continue; }
-    [ -z "$remaining" ] && break
-    sleep 3
-  done
+  # Wait for THIS cycle's Jobs, so the next cycle's blocker can be admitted. An
+  # earlier version waited for the namespace to hold no Jobs at all, which can
+  # never happen: the detailed pass's own Jobs live until teardown. A drain that
+  # runs out is reported rather than passed over, because the next race would then
+  # fail for a reason that has nothing to do with priority.
+  if ! _drain "$blocker" "$lj" "$hj"; then
+    echo "NODRAIN"; return
+  fi
   echo "${first:-NONE}"
 }
 
@@ -426,13 +454,27 @@ echo "  kueue imageID  : $(kubectl get pods -n kueue-system -l control-plane=con
 # read: `grep` exits 1 both when the flag is absent and when kubectl printed
 # nothing, so the earlier version transcribed an unreadable cluster as a positive
 # claim about its configuration.
-KUEUE_ARGS=$(kubectl get deployment -n kueue-system kueue-controller-manager \
-  -o jsonpath='{range .spec.template.spec.containers[?(@.name=="manager")].args[*]}{@}{"\n"}{end}' 2>/dev/null) \
-  && echo "  kueue gates    : $(printf '%s' "$KUEUE_ARGS" | grep -- '--feature-gates' || echo '(no --feature-gates arg; see the config file captured below)')" \
-  || echo "  kueue gates    : could not read the deployment"
-kubectl get configmap -n kueue-system kueue-manager-config -o yaml > "${OUT}/kueue-manager-config.yaml" 2>/dev/null \
-  && echo "  kueue config   : captured to $(basename "${OUT}")/kueue-manager-config.yaml" \
-  || echo "  kueue config   : not readable"
+if ! KUEUE_ARGS=$(kubectl get deployment -n kueue-system kueue-controller-manager \
+    -o jsonpath='{range .spec.template.spec.containers[?(@.name=="manager")].args[*]}{@}{"\n"}{end}' 2>/dev/null); then
+  echo "  kueue gates    : could not read the deployment"
+elif [ -z "${KUEUE_ARGS//[[:space:]]/}" ]; then
+  # Empty output with exit 0 means the container selector matched nothing, or the
+  # container has no args at all. Either way this read nothing, and saying "no
+  # --feature-gates arg" would be a statement about a list it never saw.
+  echo "  kueue gates    : the manager container reported no args; not read"
+else
+  echo "  kueue gates    : $(printf '%s' "$KUEUE_ARGS" | grep -- '--feature-gates' || echo '(args present, none is --feature-gates; gates may still be set in the config inlined below)')"
+fi
+# Inlined, not written to a file. Everything this run writes into $OUT is removed
+# by cleanup on every path, and $OUT is a temporary tree by default -- so "captured
+# to <file>" described evidence that did not outlive the run that claimed it. The
+# transcript is the artifact, so the evidence belongs in the transcript.
+if KUEUE_CFG=$(kubectl get configmap -n kueue-system kueue-manager-config -o yaml 2>/dev/null); then
+  echo "  kueue config   : inlined below"
+  printf '%s\n' "$KUEUE_CFG" | sed 's/^/    | /'
+else
+  echo "  kueue config   : not readable"
+fi
 
 echo "=== 0. prerequisites ==="
 # Prerequisites gate the rest. Reporting one as FAIL and carrying on into object
@@ -460,7 +502,7 @@ fi
 # separates permitted, denied, and misspelled. --all-namespaces is the documented
 # form for a cluster-scoped resource; without it kubectl warns about scope and the
 # warning would read as a missing type.
-RBAC_MISSING=""; RBAC_UNKNOWN=""
+RBAC_MISSING=""; RBAC_UNKNOWN=""; RBAC_UNREACHABLE=""
 # Two questions, asked separately, because kubectl answers them together and
 # ambiguously. "Does this resource type exist" comes from discovery, once. "Is the
 # verb permitted" comes from `auth can-i -q`, whose exit code is the answer and
@@ -469,18 +511,35 @@ RBAC_MISSING=""; RBAC_UNKNOWN=""
 # Reading stderr, as an earlier version did, could not tell an unknown type from a
 # deprecation warning from a partial-discovery hiccup -- so a cluster that emits
 # any warning at all failed every check and aborted the run.
-KNOWN_RESOURCES=$(kubectl api-resources --no-headers -o name 2>/dev/null | sed 's/\..*//' | sort -u)
+# The exit status matters as much as the output. A partial discovery failure --
+# a stale APIService, an aggregated API that is down -- prints the types it could
+# reach AND exits non-zero, so checking only for empty output turned a hiccup into
+# "this cluster has no Kueue types" and a hard exit, one line after confirming the
+# Kueue controller was running.
+if ! KNOWN_RAW=$(kubectl api-resources --no-headers -o name 2>/dev/null); then
+  report FAIL "the cluster's resource types could not be listed completely, so this run cannot tell a missing type from an unreachable one -- nothing was created"
+  echo "RESULT: FAIL"; exit 2
+fi
+KNOWN_RESOURCES=$(printf '%s\n' "$KNOWN_RAW" | sed 's/\..*//' | sort -u)
 if [ -z "$KNOWN_RESOURCES" ]; then
-  report FAIL "could not list the cluster's resource types -- nothing was created"
+  report FAIL "the cluster reported no resource types at all -- nothing was created"
   echo "RESULT: FAIL"; exit 2
 fi
 can_i() { # $1 verb, $2 resource -> permitted | denied | unknown-type
-  printf '%s\n' "$KNOWN_RESOURCES" | grep -qx -- "$2" || { echo unknown-type; return; }
-  if kubectl auth can-i "$1" "$2" --all-namespaces -q >/dev/null 2>&1; then
-    echo permitted
-  else
-    echo denied
-  fi
+  # -F: without it the name is a regex, so a typo containing a dot matches the
+  # resource it was a typo for -- 'c.usterqueues' resolved as 'clusterqueues'.
+  printf '%s\n' "$KNOWN_RESOURCES" | grep -qxF -- "$2" || { echo unknown-type; return; }
+  local answer
+  answer=$(kubectl auth can-i "$1" "$2" --all-namespaces 2>/dev/null)
+  case "$answer" in
+    yes) echo permitted ;;
+    no)  echo denied ;;
+    # Neither word: the request did not get an answer at all -- an unreachable
+    # apiserver, an expired credential. `-q` alone could not see this, because it
+    # exits 1 for "no" and for every error alike, so an authentication failure was
+    # reported as missing permission.
+    *)   echo unreachable ;;
+  esac
 }
 for spec in "create:workloadpriorityclasses" "delete:workloadpriorityclasses" \
             "create:clusterqueues" "delete:clusterqueues" \
@@ -494,8 +553,15 @@ for spec in "create:workloadpriorityclasses" "delete:workloadpriorityclasses" \
     permitted)    ;;
     denied)       RBAC_MISSING="${RBAC_MISSING} ${verb}/${res}" ;;
     unknown-type) RBAC_UNKNOWN="${RBAC_UNKNOWN} ${res}" ;;
+    # An answer that was never given. Reporting it as a denial names RBAC for an
+    # apiserver that did not respond.
+    unreachable)  RBAC_UNREACHABLE="${RBAC_UNREACHABLE} ${verb}/${res}" ;;
   esac
 done
+if [ -n "$RBAC_UNREACHABLE" ]; then
+  report FAIL "the apiserver did not answer whether these are permitted:${RBAC_UNREACHABLE} -- nothing was created"
+  echo "RESULT: FAIL"; exit 2
+fi
 if [ -n "$RBAC_UNKNOWN" ]; then
   # Not a denial. An unresolvable resource type, a discovery hiccup or an
   # unreachable apiserver produce the same shape, and naming RBAC for any of them
@@ -602,7 +668,7 @@ if [ -z "$MAPPING_VERSION" ]; then
   # exposing the constant, and an interpreter that could not import the compiler at
   # all. Reporting the second as the first sends the reader to the wrong file.
   if [ -s "${OUT}/mapping-version.err" ]; then
-    report FAIL "the compiler could not be imported by ${PYTHON_BIN} (see ${OUT}/mapping-version.err)"
+    report FAIL "the compiler could not be imported by ${PYTHON_BIN}: $(tr '\n' ' ' < "${OUT}/mapping-version.err" | cut -c1-200)"
   else
     report FAIL "the compiler exposes no mapping version to compare against"
   fi
@@ -655,14 +721,24 @@ CTL_LOW_FILE=$(find "${OUT}/ctl-low" -name '*-kueue.yaml' | head -1)
 if [ -z "$RENDER_BAD" ]; then
   report PASS "both arms rendered by the compiler (priority-class and control)"
 else
-  report FAIL "render failed:${RENDER_BAD} (logs in ${OUT}) -- nothing further attempted"
+  report FAIL "render failed:${RENDER_BAD} -- nothing further attempted"
+  # Printed, not pointed at: cleanup removes $OUT on the way out, so a message
+  # naming a path there sends the reader somewhere that no longer exists.
+  for _log in "${OUT}"/render-*.log; do
+    [ -s "$_log" ] || continue
+    echo "  --- $(basename "$_log") ---"; sed 's/^/    | /' "$_log"
+  done
   cleanup; finish
 fi
 
 # The control arm is only a control if its Jobs really carry no class. Checked here
 # rather than assumed, because a control that silently kept the label would agree with
 # the treatment arm and be read as the treatment arm failing to matter.
-CTL_LABELLED=$("${PYTHON_BIN}" - "$CTL_HIGH_FILE" "$CTL_LOW_FILE" <<'PY'
+# The exit status is read. Discarding it made every failure -- an unparseable
+# sibling file, a broken interpreter, a missing render -- print "the control arm's
+# Jobs carry no priority class", which is the check the experiment's causal claim
+# rests on.
+if CTL_LABELLED=$("${PYTHON_BIN}" - "$CTL_HIGH_FILE" "$CTL_LOW_FILE" <<'PY'
 import sys, yaml
 hits = []
 for path in sys.argv[1:3]:
@@ -675,10 +751,16 @@ for path in sys.argv[1:3]:
 print(" ".join(hits))
 PY
 )
-if [ -z "$CTL_LABELLED" ]; then
-  report PASS "the control arm's Jobs carry no priority class"
+then
+  if [ -z "$CTL_LABELLED" ]; then
+    report PASS "the control arm's Jobs carry no priority class"
+  else
+    report FAIL "the control arm is not a control; it carries: ${CTL_LABELLED}"
+    cleanup; finish
+  fi
 else
-  report FAIL "the control arm is not a control; it carries: ${CTL_LABELLED}"
+  report FAIL "could not read the control arm's rendered Jobs, so it cannot be shown to be a control -- nothing further attempted"
+  cleanup; finish
 fi
 
 echo "=== 4. blocker holds the cpu=1 quota ==="
@@ -686,7 +768,15 @@ render_template "${MANIFESTS}/01-blocker-job.yaml" | kubectl apply -f - >/dev/nu
 BLOCK_WL=$(wait_wl "$BLOCKER")
 d=$((SECONDS+60)); ba=""
 while [ $SECONDS -lt $d ]; do ba=$(wl_admitted "$BLOCK_WL"); [ "$ba" = "True" ] && break; sleep 2; done
-[ "$ba" = "True" ] && report PASS "blocker admitted (holds quota)" || report FAIL "blocker not admitted"
+if [ "$ba" = "True" ]; then
+  report PASS "blocker admitted (holds quota)"
+else
+  # Without the blocker the quota was never held, so every measurement after this
+  # is about nothing. The run used to continue into nine races at roughly forty
+  # minutes -- the exact shape this file was fixed for one section earlier.
+  report FAIL "blocker not admitted, so the quota was never held -- nothing further attempted"
+  cleanup; finish
+fi
 
 echo "=== 5. submit LOW first, then HIGH (reverse of priority) ==="
 LOW_JOB=$(kubectl create -f "$LOW_JOB_FILE" -o jsonpath='{.metadata.name}' 2>/dev/null)
@@ -733,11 +823,18 @@ fi
 # a LOW whose value arrived through the pod-template fallback would leave the comparison
 # measuring something other than this mapping.
 REF_BAD=""
-for pair in "HIGH ${HIGH_WL}" "LOW ${LOW_WL}"; do
-  set -- $pair
-  g=$(wl_class_group "$2"); k=$(wl_class_kind "$2")
+for _side in HIGH LOW; do
+  # Indexed by name rather than by splitting a string: an empty workload name made
+  # `set -- $pair` leave $2 unset, which under set -u wrote bash errors into the
+  # middle of the transcript and clobbered the positional parameters.
+  [ "$_side" = HIGH ] && _wl="$HIGH_WL" || _wl="$LOW_WL"
+  if [ -z "$_wl" ]; then
+    REF_BAD="${REF_BAD} ${_side}(no workload)"
+    continue
+  fi
+  g=$(wl_class_group "$_wl"); k=$(wl_class_kind "$_wl")
   { [ "$g" = "kueue.x-k8s.io" ] && [ "$k" = "WorkloadPriorityClass" ]; } \
-    || REF_BAD="${REF_BAD} $1(group=${g:-<none>} kind=${k:-<none>})"
+    || REF_BAD="${REF_BAD} ${_side}(group=${g:-<none>} kind=${k:-<none>})"
 done
 if [ -z "$REF_BAD" ]; then
   report PASS "both references are WorkloadPriorityClasses, not Pod PriorityClasses"
@@ -810,10 +907,19 @@ echo "  admitted at: HIGH=$(wl_admitted_at "$HIGH_WL") LOW=$(wl_admitted_at "$LO
 # The objects the claim is about, kept so a reader can check the resource shapes were
 # symmetric, what quota each reserved, and that neither carried a requeue backoff --
 # none of which is recoverable once the namespace goes.
-kubectl get workloads.kueue.x-k8s.io -n "$NS" -o yaml > "${OUT}/workloads.yaml" 2>/dev/null \
-  && echo "  workloads captured to $(basename "${OUT}")/workloads.yaml" || true
-kubectl get clusterqueue "$CQ" -o yaml > "${OUT}/clusterqueue.yaml" 2>/dev/null \
-  && echo "  defaulted ClusterQueue captured to $(basename "${OUT}")/clusterqueue.yaml" || true
+# Inlined for the same reason. These are what let a reader check the resource
+# shapes were symmetric, what quota each reserved, and that neither carried a
+# requeue backoff -- none of which survives the namespace.
+if WL_YAML=$(kubectl get workloads.kueue.x-k8s.io -n "$NS" -o yaml 2>/dev/null); then
+  echo "  --- workloads ---"; printf '%s\n' "$WL_YAML" | sed 's/^/    | /'
+else
+  echo "  --- workloads: not readable ---"
+fi
+if CQ_YAML=$(kubectl get clusterqueue "$CQ" -o yaml 2>/dev/null); then
+  echo "  --- ClusterQueue as defaulted ---"; printf '%s\n' "$CQ_YAML" | sed 's/^/    | /'
+else
+  echo "  --- ClusterQueue: not readable ---"
+fi
 
 echo "=== 8. the same race, repeated ==="
 # The detailed pass above is race 1 of this arm; the remainder run here.
