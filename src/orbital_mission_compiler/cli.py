@@ -96,8 +96,18 @@ _KUEUE_DEPLOY_NOTE = (
 )
 
 
-def _report_stale(result: dict[str, object], output_dir: str, written: list[Path], prune: bool) -> None:
-    stale = stale_rendered_artifacts(output_dir, written)
+# What each renderer can put in an output directory. Both may write a
+# ResourceClaimTemplate, so the discriminating kinds are Workflow on one side and
+# Job plus WorkloadPriorityClass on the other.
+ARGO_KINDS = {"Workflow", "ResourceClaimTemplate"}
+KUEUE_KINDS = {"Job", "ResourceClaimTemplate", "WorkloadPriorityClass"}
+
+
+def _report_stale(
+    result: dict[str, object], output_dir: str, written: list[Path], prune: bool,
+    owned_kinds: set[str] | None = None,
+) -> None:
+    stale = stale_rendered_artifacts(output_dir, written, owned_kinds)
     if not stale:
         return
     if prune:
@@ -366,7 +376,7 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
         written = _render_argo(args, args.output_dir)
         result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
         try:
-            _report_stale(result, args.output_dir, written, args.prune)
+            _report_stale(result, args.output_dir, written, args.prune, ARGO_KINDS)
         except PruneIncomplete as exc:
             print(json.dumps(_prune_failure_report(exc, written), indent=2))
             raise SystemExit(2) from exc
@@ -430,22 +440,35 @@ def _unreadable_documents(directory: Path) -> list[str]:
     itself, client-side with --validate=strict, on the version this repository is
     validated against.
 
-        document                 kubectl apply   kubectl create
-        unparseable YAML         reject          reject
-        not a mapping            reject          reject
-        no apiVersion            reject          reject
-        no metadata              reject          accept
-        duplicate mapping key    accept          accept
+        document                 apply       create      where the answer comes from
+        unparseable YAML         reject      reject      kubectl, decoding
+        not a mapping            reject      reject      kubectl, schema validation
+        no apiVersion            reject      reject      kubectl, schema validation
+        no metadata              reject      reject      apply: client-side, needs a
+                                                         name to read the live object;
+                                                         create: the API server
+        duplicate mapping key    accept      accept      see below
 
-    So this rejects the first four and nothing else. In particular it does NOT
-    reject a duplicate key, though the earlier value is silently discarded by the
-    YAML-to-JSON conversion before the API server ever sees the object -- a real
-    hazard, and one an earlier revision of this function refused on. That was
-    wrong: kubectl applies such a document without complaint (and the server
-    accepts it under --dry-run=server --validate=strict), so refusing it here
-    would fail a manifest that deploys. A gate that says "invalid" about something
-    the cluster takes is giving a false verdict, which is worse than the hazard it
-    was guarding against.
+    So this rejects the first four and nothing else.
+
+    A caveat on `no metadata`, because the first version of this table got it
+    wrong: `kubectl create --dry-run=client` accepts such a document, which is why
+    an earlier revision recorded create as accepting it. That is an artefact of the
+    client dry run never contacting the server. `--dry-run=server` answers
+    `metadata.name: Required value: name or generateName is required`. Rejecting it
+    is right for both verbs.
+
+    On duplicate keys, this deliberately does NOT reject, and the reason is
+    narrower than it first looks. kubectl decodes a `-f` file with
+    sigs.k8s.io/yaml, which is last-wins, and re-serialises before sending -- so
+    the API server never sees the duplicate and the document deploys as the later
+    value. But the server DOES reject duplicates when it is given them directly
+    (`kubectl create --raw` with `fieldValidation=Strict`: `strict decoding error:
+    duplicate field`), and `kubectl apply -k` rejects them client-side through
+    kyaml. So "Kubernetes tolerates duplicates" is false; "the path this output is
+    applied through tolerates them" is what holds. Refusing them here would still
+    fail a manifest that deploys via `-f`, which is the false verdict this gate
+    must not give.
 
     Empty documents are allowed -- a trailing `---` is legal and applies nothing.
     """
@@ -876,7 +899,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                 [(out_dir / path.name, path.read_text(encoding="utf-8")) for path in written]
             )
             published = _publish(written, out_dir, leftover_backups)
-            _report_stale(result_stale, args.output_dir, published, args.prune)
+            _report_stale(result_stale, args.output_dir, published, args.prune, ARGO_KINDS)
         except ValueError as exc:
             print(json.dumps({
                 "status": "error", "lint": "passed", "reason": "not-owned",
@@ -1082,7 +1105,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         # afterwards, so a gated render could pass its lint, publish, and have its
         # files deleted by this one, while both reported success.
         try:
-            _report_stale(stale_result, args.output_dir, written, args.prune)
+            _report_stale(stale_result, args.output_dir, written, args.prune, KUEUE_KINDS)
         except PruneIncomplete as exc:
             print(json.dumps(_prune_failure_report(exc, written), indent=2))
             raise SystemExit(2) from exc

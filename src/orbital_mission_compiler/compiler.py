@@ -1487,6 +1487,15 @@ def _is_rendered_artifact(path: Path) -> bool:
     return True
 
 
+def _artifact_kinds(path: Path) -> set[str]:
+    """The kinds a rendered file holds, for deciding whose artifact it is."""
+    try:
+        docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001 - unreadable is not ours; see _is_rendered_artifact
+        return set()
+    return {d["kind"] for d in docs if isinstance(d, dict) and isinstance(d.get("kind"), str)}
+
+
 def _artifact_mission(path: Path) -> str | None:
     """The mission fingerprint every document in this file carries, if they agree."""
     try:
@@ -1501,7 +1510,9 @@ def _artifact_mission(path: Path) -> str | None:
     return missions.pop() if len(missions) == 1 else None
 
 
-def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> list[Path]:
+def stale_rendered_artifacts(
+    output_dir: str | Path, written: list[Path], owned_kinds: set[str] | None = None
+) -> list[Path]:
     """Artifacts from an earlier render that this one did not replace.
 
     A render writes the files the current plan produces; it does not empty the
@@ -1537,12 +1548,30 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
     # one: every artifact in it reads as absent, nothing is reported stale, and
     # a --prune says it found nothing to do. A directory this render cannot read
     # is a question, not an answer.
+    # And scoped to what THIS renderer produces at all. Ownership and mission
+    # together
+    # were not enough: an Argo Workflow and a Kueue Job for one mission carry the
+    # same managed-by label and the same fingerprint, so `render-kueue --prune`
+    # into a directory an Argo render had just published deleted the Workflow --
+    # including one a gated render had linted and reported as published. A file
+    # holding a kind this render does not write is not this render's to remove.
+    #
+    # A file the other renderer owns is not reported either, because it is not
+    # stale: it is that renderer's current output, and calling it stale would send
+    # an operator to delete a live artifact.
+    # `owned_kinds` is what this renderer CAN write, not what it wrote this time.
+    # Using what it wrote would exclude its own previous generation whenever the
+    # plan shrank -- a GPU-era file keeps a ResourceClaimTemplate a later CPU-only
+    # render does not produce -- and that file would then be neither pruned nor
+    # reported, which is the silent leftover the stale report exists to prevent.
+    kinds = owned_kinds if owned_kinds is not None else set()
     return sorted(
         p for p in sorted(out.iterdir())
         if p.suffix == ".yaml"
         and p.name not in current
         and _is_rendered_artifact(p)
         and _artifact_mission(p) in missions
+        and (not kinds or _artifact_kinds(p) <= kinds)
     )
 
 

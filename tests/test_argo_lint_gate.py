@@ -1450,3 +1450,60 @@ def test_render_kueue_prunes_under_the_lock_it_published_under(tmp_path, monkeyp
     cmd_render_kueue(args)
     capsys.readouterr()
     assert held_during == ["enter", "prune", "exit"], held_during
+
+
+def test_prune_does_not_reach_across_renderers(tmp_path, capsys):
+    """One mission's Argo Workflow and Kueue Job are equally "ours".
+
+    Both carry the same managed-by label and the same mission fingerprint, and
+    stale detection scoped on exactly those two -- so `render-kueue --prune` into a
+    directory an Argo render had published deleted the Workflow. With the gate that
+    included a Workflow it had just linted and reported as published, which is the
+    guarantee this branch exists to make.
+    """
+    from orbital_mission_compiler.cli import cmd_render_argo, cmd_render_kueue
+
+    out = tmp_path / "out"
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline",
+    ]))
+    capsys.readouterr()
+    argo_files = {p.name for p in out.glob("*.yaml")}
+    assert argo_files
+
+    cmd_render_kueue(build_parser().parse_args([
+        "render-kueue", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--prune", "--policy-engine", "baseline",
+    ]))
+    report = json.loads(capsys.readouterr().out)
+    survived = {p.name for p in out.glob("*.yaml")}
+    assert argo_files <= survived, (
+        f"render-kueue --prune removed another renderer's output: "
+        f"{sorted(argo_files - survived)}"
+    )
+    assert not report.get("pruned"), report.get("pruned")
+    # Nor reported as stale: it is not stale, it is that renderer's live output,
+    # and calling it stale would send an operator to delete a current artifact.
+    assert not report.get("stale"), report.get("stale")
+
+
+def test_prune_still_removes_this_renderers_own_previous_generation(tmp_path, capsys):
+    """Scoping by renderer must not turn --prune into a no-op."""
+    from orbital_mission_compiler.cli import cmd_render_kueue
+
+    out = tmp_path / "out"
+    args = build_parser().parse_args([
+        "render-kueue", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--prune", "--policy-engine", "baseline",
+    ])
+    cmd_render_kueue(args)
+    capsys.readouterr()
+    produced = next(p for p in out.glob("*-kueue.yaml"))
+    stale = out / "an-earlier-generation-kueue.yaml"
+    produced.rename(stale)
+
+    cmd_render_kueue(args)
+    report = json.loads(capsys.readouterr().out)
+    assert [Path(p).name for p in report.get("pruned", [])] == [stale.name], report
+    assert not stale.exists()
