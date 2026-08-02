@@ -5,6 +5,8 @@ import hashlib
 import logging
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 from importlib import resources
 from datetime import datetime, timezone
@@ -1511,6 +1513,12 @@ def _is_rendered_artifact(path: Path) -> bool:
         docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8"))]
     except Exception:  # noqa: BLE001 - see the docstring: unreadable means not ours
         return False
+    # An empty document is not a document. A trailing `---` yields None, and
+    # treating the first non-dict as "not ours" made such a file invisible to
+    # the stale report: neither pruned nor listed, so `kubectl apply -f <dir>`
+    # went on redeploying a workload the plan no longer asks for, silently. The
+    # gate's own reader already says a trailing separator is legal.
+    docs = [d for d in docs if d is not None]
     if not docs:
         return False
     for doc in docs:
@@ -1521,6 +1529,15 @@ def _is_rendered_artifact(path: Path) -> bool:
         if not isinstance(labels, dict) or labels.get(MANAGED_BY_LABEL) != MANAGED_BY_VALUE:
             return False
     return True
+
+
+def _artifact_kinds(path: Path) -> set[str]:
+    """The kinds a rendered file holds, for deciding whose artifact it is."""
+    try:
+        docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001 - unreadable is not ours; see _is_rendered_artifact
+        return set()
+    return {d["kind"] for d in docs if isinstance(d, dict) and isinstance(d.get("kind"), str)}
 
 
 def _artifact_mission(path: Path) -> str | None:
@@ -1553,7 +1570,13 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
     out = Path(output_dir)
     if not out.is_dir():
         return []
-    current = {p.resolve() for p in written}
+    # Matched by name, not by resolved path, so this answers the same question
+    # before the render is published as after it. Names in the output directory
+    # are unique by construction (`preflight_unique`), and a caller asking which
+    # artifacts this render is about to leave behind holds paths that are still
+    # in staging -- against resolved paths every one of them would compare as
+    # unrelated and the whole previous generation would read as stale.
+    current = {p.name for p in written}
     # Scoped to the missions this render just wrote. Ownership alone is not
     # enough to delete by: another mission's manifests in the same directory
     # carry the same managed-by label and are equally ours, but they are not
@@ -1567,13 +1590,74 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
     # one: every artifact in it reads as absent, nothing is reported stale, and
     # a --prune says it found nothing to do. A directory this render cannot read
     # is a question, not an answer.
+    # And scoped to what THIS renderer produces at all. Ownership and mission
+    # together
+    # were not enough: an Argo Workflow and a Kueue Job for one mission carry the
+    # same managed-by label and the same fingerprint, so `render-kueue --prune`
+    # into a directory an Argo render had just published deleted the Workflow --
+    # including one a gated render had linted and reported as published. A file
+    # holding a kind this render does not write is not this render's to remove.
+    #
+    # A file the other renderer owns is not reported either, because it is not
+    # stale: it is that renderer's current output, and calling it stale would send
+    # an operator to delete a live artifact.
     return sorted(
         p for p in sorted(out.iterdir())
-        if p.suffix == ".yaml"
-        and p.resolve() not in current
+        # Every extension `kubectl apply -f <dir>` consumes, which is what the
+        # gate's carry set already used. Filtering on `.yaml` alone left a stale
+        # `.yml` or `.json` artifact neither pruned nor reported.
+        if p.suffix in (".yaml", ".yml", ".json")
+        and p.name not in current
         and _is_rendered_artifact(p)
         and _artifact_mission(p) in missions
     )
+
+
+# Every kind that belongs to exactly one renderer. Kept here so `attribute_stale`
+# can ask what the OTHER side owns without its caller having to say.
+_ALL_EXCLUSIVE_KINDS = frozenset({"Workflow", "Job", "WorkloadPriorityClass"})
+
+
+def attribute_stale(stale: list[Path], exclusive_kinds: set[str]) -> tuple[list[Path], list[Path]]:
+    """Split stale candidates into this renderer's, and everyone else's.
+
+    Ownership and mission are not enough to delete by. An Argo Workflow and a
+    Kueue Job for one mission carry the same managed-by label and the same
+    fingerprint, so `render-kueue --prune` deleted a Workflow an Argo render had
+    just published -- with the gate, one it had linted and reported as published.
+
+    Attribution is by a kind only one renderer emits: Workflow on one side, Job
+    and WorkloadPriorityClass on the other. A subset test over everything a
+    renderer *can* write does not work, because both write ResourceClaimTemplate:
+    the standalone `-scheduler-fallback.yaml` is RCT-only, so it is a subset of
+    both sets and whichever command ran last deleted the other's copy. Measured,
+    after a first fix that closed only one direction.
+
+    A file with no exclusive kind is attributed to neither and returned in the
+    second list: reported, never deleted. Erring toward a file that stays is the
+    right direction for a delete, and reporting it keeps that from being silent.
+    """
+    everyone_elses = _ALL_EXCLUSIVE_KINDS - exclusive_kinds
+    mine: list[Path] = []
+    unattributable: list[Path] = []
+    for path in stale:
+        kinds = _artifact_kinds(path)
+        # Mine AND not also theirs. "Intersects mine" alone let a file holding both
+        # a Workflow and a Job -- what an operator gets by concatenating the two
+        # renders into one bundle for `kubectl apply -f` -- be deleted by whichever
+        # command ran, which is the cross-renderer loss this function exists to
+        # stop, needing only the two kinds in one file.
+        if kinds & exclusive_kinds and not kinds & everyone_elses:
+            mine.append(path)
+        elif kinds & everyone_elses and not kinds & exclusive_kinds:
+            # Unambiguously the other renderer's. Not stale and not this command's
+            # business, so it is neither deleted nor reported: warning about it on
+            # every run of a directory that holds both renders would be noise, and
+            # noise about a live artifact invites someone to delete it.
+            continue
+        else:
+            unattributable.append(path)
+    return mine, unattributable
 
 
 def preflight_writable(planned: list[tuple[Path, Any]]) -> None:
@@ -1753,6 +1837,101 @@ def write_individual_workflows(
             atomic_write(out, yaml.safe_dump(docs[0], sort_keys=False))
         written.append(out)
     return written
+
+
+class ArgoLintUnavailable(RuntimeError):
+    """The lint gate could not produce a verdict.
+
+    Distinct from a manifest that fails lint. A missing or unrunnable CLI, a
+    timeout, or a process killed by a signal all mean no verdict exists, and
+    reporting any of them as "this manifest is invalid" would be a claim the
+    gate never actually made.
+    """
+
+
+ARGO_LINT_TIMEOUT_SECONDS = 120
+
+
+def resolve_argo_bin(argo_bin: str = "argo") -> str:
+    """Resolve the Argo CLI to an executable path, or fail closed.
+
+    ``shutil.which`` accepts both a bare name on ``PATH`` and an explicit path,
+    and checks the executable bit, so a missing or non-executable binary is
+    reported as an unavailable gate rather than a lint failure.
+    """
+    exe = shutil.which(argo_bin)
+    if exe is None:
+        raise ArgoLintUnavailable(
+            f"the Argo CLI {argo_bin!r} was not found on PATH or is not executable"
+        )
+    return exe
+
+
+def argo_lint_path(
+    target: str | Path,
+    argo_bin: str = "argo",
+    timeout: int = ARGO_LINT_TIMEOUT_SECONDS,
+    resolved: str | None = None,
+) -> tuple[int, str]:
+    """Run the official ``argo lint`` over a directory of rendered manifests.
+
+    Returns ``(exit_code, combined_output)``; raises ``ArgoLintUnavailable``
+    when no verdict could be obtained.
+
+    Layer (iii) of the layered defensive validation: a static lint of the
+    rendered Argo YAML, distinct from schema (i) and policy (ii), catching
+    manifest-level errors the renderer introduced.
+
+    ``--offline`` makes this a pure client-side check with no cluster
+    connection; plain ``argo lint`` requires a kubeconfig, and the rendered
+    workflows are self-contained. A directory is passed rather than each file,
+    because the argument list is unbounded in the number of rendered workflows,
+    and because linting the directory also covers anything already sitting in it.
+
+    Only Argo kinds are linted. ``argo lint`` ignores documents of other kinds,
+    so in a ``--dra-fallback`` bundle the Workflow is checked and the
+    ResourceClaimTemplate is not.
+    """
+    exe = resolved or resolve_argo_bin(argo_bin)
+    try:
+        proc = subprocess.run(
+            [exe, "lint", "--offline", "--no-color", "-o", "simple", str(target)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ArgoLintUnavailable(f"argo lint timed out after {timeout}s") from exc
+    except OSError as exc:
+        # Argument list too long, exec format error, and anything else that
+        # prevents the process from running at all.
+        raise ArgoLintUnavailable(f"could not run {exe!r}: {exc}") from exc
+    if proc.returncode < 0:
+        raise ArgoLintUnavailable(
+            f"argo lint was terminated by signal {-proc.returncode}"
+        )
+    # Argo reports a lint result it judged with exit status 1. Anything else
+    # non-zero did not come from a lint verdict -- 126 and 127 are a wrapper that
+    # could not be executed or found, and other values are an invocation or
+    # runtime failure -- so it is not evidence about the manifests.
+    #
+    # Status 1 is itself broader than "these manifests are invalid": v4.0.1
+    # returns it for a missing path, unparseable YAML and an empty directory too
+    # (verified against the pinned CLI). Those are all reasons a caller must not
+    # publish, so they are reported as a failed verdict with the linter's own
+    # message rather than being guessed apart.
+    #
+    # Status 0 is narrower than "everything here is valid". A file the CLI
+    # cannot parse is logged as `msg="yaml file is not valid"` and skipped, and
+    # the run exits 0 as long as anything else in the target lints -- so the
+    # unparseable-YAML case above only holds when that file is alone. A caller
+    # that lints a directory has to read the output, not just the status.
+    if proc.returncode not in (0, 1):
+        raise ArgoLintUnavailable(
+            f"argo lint exited {proc.returncode}, which is not a lint verdict: "
+            f"{(proc.stdout + proc.stderr).strip()[:400]}"
+        )
+    return proc.returncode, proc.stdout + proc.stderr
 
 
 def compile_file(

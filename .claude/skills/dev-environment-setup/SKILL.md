@@ -46,7 +46,7 @@ chmod +x .venv-verify/bin/opa
 # 475 passed, 0 skipped with full local tooling (opa on PATH + live cluster))
 .venv-verify/bin/python -m pytest -q
 
-# Live cluster validation against host kubeadm cluster (expect 13/13 PASS)
+# Live cluster validation against host kubeadm cluster (expect 12/12 PASS)
 PATH="$PWD/.venv-verify/bin:$PATH" \
 PYTHON_BIN=$PWD/.venv-verify/bin/python \
 KUBECONFIG=/tmp/kubeconfig-host \

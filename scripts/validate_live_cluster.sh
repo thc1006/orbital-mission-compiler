@@ -162,6 +162,21 @@ else
   fi
 fi
 
+# Installed before the first thing this script creates on the cluster. Registering it
+# after the Argo submission left a window where an interrupt kept the Workflow: the
+# names it deletes are all guarded, so an early exit simply finds nothing to remove.
+cleanup_all() {
+  [ -n "${JOB_NAME:-}" ] && kubectl delete "job/${JOB_NAME}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1
+  [ -n "${RCT_FILE:-}" ] && [ -s "${RCT_FILE}" ] && kubectl delete -f "${RCT_FILE}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1
+  [ -n "${WF_NAME:-}" ] && argo delete "${WF_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1
+  return 0
+}
+# EXIT covers the normal path. A handler that returns lets the script carry on and
+# recreate what it has just removed, so INT and TERM stop after cleaning up.
+trap cleanup_all EXIT
+trap 'cleanup_all; trap - EXIT; exit 130' INT
+trap 'cleanup_all; trap - EXIT; exit 143' TERM
+
 # ── Step 4: Render and submit Argo Workflow ────────────────────────────
 
 echo ""
@@ -170,36 +185,71 @@ echo "=== Argo Workflow ==="
 rm -rf "${ARGO_OUT}"
 mkdir -p "${ARGO_OUT}"
 
+# Published through the gate rather than written and then checked. Rendering into the
+# destination and reporting a lint failure afterwards leaves the manifests exactly
+# where a caller that ignores the verdict will apply them, which is what this script
+# used to do: it counted the failure and submitted the Workflow anyway.
+#
+# The gate lints offline. That is a real trade against what this script used to do:
+# it ran `argo lint` without --offline, which resolves templates against the cluster
+# and so catches a reference this cannot. What it bought is the gate itself -- staging,
+# a verdict read before anything is published, and nothing written when the verdict is
+# no -- and running the linter separately from the writer is what let a rejected
+# manifest be submitted here in the first place. Restoring the cluster-aware check
+# means teaching the gate a lint mode, not calling the linter twice.
 ARGO_RENDER_LOG="${OUT_DIR}/argo-render.log"
+ARGO_GATE_JSON="${OUT_DIR}/argo-gate.json"
+ARGO_GATE_OK="false"
 if PYTHONPATH="${PYTHONPATH:-src}" ${PYTHON_BIN} -m orbital_mission_compiler.cli render-argo \
     --input "${MISSION_FILE}" \
     --namespace "${NAMESPACE}" \
-    --output-dir "${ARGO_OUT}" >"${ARGO_RENDER_LOG}" 2>&1; then
-  report PASS "Argo Workflow rendered"
+    --output-dir "${ARGO_OUT}" \
+    --argo-lint >"${ARGO_GATE_JSON}" 2>"${ARGO_RENDER_LOG}"; then
+  ARGO_GATE_RC=0
 else
-  report FAIL "Argo Workflow rendering failed (see ${ARGO_RENDER_LOG})"
-  if [ -s "${ARGO_RENDER_LOG}" ]; then
-    cat "${ARGO_RENDER_LOG}" >&2
-  else
-    echo "Argo render log is missing or empty: ${ARGO_RENDER_LOG}" >&2
-  fi
+  ARGO_GATE_RC=$?
 fi
 
-if command -v argo >/dev/null 2>&1; then
-  shopt -s nullglob
-  files=("${ARGO_OUT}"/*.yaml)
-  shopt -u nullglob
-  if [ ${#files[@]} -eq 0 ]; then
-    report FAIL "No YAML files to lint"
-  elif argo lint "${files[@]}" >/dev/null 2>&1; then
-    report PASS "Argo lint passed"
-  else
-    report FAIL "Argo lint failed"
-  fi
+# The gate's own vocabulary: 0 published after a clean lint, 1 the linter rejected the
+# manifest, 2 anything else. Only the first may be submitted, and the status is read
+# back rather than inferred from the exit code alone.
+#
+# 2 is not a synonym for "no verdict": the gate also exits 2 when the linter accepted
+# the manifests and the publish step afterwards did not finish -- an interrupted
+# rollback, or a prune that stopped part-way. Those leave the output directory
+# changed, so the report reads `lint` and `output_modified` rather than assuming.
+ARGO_GATE_STATUS="$(${PYTHON_BIN} -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('status','?'), d.get('lint','?'))" "${ARGO_GATE_JSON}" 2>/dev/null || echo "? ?")"
+ARGO_GATE_MODIFIED="$(${PYTHON_BIN} -c "import json,sys; print('yes' if json.load(open(sys.argv[1])).get('output_modified') else 'no')" "${ARGO_GATE_JSON}" 2>/dev/null || echo "unknown")"
+case "${ARGO_GATE_RC}" in
+  0)
+    if [ "${ARGO_GATE_STATUS}" = "ok passed" ]; then
+      ARGO_GATE_OK="true"
+      report PASS "Argo Workflow rendered and lint passed"
+    else
+      report FAIL "Argo gate exited 0 but reported '${ARGO_GATE_STATUS}'"
+    fi
+    ;;
+  1) report FAIL "Argo lint rejected the manifest (${ARGO_GATE_STATUS}); nothing published" ;;
+  2)
+    case "${ARGO_GATE_STATUS}" in
+      *" unavailable"|*" not-run")
+        # Two vocabularies for the same thing: "unavailable" is the CLI missing,
+        # "not-run" is the publish lock unobtainable. Neither reached a verdict.
+        report FAIL "Argo lint could not run (${ARGO_GATE_STATUS}); no verdict, nothing published" ;;
+      *" passed")
+        report FAIL "Argo lint passed but the gate did not finish publishing (${ARGO_GATE_STATUS}); output directory changed: ${ARGO_GATE_MODIFIED}" ;;
+      *)
+        report FAIL "Argo gate exited 2 (${ARGO_GATE_STATUS}); output directory changed: ${ARGO_GATE_MODIFIED}" ;;
+    esac
+    ;;
+  *) report FAIL "Argo gate failed with exit ${ARGO_GATE_RC} (${ARGO_GATE_STATUS})" ;;
+esac
+if [ -s "${ARGO_RENDER_LOG}" ]; then
+  cat "${ARGO_RENDER_LOG}" >&2
 fi
 
 ARGO_FILE=$(find "${ARGO_OUT}" -name '*.yaml' -print -quit 2>/dev/null)
-if [ -n "${ARGO_FILE}" ] && command -v argo >/dev/null 2>&1; then
+if [ "${ARGO_GATE_OK}" = "true" ] && [ -n "${ARGO_FILE}" ] && command -v argo >/dev/null 2>&1; then
   echo "Submitting Argo Workflow to cluster ..."
   if WF_NAME=$(argo submit "${ARGO_FILE}" -n "${NAMESPACE}" --serviceaccount "${ARGO_SERVICE_ACCOUNT}" -o name 2>/dev/null); then
     WF_RAW_NAME="${WF_NAME#*/}"
@@ -250,18 +300,8 @@ if [ -n "${ARGO_FILE}" ] && command -v argo >/dev/null 2>&1; then
     report FAIL "Argo Workflow submission failed (serviceaccount=${ARGO_SERVICE_ACCOUNT})"
   fi
 else
-  echo "Skipping Argo submission (no rendered file or argo CLI unavailable)"
+  echo "Skipping Argo submission (the gate did not pass, or no rendered file / argo CLI)"
 fi
-
-# Interrupt, timeout or a failed step would otherwise leave the Job, its Workload
-# and the claim templates on the cluster, and the next run would collide with them.
-cleanup_all() {
-  [ -n "${JOB_NAME:-}" ] && kubectl delete "job/${JOB_NAME}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1
-  [ -n "${RCT_FILE:-}" ] && [ -s "${RCT_FILE}" ] && kubectl delete -f "${RCT_FILE}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1
-  [ -n "${WF_NAME:-}" ] && argo delete "${WF_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1
-  return 0
-}
-trap cleanup_all EXIT INT TERM
 
 # ── Step 5: Render and submit Kueue Job ────────────────────────────────
 
