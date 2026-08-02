@@ -1,0 +1,32 @@
+=== provenance ===
+  compiler commit: 2962965e959239d6da0524f177505939722bb331
+  working tree   : clean
+  harness sha256 : a795e0f37f8e4b97e9d8d85e9ec75e2023369df4aef25302328f85334a3709ea
+  inputs sha256  : 9ce5b65a3775deb196e317892b2ed610a15a2617821e82d1cd4ff78a49e7d229
+  harness inputs : mission_plan.rego
+  interpreter    : /mnt/fast/work/satellite-mission-compiler/.venv-verify/bin/python
+  compiler module: /mnt/fast/work/satellite-guardrail/src/orbital_mission_compiler/compiler.py
+  python         : 3.12.3
+=== environment ===
+  opa            : 1.15.1 (/home/thc1006/.local/bin/opa)
+
+Running ablation study: schema-only vs policy-only vs combined...
+
+| Error Category | Layer | Schema | Policy | Combined |
+|---|---|---|---|---|
+| acq_no_instrument | Schema-only | 100% | 0% | 100% |
+| download_no_duration | Schema-only | 100% | 0% | 100% |
+| acq_no_services | Policy-only | 0% | 100% | 100% |
+| gpu_no_fallback | Policy-only | 0% | 100% | 100% |
+| zero_priority | Policy-only | 0% | 100% | 100% |
+| cpu_acceleration | Policy-only | 0% | 100% | 100% |
+| invalid_landscape | Policy-only | 0% | 100% | 100% |
+| empty_mission_id | Both | 100% | 100% | 100% |
+| empty_events | Both | 100% | 100% | 100% |
+| download_with_services | Both | 100% | 100% | 100% |
+| download_no_visibility | Both | 100% | 100% | 100% |
+| service_no_steps | Both | 100% | 100% | 100% |
+| **Average detection** | — | **58%** | **83%** | **100%** |
+| **False positive rate** | — | **0%** | **0%** | **0%** |
+
+Done.

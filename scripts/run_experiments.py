@@ -479,7 +479,17 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--list", action="store_true", help="Show the registered experiments and exit")
-    ap.add_argument("--only", help="Run one experiment by name")
+    # Repeatable. Filing a result dirties the tree, and only the paths filed by
+    # THIS invocation are forgiven -- which is the right rule, and it made three
+    # separate `--only` runs reject each other's output: the first filed a
+    # transcript and the next two refused to start because of it. Several names in
+    # one invocation is what `_dirt`'s forgiveness was built for.
+    ap.add_argument(
+        "--only",
+        action="append",
+        metavar="NAME",
+        help="Run one experiment by name; repeat to run several in one invocation",
+    )
     ap.add_argument(
         "--results-dir",
         default="out/experiments",
@@ -494,9 +504,18 @@ def main() -> int:
             print(f"{exp.name:16} {exp.script}  ({present})")
         return 0
 
-    chosen = [e for e in EXPERIMENTS if not args.only or e.name == args.only]
-    if args.only and not chosen:
-        print(f"no experiment named {args.only!r}", file=sys.stderr)
+    wanted = set(args.only or ())
+    chosen = [e for e in EXPERIMENTS if not wanted or e.name in wanted]
+    # Every name is checked, not just whether anything matched. A typo alongside
+    # three good names would otherwise run the three and say nothing about the
+    # fourth, and the missing transcript reads as an experiment that failed.
+    unknown = sorted(wanted - {e.name for e in EXPERIMENTS})
+    if unknown:
+        print(
+            f"no experiment named {', '.join(repr(u) for u in unknown)} "
+            f"(known: {', '.join(e.name for e in EXPERIMENTS)})",
+            file=sys.stderr,
+        )
         return 1
 
     results_dir = REPO / args.results_dir
