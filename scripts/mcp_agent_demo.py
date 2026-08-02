@@ -18,11 +18,46 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import subprocess
+from pathlib import Path
 
 from orbital_mission_compiler.mcp.server import build_server
+from orbital_mission_compiler.provenance import emit
 
 BAD = "demo_gpu_no_fallback.yaml"
 FIXED = "demo_gpu_fallback_fixed.yaml"
+
+REPO = Path(__file__).resolve().parent.parent
+# The two plans and the Rego pack the deny message comes from. The transcript in
+# docs/experiments/2026-07-07-mcp-agent-demo.md is the paper's Section IV evidence,
+# and its whole content is a policy decision about these files -- so a run against
+# an edited plan or an edited policy is a different demonstration, and nothing in
+# the output would have said so.
+INPUTS = (
+    REPO / "configs" / "mission_plans" / BAD,
+    REPO / "configs" / "mission_plans" / FIXED,
+    *sorted((REPO / "configs" / "policies").glob("*.rego")),
+)
+
+
+def _opa_version() -> str:
+    """The OPA build behind steps 2 and 4, which are the substance of the demo."""
+    binary = shutil.which("opa")
+    if binary is None:
+        return "not on PATH"
+    try:
+        proc = subprocess.run(
+            [binary, "version"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"unknown ({exc})"
+    if proc.returncode != 0:
+        return f"unknown (opa version exited {proc.returncode})"
+    for line in proc.stdout.splitlines():
+        if line.lower().startswith("version:"):
+            return f"{line.split(':', 1)[1].strip()} ({binary})"
+    return f"unknown (unrecognised output) ({binary})"
 
 
 async def _call(server, name: str, args: dict) -> dict:
@@ -35,6 +70,15 @@ def _policy_value(raw_result: dict) -> dict:
 
 
 async def main() -> None:
+    emit(
+        Path(__file__),
+        repo=REPO,
+        inputs=INPUTS,
+        environment=(("opa", _opa_version()),),
+        # A transcript of tool calls, not a measurement: the CPU it ran on has no
+        # bearing on which plan the policy denies.
+        include_host=False,
+    )
     server = build_server()
     print("=== MCP agent workflow: admit a mission plan ===\n")
 

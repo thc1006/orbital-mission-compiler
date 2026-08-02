@@ -57,6 +57,7 @@ import re
 import signal
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -71,6 +72,14 @@ class GitUnavailable(RuntimeError):
 class Experiment:
     name: str
     script: Path
+    # Files the harness applies that are not the harness: manifest templates, a
+    # policy pack, a plan corpus. Digested separately and checked separately,
+    # because a harness that accounts only for itself leaves half of what it does
+    # outside its own provenance -- an edited template is a different experiment
+    # under an unchanged script digest. Globs are expanded against REPO at
+    # registration; a pattern matching nothing is a registration error rather than
+    # a silently empty check.
+    inputs: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     args: tuple[str, ...] = ()
     # Wall-clock bound. An experiment that hangs must not hang the runner: these
@@ -115,6 +124,45 @@ EXPERIMENTS = [
         environment_description="the CPU it measured on",
         result_path=Path("docs/experiments/results/scaling.txt"),
     ),
+    Experiment(
+        # Also on another branch. Its templates are declared: they carry the queue
+        # sizing and the two claim shapes, which is where this experiment's meaning
+        # lives -- the script only submits them.
+        name="dra-unified",
+        script=Path("scripts/validate_dra_unified.sh"),
+        inputs=("manifests/k8s/kueue/dra-unified/harness-*.yaml",),
+        result_path=Path(
+            "manifests/k8s/kueue/dra-unified/results/run-k8s-1.36.3-kueue-0.19.0.txt"
+        ),
+    ),
+    Experiment(
+        # No cluster, and no host either: this arm counts which plans each layer
+        # rejects, not how fast. Its environment is the OPA build, because that is
+        # the engine under test and it is resolved from PATH rather than pinned by
+        # the commit -- and its inputs are the Rego pack, which is what the policy
+        # arm evaluates.
+        name="ablation",
+        script=Path("scripts/ablation_study.py"),
+        inputs=("configs/policies/*.rego",),
+        environment_marker=r"^[^\S\n]*opa[^\S\n]*:[^\S\n]*(?!unknown|not on PATH)\S",
+        environment_description="the OPA build it evaluated against",
+        result_path=Path("docs/experiments/results/ablation.txt"),
+    ),
+    Experiment(
+        # The paper's Section IV evidence. Its inputs are the two plans and the
+        # policy pack, because the whole transcript is a policy decision about
+        # them: run it against an edited plan and it is a different demonstration.
+        name="mcp-agent-demo",
+        script=Path("scripts/mcp_agent_demo.py"),
+        inputs=(
+            "configs/mission_plans/demo_gpu_no_fallback.yaml",
+            "configs/mission_plans/demo_gpu_fallback_fixed.yaml",
+            "configs/policies/*.rego",
+        ),
+        environment_marker=r"^[^\S\n]*opa[^\S\n]*:[^\S\n]*(?!unknown|not on PATH)\S",
+        environment_description="the OPA build it evaluated against",
+        result_path=Path("docs/experiments/results/mcp-agent-demo.txt"),
+    ),
 ]
 
 
@@ -150,7 +198,7 @@ def _sha256(path: Path) -> str:
 
 
 def _field(transcript: str, label: str) -> str | None:
-    """The value of one provenance line, or None if it is not there exactly once.
+    r"""The value of one provenance line, or None if it is not there exactly once.
 
     `[^\S\n]` rather than `\s`, because `\s` matches newlines: the previous
     pattern spanned lines, so a transcript with every label on one line and every
@@ -168,8 +216,40 @@ def _field(transcript: str, label: str) -> str | None:
     return found[0] if len(found) == 1 else None
 
 
+def resolve_inputs(exp: Experiment) -> list[Path]:
+    """The files behind an experiment's declared input patterns, sorted.
+
+    Sorted because glob order is filesystem order and the digest has to agree
+    across two machines holding the same files. Missing patterns are returned as
+    an empty list and reported by the caller: a pattern that matches nothing would
+    otherwise produce the digest of no files, which is a fixed value that every
+    such experiment would agree on.
+    """
+    found: list[Path] = []
+    for pattern in exp.inputs:
+        found.extend(sorted(REPO.glob(pattern)))
+    return sorted(set(found))
+
+
+def inputs_digest(paths: Iterable[Path]) -> str:
+    """A digest over the harness's inputs, by basename rather than by path.
+
+    Kept in step with `orbital_mission_compiler.provenance.inputs_digest`, which is
+    what the harnesses print. It is duplicated rather than imported on purpose:
+    this runner is the auditor, and an auditor that imports its verification from
+    the tree it audits verifies that the tree agrees with itself.
+    """
+    parts = sorted(f"{_sha256(p)}  {p.name}" for p in paths)
+    return hashlib.sha256(("\n".join(parts) + "\n").encode("utf-8")).hexdigest()
+
+
 def citability_problems(
-    transcript: str, exp: Experiment, head: str, digest: str, clean_after: bool
+    transcript: str,
+    exp: Experiment,
+    head: str,
+    digest: str,
+    clean_after: bool,
+    inputs_sha: str | None = None,
 ) -> list[str]:
     """What stops this transcript being usable as evidence. Empty means nothing does."""
     problems: list[str] = []
@@ -202,6 +282,28 @@ def citability_problems(
             "the harness on disk does not match the one the transcript names, so "
             "the script was edited while it ran"
         )
+
+    if exp.inputs:
+        claimed_inputs = _field(transcript, "inputs sha256")
+        if inputs_sha is None:
+            # The patterns matched nothing on disk, so there is nothing to compare
+            # against. Reported rather than passed over: an experiment that
+            # declares templates and finds none is not one whose templates are
+            # unchanged.
+            problems.append(
+                "declares harness inputs, but none of the patterns matched a file "
+                f"({', '.join(exp.inputs)})"
+            )
+        elif claimed_inputs is None:
+            problems.append(
+                "has no 'inputs sha256' line, so the templates it applied are "
+                "outside its provenance"
+            )
+        elif claimed_inputs != inputs_sha:
+            problems.append(
+                "the harness inputs on disk do not match the ones the transcript "
+                "names, so a template was edited while it ran"
+            )
 
     if not re.search(exp.environment_marker, transcript, re.M):
         problems.append(f"does not record {exp.environment_description}")
@@ -263,6 +365,8 @@ def run(exp: Experiment, results_dir: Path, filed: set[str] | None = None) -> tu
         return "not-citable", f"git returned an unusable commit: {head!r}"
 
     digest_before = _sha256(script)
+    inputs_before = resolve_inputs(exp)
+    inputs_sha_before = inputs_digest(inputs_before) if inputs_before else None
     # PYTHONPATH points at THIS repository, ahead of anything installed. Without
     # it the scaling benchmark imported orbital_mission_compiler from whichever
     # checkout happened to be on sys.path -- a different tree, at a different
@@ -321,10 +425,24 @@ def run(exp: Experiment, results_dir: Path, filed: set[str] | None = None) -> tu
     except GitUnavailable as exc:
         return "not-citable", f"could not re-check the worktree after the run: {exc}"
     digest_after = _sha256(script)
+    inputs_after = resolve_inputs(exp)
+    inputs_sha_after = inputs_digest(inputs_after) if inputs_after else None
 
-    problems = citability_problems(transcript, exp, head, digest_before, clean_after)
+    problems = citability_problems(
+        transcript, exp, head, digest_before, clean_after, inputs_sha_before
+    )
     if digest_before != digest_after:
         problems.append("the harness changed on disk while it was running")
+    # The same check the harness digest gets, for the same reason: a template
+    # edited mid-run means the documents applied early and the documents applied
+    # late came from two different experiments. The set is compared too, so a
+    # template ADDED or removed during the run is caught -- the digest alone would
+    # miss neither, but the message should say which happened.
+    if inputs_sha_before != inputs_sha_after:
+        problems.append(
+            "the harness inputs changed on disk while it was running "
+            f"({len(inputs_before)} file(s) before, {len(inputs_after)} after)"
+        )
 
     results_dir.mkdir(parents=True, exist_ok=True)
     out = results_dir / f"{exp.name}.txt"

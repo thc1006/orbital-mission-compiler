@@ -16,11 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import hashlib
-import os
-import platform
 import statistics
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -36,6 +32,7 @@ from orbital_mission_compiler.compiler import (
     render_kueue_job,
 )
 from orbital_mission_compiler.policy import eval_policy, opa_available
+from orbital_mission_compiler.provenance import emit
 from orbital_mission_compiler.schemas import MissionPlan
 
 BUNDLE = "configs/policies"
@@ -325,71 +322,15 @@ def print_provenance() -> None:
 
     The CPU model matters for the same reason and is read from the machine rather
     than typed in: the host these numbers came from has moved once already.
+
+    The body used to live here, and again in the ablation script, and a third time
+    in each shell harness. That is how the `_git` exit-status bug -- a git failure
+    reading back as a clean tree -- was fixed in one copy and left in the others.
     """
-    here = Path(__file__).resolve().parent.parent
-
-    def _git(*args: str) -> str | None:
-        """None when git could not answer. Not the same as an empty answer.
-
-        Reading `.stdout` and ignoring the exit status turned every git failure --
-        no .git, a stale worktree pointer, a checkout git considers unsafely owned,
-        an artifact tarball with .git stripped -- into the empty string. The commit
-        then printed as "unknown", which is loud, but the tree printed as "clean",
-        which is silent and indistinguishable from a real clean tree. A transcript
-        pasted into a paper carries that unverifiable "clean" with it.
-        """
-        try:
-            proc = subprocess.run(
-                ["git", "-C", str(here), *args], capture_output=True, text=True
-            )
-        except OSError:
-            return None
-        return proc.stdout.strip() if proc.returncode == 0 else None
-
-    head = _git("rev-parse", "HEAD") or "unknown"
-    status = _git("status", "--porcelain")
-    if status is None:
-        tree = "unknown -- git could not answer, so this capture cannot be rebuilt"
-    elif status:
-        tree = "DIRTY -- this measurement cannot be rebuilt from a commit"
-    else:
-        tree = "clean"
-
-    cpu = "unknown"
-    try:
-        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
-            if line.startswith("model name"):
-                cpu = line.split(":", 1)[1].strip()
-                break
-    except (OSError, ValueError):
-        # ValueError covers UnicodeDecodeError, which is not an OSError and would
-        # otherwise end a benchmark run over a cosmetic line.
-        pass
-    print("=== provenance ===")
-    print(f"  compiler commit: {head}")
-    print(f"  working tree   : {tree}")
-    print(f"  harness sha256 : {hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}")
-    print(f"  interpreter    : {sys.executable}")
-    # Which copy of the compiler these numbers are about. Both shell harnesses
-    # record this and this one did not -- and it is the experiment where it can
-    # most easily be wrong, because nothing here sets PYTHONPATH: the module
-    # resolves to whatever is installed, which on this machine is a different
-    # checkout at a different commit. The commit line above names the tree the
-    # script lives in; this names the tree that ran.
-    try:
-        import orbital_mission_compiler.compiler as _c
-
-        module_path = _c.__file__
-    except Exception as exc:  # noqa: BLE001 - reported, not raised
-        module_path = f"unresolved ({exc})"
-    print(f"  compiler module: {module_path}")
-    print(f"  python         : {platform.python_version()}")
-    print("=== environment ===")
-    print(f"  cpu            : {cpu}")
-    print(f"  cpu count      : {os.cpu_count()}")
-    print(f"  platform       : {platform.platform()}")
-    print(f"  opa            : {'available' if opa_available() else 'not on PATH'}")
-    print()
+    emit(
+        Path(__file__),
+        environment=(("opa", "available" if opa_available() else "not on PATH"),),
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -48,8 +48,15 @@ def _transcript(**overrides) -> str:
     return "\n".join(v for v in parts.values() if v is not None)
 
 
-def _problems(exp, transcript, *, head=HEAD, digest=DIGEST, clean_after=True):
-    return runner.citability_problems(transcript, exp, head, digest, clean_after)
+INPUTS_DIGEST = "b" * 64
+
+
+def _problems(
+    exp, transcript, *, head=HEAD, digest=DIGEST, clean_after=True, inputs_sha=None
+):
+    return runner.citability_problems(
+        transcript, exp, head, digest, clean_after, inputs_sha
+    )
 
 
 def test_a_complete_transcript_is_citable(exp):
@@ -114,6 +121,98 @@ def test_the_fields_are_read_as_fields_not_found_as_substrings(exp):
     )
     problems = _problems(exp, prose)
     assert len(problems) >= 3, problems
+
+
+@pytest.fixture
+def exp_with_inputs() -> "runner.Experiment":
+    """An experiment whose meaning lives in files other than the script.
+
+    The DRA harness is the real case: the queue sizing and the two claim shapes
+    are in its templates, and the script only submits them.
+    """
+    return runner.Experiment(
+        name="t",
+        script=Path("scripts/run_experiments.py"),
+        inputs=("manifests/**/harness-*.yaml",),
+    )
+
+
+def test_an_experiment_without_declared_inputs_needs_no_inputs_line(exp):
+    """Most harnesses apply nothing but themselves; they must not be asked for it."""
+    assert _problems(exp, _transcript()) == []
+
+
+def test_a_declared_input_set_must_be_accounted_for(exp_with_inputs):
+    """A template is half of what such a run does, so an unchecked one is a hole.
+
+    Digesting the entry point alone was the original behaviour, and under it an
+    edited template produced a different experiment under an unchanged digest --
+    every citability check still passed.
+    """
+    problems = _problems(
+        exp_with_inputs, _transcript(), inputs_sha=INPUTS_DIGEST
+    )
+    assert any("no 'inputs sha256' line" in p for p in problems), problems
+
+
+def test_an_edited_template_is_caught_the_way_an_edited_script_is(exp_with_inputs):
+    transcript = _transcript(inputs=f"  inputs sha256  : {'c' * 64}")
+    problems = _problems(exp_with_inputs, transcript, inputs_sha=INPUTS_DIGEST)
+    assert any("a template was edited while it ran" in p for p in problems), problems
+
+
+def test_a_matching_template_digest_is_accepted(exp_with_inputs):
+    transcript = _transcript(inputs=f"  inputs sha256  : {INPUTS_DIGEST}")
+    assert _problems(exp_with_inputs, transcript, inputs_sha=INPUTS_DIGEST) == []
+
+
+def test_declaring_inputs_that_match_no_file_is_a_problem(exp_with_inputs):
+    """Otherwise the check passes by being empty.
+
+    `inputs_digest(())` is a fixed value -- the hash of a single newline -- so every
+    experiment whose glob went stale would agree with every other, and the run
+    would report that its templates were unchanged because it found none.
+    """
+    transcript = _transcript(inputs=f"  inputs sha256  : {INPUTS_DIGEST}")
+    problems = _problems(exp_with_inputs, transcript, inputs_sha=None)
+    assert any("none of the patterns matched a file" in p for p in problems), problems
+
+
+def test_the_inputs_digest_does_not_depend_on_where_the_checkout_lives(tmp_path):
+    """Two clones of the same files must produce the same figure.
+
+    sha256sum prints paths, so folding its output in wholesale gives a digest that
+    changes on `git clone` to another directory -- which is exactly the comparison
+    the digest exists to support.
+    """
+    contents = {"harness-00.yaml": b"kind: Namespace\n", "harness-01.yaml": b"kind: Job\n"}
+    digests = []
+    for clone in ("one", "two/deeper"):
+        root = tmp_path / clone
+        root.mkdir(parents=True)
+        paths = []
+        for name, body in contents.items():
+            (root / name).write_bytes(body)
+            paths.append(root / name)
+        digests.append(runner.inputs_digest(paths))
+    assert digests[0] == digests[1]
+
+
+def test_the_inputs_digest_does_not_depend_on_the_order_they_are_listed(tmp_path):
+    """glob order is filesystem order, and it differs between machines."""
+    a, b = tmp_path / "harness-00.yaml", tmp_path / "harness-01.yaml"
+    a.write_bytes(b"kind: Namespace\n")
+    b.write_bytes(b"kind: Job\n")
+    assert runner.inputs_digest([a, b]) == runner.inputs_digest([b, a])
+
+
+def test_an_edited_template_changes_the_inputs_digest(tmp_path):
+    """The check is only worth having if the digest actually moves."""
+    template = tmp_path / "harness-00.yaml"
+    template.write_bytes(b'nominalQuota: "1"\n')
+    before = runner.inputs_digest([template])
+    template.write_bytes(b'nominalQuota: "2"\n')
+    assert runner.inputs_digest([template]) != before
 
 
 def test_a_tree_dirtied_during_the_run_is_caught(exp):
