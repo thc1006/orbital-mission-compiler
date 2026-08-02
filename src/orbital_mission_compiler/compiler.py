@@ -833,10 +833,15 @@ _PRIORITY_CLASS_BUCKETS = {1: "76-100", 2: "51-75", 3: "26-50", 4: "1-25"}
 # ours would rewrite theirs. The default keeps the project in the name, and an
 # installation sharing a cluster with a second copy can set its own.
 ORCHIDE_PRIORITY_CLASS_PREFIX = "orbital-"
-# Bump when the tier->name/value mapping above changes, so a cluster can detect a
-# Job labelled against a stale class set. v2 renamed the tiers from the bare orbital
-# priority numbers to what they mean, which is exactly the change this is here to
-# announce: a Job labelled v1 references classes that no longer exist under these names.
+# Bump when the tier->name/value mapping above changes, so a cluster can detect a Job
+# labelled against a stale class set. v1 named the tiers after the bare ORCHIDE numbers
+# and v2 names them after what they mean; no released version emits a priority class at
+# all, so v1 exists only in this repository's own history and no cluster can be holding
+# one. The label is here for the next rename, not for that one.
+#
+# Bumping it is not optional bookkeeping. It is the only signal separating two class
+# sets that share a name, and the live proof compares the value on a Job against the
+# value on the class it references -- a comparison a missed bump makes meaningless.
 PRIORITY_CLASS_MAPPING_VERSION = "v2"
 
 

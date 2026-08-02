@@ -142,6 +142,23 @@ class TestKueueWorkloadPriorityClass:
         assert by_name["orbital-mission-high"] > by_name["orbital-mission-normal"]
         assert by_name["orbital-mission-normal"] > by_name["orbital-mission-low"]
 
+    def test_the_mapping_and_its_version_are_pinned_together(self):
+        # Monotonicity is what the ordering proof needs, but it does not pin the
+        # mapping: 400/250/200/150 is monotone too, and a change like that alters what
+        # every class on a cluster means while leaving the rest of this file green.
+        # The version exists to announce exactly that change, so the two are asserted
+        # in one place -- changing either alone fails here, which is where someone has
+        # to decide whether they have made a new mapping and say so in the label.
+        from orbital_mission_compiler.compiler import PRIORITY_CLASS_MAPPING_VERSION
+
+        assert PRIORITY_CLASS_MAPPING_VERSION == "v2"
+        assert {w["metadata"]["name"]: w["value"] for w in render_workload_priority_classes()} == {
+            "orbital-mission-critical": 400,
+            "orbital-mission-high": 300,
+            "orbital-mission-normal": 200,
+            "orbital-mission-low": 100,
+        }
+
     def test_higher_mission_priority_maps_to_higher_kueue_value(self):
         # The invariant the live queue-ordering proof (scripts/validate_kueue_priority.sh)
         # depends on: a higher mission priority renders a priority-class whose
