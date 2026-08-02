@@ -361,9 +361,68 @@ class MissionPlan(StrictModel):
 
 
 class WorkflowIntent(StrictModel):
+    """The compiled intent every renderer reads.
+
+    The renderers are public and callable on their own, so this model is the only
+    place that can guarantee they agree. Two of its constraints exist because they
+    did not:
+
+    ``steps`` must be non-empty because ``_primary_step`` indexes ``steps[0]`` and
+    an empty list surfaced as an ``IndexError`` from inside a renderer rather than
+    as a rejected intent.
+
+    ``resource_hints`` must agree with ``steps`` because two renderers read
+    different ones. ``render_resource_claim_templates`` decides whether to emit a
+    GPU ResourceClaimTemplate from ``resource_hints["requires_gpu"]``, while
+    ``render_kueue_job`` decides whether the Job references one from the primary
+    step's ``resource_class``. A GPU step with the default empty hints therefore
+    produced a Job naming a template nobody emitted -- a Job the scheduler can
+    never place. The parser always derived the hints from the steps, so nothing on
+    that path changes; what changes is that no other caller can disagree.
+    """
+
     mission_id: str
     service_id: str
-    priority: int
+    # The same range AIService uses, so an intent cannot be narrower than the plan
+    # it was compiled from. Bools are rejected outright: pydantic reads True as 1,
+    # which would silently become the lowest usable priority.
+    priority: int = Field(ge=0, le=100)
     workflow_name: str
-    steps: list[WorkflowStep]
+    steps: list[WorkflowStep] = Field(min_length=1)
     resource_hints: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("mission_id", "service_id", "workflow_name")
+    @classmethod
+    def _identifier_not_blank(cls, value: str, info: Any) -> str:
+        # Blank rather than empty: each of these names a rendered artifact, and a
+        # value of spaces sanitizes to a placeholder instead of failing.
+        if not value or not value.strip():
+            raise ValueError(f"{info.field_name} must not be blank")
+        return value
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _priority_is_not_a_bool(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("priority must be a number, not a boolean")
+        return value
+
+    @model_validator(mode="after")
+    def _hints_describe_the_steps(self) -> WorkflowIntent:
+        derived = {
+            "requires_gpu": any(s.resource_class == ResourceClass.GPU for s in self.steps),
+            "requires_fpga": any(s.resource_class == ResourceClass.FPGA for s in self.steps),
+            "fallback_enabled": any(s.fallback_resource_class is not None for s in self.steps),
+        }
+        for key, value in derived.items():
+            if key not in self.resource_hints:
+                # Filled in rather than demanded, so a caller building an intent by
+                # hand gets the same artifacts as one that came through the parser.
+                self.resource_hints[key] = value
+            elif bool(self.resource_hints[key]) is not value:
+                raise ValueError(
+                    f"resource_hints[{key!r}] is {self.resource_hints[key]!r}, but the "
+                    f"steps say {value}; the steps decide, and a renderer reading the "
+                    "hint would disagree with one reading the steps"
+                )
+        return self

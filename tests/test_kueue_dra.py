@@ -8,6 +8,8 @@ Reference: ORCHIDE slide 14 (heterogeneous hardware), Kueue v0.17 DRA docs.
 """
 
 
+import pytest
+from pydantic import ValidationError
 from orbital_mission_compiler.compiler import (
     render_kueue_job,
     render_resource_claim_templates,
@@ -345,6 +347,79 @@ class TestJobTemplateLink:
         assert template_name in referenced_names, (
             f"Job must reference template {template_name!r}, got {referenced_names}"
         )
+
+    @pytest.mark.parametrize(
+        "primary,fallback",
+        [
+            (ResourceClass.GPU, ResourceClass.CPU),
+            (ResourceClass.GPU, None),
+            (ResourceClass.FPGA, ResourceClass.CPU),
+            (ResourceClass.FPGA, None),
+            (ResourceClass.CPU, None),
+        ],
+    )
+    def test_no_step_shape_can_produce_a_claim_nobody_emitted(self, primary, fallback):
+        """A Job may only name a template this intent also renders.
+
+        The two renderers used to read different sources: this one asked the
+        primary step, and render_resource_claim_templates asked
+        resource_hints["requires_gpu"]. Anything constructing an intent without
+        hints -- which the public API allowed, since they default to empty -- got a
+        GPU Job pointing at a template that was never written, and a pod the
+        scheduler could never place. The intent now derives the hints from the
+        steps, so the sources cannot disagree; this pins the property the fix is
+        for rather than the mechanism it used.
+        """
+        intent = WorkflowIntent(
+            mission_id="m",
+            service_id="s",
+            priority=50,
+            workflow_name="wf",
+            steps=[
+                WorkflowStep(
+                    name="only",
+                    image="example/image",
+                    resource_class=primary,
+                    fallback_resource_class=fallback,
+                )
+            ],
+        )
+        emitted = {t["metadata"]["name"] for t in render_resource_claim_templates(intent)}
+        claims = render_kueue_job(intent)["spec"]["template"]["spec"].get("resourceClaims", [])
+        dangling = [
+            c["resourceClaimTemplateName"]
+            for c in claims
+            if c.get("resourceClaimTemplateName") not in emitted
+        ]
+        assert not dangling, f"Job references templates that were never emitted: {dangling}"
+
+    def test_hints_that_contradict_the_steps_are_refused(self):
+        """The disagreement is rejected at construction, not rendered around.
+
+        Filling missing hints in would still leave a caller free to assert
+        requires_gpu=False over a GPU step, which is the same divergence with an
+        extra step.
+        """
+        with pytest.raises(ValidationError, match="the steps decide"):
+            WorkflowIntent(
+                mission_id="m",
+                service_id="s",
+                priority=50,
+                workflow_name="wf",
+                steps=[
+                    WorkflowStep(
+                        name="gpu", image="example/image", resource_class=ResourceClass.GPU
+                    )
+                ],
+                resource_hints={"requires_gpu": False},
+            )
+
+    def test_an_intent_with_no_steps_is_refused_rather_than_indexed(self):
+        """_primary_step indexes steps[0]; an empty list used to reach it."""
+        with pytest.raises(ValidationError):
+            WorkflowIntent(
+                mission_id="m", service_id="s", priority=50, workflow_name="wf", steps=[]
+            )
 
 
 # ── firstAvailable DRA fallback (opt-in) ─────────────────────────────────
