@@ -107,6 +107,12 @@ EXPERIMENTS = [
         # failing, so this runner is usable from any branch in the stack.
         name="kueue-priority",
         script=Path("scripts/validate_kueue_priority.sh"),
+        # The queue's cpu quota of 1 is what makes the blocker block, and the two
+        # plans are what the compiler renders the racing Jobs from -- so the
+        # experiment's meaning is in these four files as much as in the script.
+        # The glob is *.yaml and the transcripts land under results/, so a filed
+        # result cannot feed back into the digest of the run that produced it.
+        inputs=("manifests/k8s/kueue/priority-ordering/*.yaml",),
         result_path=Path(
             "manifests/k8s/kueue/priority-ordering/results/"
             "run-k8s-1.36.3-kueue-0.19.0.txt"
