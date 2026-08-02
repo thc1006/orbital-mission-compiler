@@ -115,7 +115,7 @@ The script tears down the namespace, queue, and classes on completion.
   starvation of a low tier under a stream of high ones, are neither shown nor bounded.
 - **Queue sorting only.** Preemption, cohort borrowing, admission checks and fair
   sharing use the same priority field and are not exercised. In this configuration a
-  `mission-critical` plan does *not* evict a running lower-priority one — the blocker
+  a mission-critical plan does *not* evict a running lower-priority one — the blocker
   holds its quota at priority 0 throughout and is never preempted.
 - **One trigger.** Quota is freed by deleting the blocker; quota increases, queue
   creation and normal completion are other admission triggers and are not covered.
