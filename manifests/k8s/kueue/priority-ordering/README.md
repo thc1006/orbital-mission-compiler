@@ -44,9 +44,32 @@ admissible at a time, and **no preemption** is configured.
 4. Both are PENDING (quota held). Delete the blocker.
 5. Kueue admits the highest-priority **pending** workload first.
 
-If Kueue used arrival order it would admit LOW (submitted first). It admits HIGH,
-so priority decided the order. Both Jobs are produced by the compiler
-(`render-kueue --priority-class`), so this validates the compiler's output.
+On its own that is still one cell, and in it "higher priority" and "submitted
+second" are the same Job — so any mechanism that favours the later arrival predicts
+the identical result. The run therefore also races a **control arm**: the same two
+plans, the same order, rendered without `--priority-class`. No class label means
+Kueue resolves no `WorkloadPriorityClass`, both Workloads take priority 0, the sort
+falls through to the creation timestamp, and the prediction inverts to the first
+submitted winning. Observed: it does. The apparatus can see arrival order, and the
+priority arm is what turns it around.
+
+Each arm races `REPS` times (5 by default) and the run reports the tally, because a
+single race cannot separate a mechanism from a coin toss.
+
+Both arms are produced by the compiler (`render-kueue`, with and without
+`--priority-class`), so the difference between them is one compiler flag and nothing
+else about the Jobs.
+
+### What this does and does not establish
+
+That Kueue admits the higher `spec.priority` first is documented Kueue behaviour,
+not a finding. What the run establishes is the **path**: a mission plan's
+`priority: 90` becomes an ORCHIDE tier, becomes a class name, becomes a
+`WorkloadPriorityClass` whose value is 400, becomes the `spec.priority` Kueue
+actually sorts on — with the reference's group read back to show the value came
+from that class rather than from the pod-template fallback. The control arm is what
+attributes the change to the compiler's flag rather than to anything else in the
+rendered Job.
 
 ## Run it
 
@@ -67,18 +90,36 @@ including the compiler commit it was taken from; re-run it after any change to t
 compiler or the harness rather than citing an older capture.
 
 ```
-LOW  workload priority = 200 (...mission-normal)   submitted first
-HIGH workload priority = 400 (...mission-critical) submitted last
-both PENDING under full quota
--> after freeing quota, HIGH admitted before LOW
-[PASS] priority drove ordering, not creation order
+priority arm  LOW=200 submitted first, HIGH=400 submitted last -> HIGH admitted first
+control arm   no priority class, same order                    -> LOW  admitted first
 ```
 
 The `...mission-critical`/`...mission-normal` values landed on the Kueue **Workloads**
 (400 and 200), confirming the `kueue.x-k8s.io/priority-class` label propagated to
 Kueue's own priority field, which is what sorts the queue. The run also reads back the
-reference's group and kind, so the value is known to have come from the emitted
-`WorkloadPriorityClass` rather than from the pod-template fallback above. Preemption
-and cohort borrowing use the same priority; this experiment demonstrates the
-queue-sorting half. The script tears down the namespace, queue, and classes on
-completion.
+reference's group and kind on both Workloads, so the values are known to have come
+from the emitted `WorkloadPriorityClass` rather than from the pod-template fallback
+above. After HIGH is admitted the run waits for LOW and requires it to be admitted
+too: beating a workload that could never have run is not evidence, and every earlier
+step reads "not admitted yet" and "never admissible" the same way.
+
+The script tears down the namespace, queue, and classes on completion.
+
+### Boundaries
+
+- **Two of the four tiers are raced.** All four classes are applied and all four
+  values and mapping labels are read back, but only 400 against 200 is put through an
+  admission race. Adjacent tiers (400 against 300) and the bucket edges (25/26,
+  50/51, 75/76) are unit-test territory.
+- **Two pending workloads, one gap, one direction.** Ordering among k>2, and
+  starvation of a low tier under a stream of high ones, are neither shown nor bounded.
+- **Queue sorting only.** Preemption, cohort borrowing, admission checks and fair
+  sharing use the same priority field and are not exercised. In this configuration a
+  `mission-critical` plan does *not* evict a running lower-priority one — the blocker
+  holds its quota at priority 0 throughout and is never preempted.
+- **One trigger.** Quota is freed by deleting the blocker; quota increases, queue
+  creation and normal completion are other admission triggers and are not covered.
+- **One shape.** CPU-only single-container Jobs, one flavor, one namespace, one node,
+  Kubernetes v1.36.3, Kueue v0.19.0, the v1beta2 `priorityClassRef` form. No DRA or
+  GPU workload takes part.
+- **`--policy-engine baseline`.** The Rego path is not exercised by this run.

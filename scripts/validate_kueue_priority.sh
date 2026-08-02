@@ -53,6 +53,17 @@ if [ -n "${RUN_ID_BAD}" ]; then
   printf 'RESULT: FAIL\n'
   exit 2
 fi
+# How many races each arm runs. One race cannot separate a mechanism from a coin
+# toss: under "the order is arbitrary" a single expected result has probability 1/2.
+# Five per arm puts that at 1/32, and the run reports the tally rather than a sentence
+# about it, so a reader can see how many attempts there were.
+REPS="${REPS:-5}"
+case "${REPS}" in
+  ''|*[!0-9]*) printf 'REPS must be a positive integer, got %s\n' "${REPS}" >&2
+               printf 'RESULT: FAIL\n'; exit 2 ;;
+esac
+[ "${REPS}" -ge 1 ] || { printf 'REPS must be at least 1\n' >&2; printf 'RESULT: FAIL\n'; exit 2; }
+
 NS="prio-${RUN_ID}"
 FLAVOR="prio-flavor-${RUN_ID}"
 CQ="prio-cq-${RUN_ID}"
@@ -101,7 +112,9 @@ trap 'cleanup; trap - EXIT; exit 143' TERM
 # lookup and teardown, so an override cannot leave the queue in one namespace and the
 # Jobs in another.
 render_template() { # $1 template path -> stdout
-  "${PYTHON_BIN}" - "$1" "$NS" "$FLAVOR" "$CQ" "$LQ" "$BLOCKER" "$RUN_ID" <<'PY'
+  # BLOCKER_OVERRIDE lets a repeat cycle name its own blocker without a second naming
+  # scheme; unset, every template still gets the run's single blocker name.
+  "${PYTHON_BIN}" - "$1" "$NS" "$FLAVOR" "$CQ" "$LQ" "${BLOCKER_OVERRIDE:-$BLOCKER}" "$RUN_ID" <<'PY'
 import sys
 path, ns, flavor, cq, lq, blocker, run_id = sys.argv[1:8]
 text = open(path, encoding="utf-8").read()
@@ -180,6 +193,53 @@ else:
 job_mapping() { _label_of get job "$1" -n "$NS"; }
 class_mapping() { _label_of get workloadpriorityclass "$1"; }
 class_value() { kubectl get workloadpriorityclass "$1" -o jsonpath='{.value}' 2>/dev/null; }
+# One admission race, start to finish, reporting only who won. The detailed pass in
+# sections 4-7b examines a single race; this repeats it, and repeats it for the control
+# arm, where the only difference is which pair of rendered Jobs it is given.
+#
+# The blocker name is a parameter so cycles cannot collide with each other or with the
+# detailed pass; everything it creates is deleted before it returns, and the namespace
+# teardown is the backstop.
+race_once() { # $1 blocker name, $2 low job file, $3 high job file -> HIGH|LOW|BOTH|NONE
+  local blocker="$1" lowf="$2" highf="$3"
+  local lj hj lw hw first="" d ba
+  BLOCKER_OVERRIDE="$blocker" render_template "${MANIFESTS}/01-blocker-job.yaml" \
+    | kubectl apply -f - >/dev/null 2>&1
+  d=$((SECONDS+60)); ba=""
+  while [ $SECONDS -lt $d ]; do ba=$(wl_admitted "$(wl_for_job "$blocker")"); [ "$ba" = "True" ] && break; sleep 2; done
+  if [ "$ba" != "True" ]; then
+    kubectl delete job "$blocker" -n "$NS" --ignore-not-found >/dev/null 2>&1
+    echo "NOBLOCK"; return
+  fi
+  lj=$(kubectl create -f "$lowf" -o jsonpath='{.metadata.name}' 2>/dev/null)
+  lw=$(wait_wl "$lj")
+  sleep 6   # the same separation the detailed pass uses, and for the same reason
+  hj=$(kubectl create -f "$highf" -o jsonpath='{.metadata.name}' 2>/dev/null)
+  hw=$(wait_wl "$hj")
+  if [ -z "$lw" ] || [ -z "$hw" ]; then
+    kubectl delete job "$blocker" "$lj" "$hj" -n "$NS" --ignore-not-found >/dev/null 2>&1
+    echo "NOWL"; return
+  fi
+  kubectl delete job "$blocker" -n "$NS" --ignore-not-found >/dev/null 2>&1
+  d=$((SECONDS+60))
+  while [ $SECONDS -lt $d ]; do
+    local h l; h=$(wl_admitted "$hw"); l=$(wl_admitted "$lw")
+    if [ "$h" = "True" ] && [ "$l" = "True" ]; then first="BOTH"; break; fi
+    if [ "$h" = "True" ]; then first="HIGH"; break; fi
+    if [ "$l" = "True" ]; then first="LOW"; break; fi
+    sleep 2
+  done
+  kubectl delete job "$lj" "$hj" -n "$NS" --ignore-not-found >/dev/null 2>&1
+  # Wait for the quota to come back before the next cycle starts, or its blocker
+  # cannot be admitted and the cycle reports NOBLOCK for a reason unrelated to it.
+  d=$((SECONDS+90))
+  while [ $SECONDS -lt $d ]; do
+    [ -z "$(kubectl get jobs -n "$NS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)" ] && break
+    sleep 3
+  done
+  echo "${first:-NONE}"
+}
+
 wait_wl() { # $1 job name -> echo workload name once it exists (up to 30s)
   local w=""; local d=$((SECONDS+30))
   while [ $SECONDS -lt $d ]; do w=$(wl_for_job "$1"); [ -n "$w" ] && break; sleep 2; done
@@ -327,10 +387,50 @@ LOW_JOB_FILE=$(find "${OUT}/low" -name '*-kueue.yaml' | head -1)
 # are checked, because a command can succeed and still write nothing this run can use.
 [ -n "$HIGH_JOB_FILE" ] || RENDER_BAD="${RENDER_BAD} high(no -kueue.yaml)"
 [ -n "$LOW_JOB_FILE" ] || RENDER_BAD="${RENDER_BAD} low(no -kueue.yaml)"
+
+# The control arm: the same two plans, the same submission order, rendered WITHOUT
+# --priority-class. No priority-class label means Kueue resolves no
+# WorkloadPriorityClass, both Workloads take priority 0, and the sort falls through to
+# the creation timestamp -- so the prediction inverts and the first submitted should
+# win. It is what makes the treatment arm evidence rather than an observation: without
+# it, "priority beat arrival order" is asserted against a null that was never run, and
+# any mechanism favouring the later submission would look identical.
+for p in high low; do
+  PYTHONPATH="${HERE}/src" "${PYTHON_BIN}" -m orbital_mission_compiler.cli render-kueue \
+    --input "${MANIFESTS}/plan-${p}.yaml" --output-dir "${OUT}/ctl-${p}" --queue "$LQ" --namespace "$NS" \
+    --policy-engine baseline >"${OUT}/render-ctl-${p}.log" 2>&1 || RENDER_BAD="${RENDER_BAD} ctl-${p}(exit $?)"
+done
+CTL_HIGH_FILE=$(find "${OUT}/ctl-high" -name '*-kueue.yaml' | head -1)
+CTL_LOW_FILE=$(find "${OUT}/ctl-low" -name '*-kueue.yaml' | head -1)
+[ -n "$CTL_HIGH_FILE" ] || RENDER_BAD="${RENDER_BAD} ctl-high(no -kueue.yaml)"
+[ -n "$CTL_LOW_FILE" ] || RENDER_BAD="${RENDER_BAD} ctl-low(no -kueue.yaml)"
+
 if [ -z "$RENDER_BAD" ]; then
-  report PASS "both Jobs rendered by the compiler"
+  report PASS "both arms rendered by the compiler (priority-class and control)"
 else
   report FAIL "render failed:${RENDER_BAD} (logs in ${OUT})"
+fi
+
+# The control arm is only a control if its Jobs really carry no class. Checked here
+# rather than assumed, because a control that silently kept the label would agree with
+# the treatment arm and be read as the treatment arm failing to matter.
+CTL_LABELLED=$("${PYTHON_BIN}" - "$CTL_HIGH_FILE" "$CTL_LOW_FILE" <<'PY'
+import sys, yaml
+hits = []
+for path in sys.argv[1:3]:
+    for doc in yaml.safe_load_all(open(path, encoding="utf-8")):
+        if not doc:
+            continue
+        labels = (doc.get("metadata") or {}).get("labels") or {}
+        if "kueue.x-k8s.io/priority-class" in labels:
+            hits.append(f"{path}={labels['kueue.x-k8s.io/priority-class']}")
+print(" ".join(hits))
+PY
+)
+if [ -z "$CTL_LABELLED" ]; then
+  report PASS "the control arm's Jobs carry no priority class"
+else
+  report FAIL "the control arm is not a control; it carries: ${CTL_LABELLED}"
 fi
 
 echo "=== 4. blocker holds the cpu=1 quota ==="
@@ -466,6 +566,44 @@ kubectl get workloads.kueue.x-k8s.io -n "$NS" -o yaml > "${OUT}/workloads.yaml" 
   && echo "  workloads captured to $(basename "${OUT}")/workloads.yaml" || true
 kubectl get clusterqueue "$CQ" -o yaml > "${OUT}/clusterqueue.yaml" 2>/dev/null \
   && echo "  defaulted ClusterQueue captured to $(basename "${OUT}")/clusterqueue.yaml" || true
+
+echo "=== 8. the same race, repeated ==="
+# The detailed pass above is race 1 of this arm; the remainder run here.
+TREAT_WINS=0; TREAT_LOG="HIGH"
+i=1
+while [ "$i" -lt "$REPS" ]; do
+  i=$((i+1))
+  w=$(race_once "${BLOCKER}-t${i}" "$LOW_JOB_FILE" "$HIGH_JOB_FILE")
+  TREAT_LOG="${TREAT_LOG} ${w}"
+  [ "$w" = "HIGH" ] && TREAT_WINS=$((TREAT_WINS+1))
+  echo "  priority arm race ${i}/${REPS}: ${w}"
+done
+TREAT_WINS=$((TREAT_WINS+1))   # race 1 was the detailed pass, which asserted HIGH
+echo "  priority arm outcomes: ${TREAT_LOG}"
+if [ "$TREAT_WINS" -eq "$REPS" ]; then
+  report PASS "HIGH admitted first in ${TREAT_WINS}/${REPS} races despite being submitted last"
+else
+  report FAIL "HIGH admitted first in only ${TREAT_WINS}/${REPS} races (${TREAT_LOG})"
+fi
+
+echo "=== 9. control arm: the same plans and order, no priority class ==="
+# The prediction inverts here. If the control also gives HIGH, the apparatus favours
+# the later submission and the treatment arm shows nothing about priority.
+CTL_WINS=0; CTL_LOG=""
+i=0
+while [ "$i" -lt "$REPS" ]; do
+  i=$((i+1))
+  w=$(race_once "${BLOCKER}-c${i}" "$CTL_LOW_FILE" "$CTL_HIGH_FILE")
+  CTL_LOG="${CTL_LOG} ${w}"
+  [ "$w" = "LOW" ] && CTL_WINS=$((CTL_WINS+1))
+  echo "  control arm race ${i}/${REPS}: ${w}"
+done
+echo "  control arm outcomes:${CTL_LOG}"
+if [ "$CTL_WINS" -eq "$REPS" ]; then
+  report PASS "without a priority class the FIRST submitted won ${CTL_WINS}/${REPS} races -> the apparatus does observe arrival order, and the treatment arm inverted it"
+else
+  report FAIL "control arm did not follow arrival order:${CTL_LOG} (${CTL_WINS}/${REPS} to LOW)"
+fi
 
 echo "" ; echo "=== Summary ===" ; echo "PASS: ${PASS}  FAIL: ${FAIL}"
 # Teardown runs via the EXIT trap (also covers interrupts).
