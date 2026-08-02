@@ -23,7 +23,9 @@ set -uo pipefail
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 MANIFESTS="${HERE}/manifests/k8s/kueue/priority-ordering"
-OUT="${OUT:-${HERE}/out/kueue-priority}"
+# OUT, if the caller sets it, is a PARENT for this run's directory rather than the
+# directory itself; see where OUT_ROOT is resolved below. Left unset it becomes a
+# temporary directory this script creates and removes.
 
 # One identifier per run, so two runs on one cluster cannot collide and neither can
 # touch anything that was already there. Override RUN_ID to reproduce a name.
@@ -80,33 +82,103 @@ LOW_CLASS="${CLASS_PREFIX}mission-normal"
 ALL_CLASSES="${CLASS_PREFIX}mission-critical ${CLASS_PREFIX}mission-high ${CLASS_PREFIX}mission-normal ${CLASS_PREFIX}mission-low"
 OWNER_LABEL="orbital.test/run-id=${RUN_ID}"
 
-rm -rf "$OUT"; mkdir -p "$OUT"
+# The output directory is deleted at the start, so it must be one this script owns.
+# It used to be whatever the caller put in OUT, deleted recursively with no check at
+# all: an inherited CI variable, a wrapper passing the wrong argument or a typo like
+# OUT=$HOME was a recursive delete of that path. Now the caller chooses a parent at
+# most, the run works inside a subdirectory named for itself, and that subdirectory
+# is only removed when it carries this script's own marker.
+OUT_ROOT="${OUT:-}"
+if [ -z "${OUT_ROOT}" ]; then
+  OUT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/kueue-priority.XXXXXXXX")" || {
+    printf 'could not create a working directory\n' >&2; printf 'RESULT: FAIL\n'; exit 2; }
+  OUT_ROOT_IS_OURS=1
+else
+  case "${OUT_ROOT}" in
+    /) printf 'OUT must not be the filesystem root\n' >&2; printf 'RESULT: FAIL\n'; exit 2 ;;
+  esac
+  mkdir -p "${OUT_ROOT}" || { printf 'OUT is not creatable: %s\n' "${OUT_ROOT}" >&2; printf 'RESULT: FAIL\n'; exit 2; }
+  OUT_ROOT_IS_OURS=0
+fi
+OUT="${OUT_ROOT}/run-${RUN_ID}"
+SENTINEL="${OUT}/.kueue-priority-run"
+if [ -e "$OUT" ] && [ ! -e "$SENTINEL" ]; then
+  printf '%s exists and was not created by this script; refusing to delete it\n' "$OUT" >&2
+  printf 'RESULT: FAIL\n'; exit 2
+fi
+rm -rf "$OUT"; mkdir -p "$OUT"; : > "$SENTINEL"
 
 PASS=0; FAIL=0
 LOW_JOB=""; HIGH_JOB=""   # set mid-run; initialised so the cleanup trap is set -u safe
-CREATED_QUEUES=0; CREATED_WPCS=0   # only tear down what was actually applied
+# Set once, immediately BEFORE the first thing that can create an object -- not after
+# a successful apply. `kubectl apply -f` over a multi-document manifest is not one
+# transaction: it creates the documents in order and can fail on a later one, so a
+# flag set only on overall success left a namespace and a flavor on the cluster with
+# teardown believing nothing had been made.
+MUTATION_STARTED=0
+CLEANUP_FAILED=0
 report() { if [ "$1" = PASS ]; then echo "[PASS] $2"; PASS=$((PASS+1)); else echo "[FAIL] $2"; FAIL=$((FAIL+1)); fi; }
 
 # Teardown removes only objects carrying this run's ownership label. Deleting by label
 # rather than by manifest is what keeps a pre-existing object of the same kind safe.
+CLEANED=0
 cleanup() {
+  [ "${CLEANED}" -eq 1 ] && return 0
+  CLEANED=1
+  # Removing the working directory is safe whatever happened: it is named for this
+  # run and carries this script's marker.
+  if [ "${OUT_ROOT_IS_OURS:-0}" -eq 1 ]; then rm -rf "${OUT_ROOT}"; else rm -rf "${OUT}"; fi
+  [ "${MUTATION_STARTED}" -eq 1 ] || return 0
   echo "=== cleanup (run ${RUN_ID}) ==="
-  kubectl delete job "$LOW_JOB" "$HIGH_JOB" "$BLOCKER" -n "$NS" --ignore-not-found >/dev/null 2>&1 || true
-  if [ "$CREATED_WPCS" -eq 1 ]; then
-    kubectl delete workloadpriorityclass -l "$OWNER_LABEL" --ignore-not-found >/dev/null 2>&1 || true
-  fi
-  if [ "$CREATED_QUEUES" -eq 1 ]; then
-    kubectl delete localqueue -n "$NS" -l "$OWNER_LABEL" --ignore-not-found >/dev/null 2>&1 || true
-    kubectl delete clusterqueue -l "$OWNER_LABEL" --ignore-not-found >/dev/null 2>&1 || true
-    kubectl delete resourceflavor -l "$OWNER_LABEL" --ignore-not-found >/dev/null 2>&1 || true
-    kubectl delete namespace -l "$OWNER_LABEL" --ignore-not-found >/dev/null 2>&1 || true
+  # Every delete's failure is kept. Swallowing them let a run print RESULT: PASS
+  # while leaving cluster-scoped WorkloadPriorityClasses behind, which is the
+  # "safe to run anywhere" claim failing silently.
+  _del() {
+    if ! kget delete "$@" --ignore-not-found >/dev/null 2>&1; then
+      CLEANUP_FAILED=1
+      echo "  cleanup could not delete: $*" >&2
+    fi
+  }
+  _del job "$LOW_JOB" "$HIGH_JOB" "$BLOCKER" -n "$NS"
+  _del workloadpriorityclass -l "$OWNER_LABEL"
+  _del localqueue -n "$NS" -l "$OWNER_LABEL"
+  _del clusterqueue -l "$OWNER_LABEL"
+  _del resourceflavor -l "$OWNER_LABEL"
+  _del namespace -l "$OWNER_LABEL"
+  # Say what is left rather than leaving the operator to discover it. The
+  # cluster-scoped kinds are the ones that outlive the namespace.
+  local leftover
+  leftover=$(kget get workloadpriorityclass,clusterqueue,resourceflavor -l "$OWNER_LABEL" \
+    -o name 2>/dev/null | tr '\n' ' ')
+  if [ -n "${leftover// /}" ]; then
+    CLEANUP_FAILED=1
+    echo "  STILL PRESENT after cleanup: ${leftover}" >&2
   fi
 }
 # EXIT covers the normal path. INT and TERM clean up and then stop: a handler that
 # returns lets the script carry on and create the resources it has just deleted.
-trap cleanup EXIT
-trap 'cleanup; trap - EXIT; exit 130' INT
-trap 'cleanup; trap - EXIT; exit 143' TERM
+# The verdict, called explicitly at the end so cleanup has already run and its
+# outcome can enter it. The EXIT trap cleans but never judges: a prerequisite
+# failure exits 2, and a trap that re-judged would turn that into 1.
+finish() {
+  if [ "$FAIL" -ne 0 ] && [ "$CLEANUP_FAILED" -ne 0 ]; then
+    echo "RESULT: FAIL (and cleanup left objects behind -- see above)"; exit 1
+  elif [ "$FAIL" -ne 0 ]; then
+    echo "RESULT: FAIL"; exit 1
+  elif [ "$CLEANUP_FAILED" -ne 0 ]; then
+    # The experiment's own verdict stands; the run is still not safe to call clean,
+    # because cluster-scoped objects outlive the namespace and this one leaked some.
+    echo "RESULT: PASS, CLEANUP FAILED -- objects from this run may remain"; exit 3
+  fi
+  echo "RESULT: PASS"; exit 0
+}
+
+_warn_leftovers() {
+  [ "${CLEANUP_FAILED}" -eq 0 ] || echo "cleanup left objects from run ${RUN_ID} behind" >&2
+}
+trap 'cleanup; _warn_leftovers' EXIT
+trap 'cleanup; trap - EXIT; _warn_leftovers; exit 130' INT
+trap 'cleanup; trap - EXIT; _warn_leftovers; exit 143' TERM
 
 # Fill the run's names into a template. One substitution table feeds setup, render,
 # lookup and teardown, so an override cannot leave the queue in one namespace and the
@@ -127,9 +199,30 @@ sys.stdout.write(text)
 PY
 }
 
-absent() { # $1 kind, $2 name, [$3 namespace] -> 0 when the object does not exist
-  if [ $# -ge 3 ]; then kubectl get "$1" "$2" -n "$3" >/dev/null 2>&1; else kubectl get "$1" "$2" >/dev/null 2>&1; fi
-  [ $? -ne 0 ]
+# Three outcomes, not two. An earlier version ran `kubectl get` and read any
+# non-zero exit as "the name is free", so Forbidden, an expired token, a TLS
+# failure, a discovery error and a timeout all licensed the run to start creating
+# objects on a cluster it had never successfully read. --ignore-not-found makes a
+# missing object a success with empty output, which separates "not there" from
+# "could not look".
+# Every call goes through a bounded request timeout. Not one of them had one, so a
+# wedged apiserver, a proxy that stops answering or an admission webhook that never
+# returns left the harness waiting with no upper bound -- and it holds cluster-scoped
+# objects while it waits. Wrapping the name rather than editing forty call sites is
+# what makes it exhaustive; `command` is what keeps it from recursing.
+K8S_TIMEOUT="${K8S_TIMEOUT:-30s}"
+KUBECTL_BIN="$(command -v kubectl 2>/dev/null || true)"
+kubectl() { command kubectl --request-timeout="${K8S_TIMEOUT}" "$@"; }
+kget() { kubectl "$@"; }
+
+existence() { # $1 kind, $2 name, [$3 namespace] -> absent | present | unreadable
+  local out
+  if [ $# -ge 3 ]; then
+    out=$(kubectl get "$1" "$2" -n "$3" --ignore-not-found -o name 2>/dev/null) || { echo unreadable; return; }
+  else
+    out=$(kubectl get "$1" "$2" --ignore-not-found -o name 2>/dev/null) || { echo unreadable; return; }
+  fi
+  [ -z "$out" ] && echo absent || echo present
 }
 
 wl_for_job() { # $1 job name -> workload name (via job-uid label)
@@ -280,18 +373,56 @@ kubectl get configmap -n kueue-system kueue-manager-config -o yaml > "${OUT}/kue
   || echo "  kueue config   : not readable"
 
 echo "=== 0. prerequisites ==="
-command -v kubectl >/dev/null 2>&1 && report PASS "kubectl available" || { report FAIL "kubectl missing"; exit 2; }
-kubectl get deployment -n kueue-system kueue-controller-manager >/dev/null 2>&1 \
-  && report PASS "Kueue controller present" || report FAIL "Kueue controller missing"
+# Prerequisites gate the rest. Reporting one as FAIL and carrying on into object
+# creation, which is what happened before, means a run with no Kueue on the cluster
+# still made a namespace, a queue and four cluster-scoped classes before failing on
+# something downstream.
+# The binary, resolved before the wrapper function shadowed the name -- `command -v
+# kubectl` would otherwise find the function and report a missing binary as present.
+[ -n "${KUBECTL_BIN}" ] && report PASS "kubectl available (${KUBECTL_BIN})" \
+  || { report FAIL "kubectl missing"; echo "RESULT: FAIL"; exit 2; }
+if kget get deployment -n kueue-system kueue-controller-manager >/dev/null 2>&1; then
+  report PASS "Kueue controller present"
+else
+  report FAIL "Kueue controller missing or unreadable -- nothing was created"
+  echo "RESULT: FAIL"; exit 2
+fi
+# The verbs this run needs, checked before it needs them. Namespace-level access
+# says nothing about the cluster-scoped objects, which are the ones a failed
+# teardown would leave behind.
+RBAC_MISSING=""
+for spec in "create:workloadpriorityclasses" "delete:workloadpriorityclasses" \
+            "create:clusterqueues" "delete:clusterqueues" \
+            "create:resourceflavors" "delete:resourceflavors" \
+            "create:namespaces" "delete:namespaces"; do
+  verb="${spec%%:*}"; res="${spec##*:}"
+  kget auth can-i "$verb" "$res" >/dev/null 2>&1 || RBAC_MISSING="${RBAC_MISSING} ${verb}/${res}"
+done
+if [ -z "$RBAC_MISSING" ]; then
+  report PASS "the cluster-scoped verbs this run needs are permitted"
+else
+  report FAIL "missing permission for:${RBAC_MISSING} -- nothing was created"
+  echo "RESULT: FAIL"; exit 2
+fi
 
 echo "=== 0b. nothing this run is about to create already exists ==="
-COLLIDE=""
-absent namespace "$NS" || COLLIDE="${COLLIDE} namespace/${NS}"
-absent clusterqueue "$CQ" || COLLIDE="${COLLIDE} clusterqueue/${CQ}"
-absent resourceflavor "$FLAVOR" || COLLIDE="${COLLIDE} resourceflavor/${FLAVOR}"
-for cls in ${ALL_CLASSES}; do
-  absent workloadpriorityclass "$cls" || COLLIDE="${COLLIDE} wpc/${cls}"
-done
+COLLIDE=""; UNREADABLE=""
+check_free() { # $@ -> args for existence()
+  case "$(existence "$@")" in
+    present)    COLLIDE="${COLLIDE} $1/$2" ;;
+    unreadable) UNREADABLE="${UNREADABLE} $1/$2" ;;
+  esac
+}
+check_free namespace "$NS"
+check_free clusterqueue "$CQ"
+check_free resourceflavor "$FLAVOR"
+for cls in ${ALL_CLASSES}; do check_free workloadpriorityclass "$cls"; done
+if [ -n "$UNREADABLE" ]; then
+  # Not "free". A lookup that failed says nothing about the name, and creating on
+  # top of that guess is how a run adopts and then deletes someone else's object.
+  report FAIL "could not determine whether these names are free:${UNREADABLE} -- nothing was created"
+  echo "RESULT: FAIL"; exit 2
+fi
 if [ -z "$COLLIDE" ]; then
   report PASS "no pre-existing object carries this run's names"
 else
@@ -300,8 +431,13 @@ else
 fi
 
 echo "=== 1. apply namespace + ClusterQueue (cpu=1) + LocalQueue ==="
-if render_template "${MANIFESTS}/00-namespace-and-queue.yaml" | kubectl apply -f - >/dev/null; then
-  CREATED_QUEUES=1; report PASS "queue applied"
+MUTATION_STARTED=1   # before the first create: a partial apply must still be torn down
+# create, not apply. The preflight above establishes that these names are free, but
+# it is a check-then-act: another run or another operator can create the same name in
+# the gap, and apply would quietly adopt it, relabel it as ours, and let teardown
+# delete it. create turns that race into AlreadyExists, which stops the run.
+if render_template "${MANIFESTS}/00-namespace-and-queue.yaml" | kubectl create -f - >/dev/null; then
+  report PASS "queue applied"
 else
   report FAIL "queue apply failed"
 fi
@@ -312,7 +448,10 @@ PYTHONPATH="${HERE}/src" "${PYTHON_BIN}" -m orbital_mission_compiler.cli render-
   --emit-priority-classes --priority-class --priority-class-prefix "$CLASS_PREFIX" \
   --policy-engine baseline >"${OUT}/render-wpc.log" 2>&1
 # The compiler does not know about this run, so the ownership label is added here.
-if "${PYTHON_BIN}" - "${OUT}/wpc/workload-priority-classes.yaml" "$RUN_ID" <<'PY' | kubectl apply -f - >/dev/null
+# create for the same reason as the queue above, and more so: these four are
+# cluster-scoped, so adopting one would relabel an object shared with everything
+# else on the cluster, and teardown would then delete it.
+if "${PYTHON_BIN}" - "${OUT}/wpc/workload-priority-classes.yaml" "$RUN_ID" <<'PY' | kubectl create -f - >/dev/null
 import sys, yaml
 path, run_id = sys.argv[1], sys.argv[2]
 docs = [d for d in yaml.safe_load_all(open(path, encoding="utf-8")) if d]
@@ -321,7 +460,7 @@ for d in docs:
 yaml.safe_dump_all(docs, sys.stdout)
 PY
 then
-  CREATED_WPCS=1; report PASS "WorkloadPriorityClasses applied"
+  report PASS "WorkloadPriorityClasses applied"
 else
   report FAIL "WPC apply failed"
 fi
@@ -607,4 +746,5 @@ fi
 
 echo "" ; echo "=== Summary ===" ; echo "PASS: ${PASS}  FAIL: ${FAIL}"
 # Teardown runs via the EXIT trap (also covers interrupts).
-[ "$FAIL" -eq 0 ] && { echo "RESULT: PASS"; exit 0; } || { echo "RESULT: FAIL"; exit 1; }
+cleanup
+finish
