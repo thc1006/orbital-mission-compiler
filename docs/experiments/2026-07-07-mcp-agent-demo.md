@@ -1,6 +1,12 @@
 # MCP agent-workflow demonstration (§IV)
 
 **Date:** 2026-07-07
+**Reproduce:** `python3 scripts/run_experiments.py --only mcp-agent-demo`. The filed
+transcript is [`results/mcp-agent-demo.txt`](results/mcp-agent-demo.txt), which
+records the commit, the digests of both fixture plans and the Rego pack, and the OPA
+build -- this demonstration is a policy decision about those three files, so a run
+against an edited one is a different demonstration.
+
 **Purpose:** Show that the six MCP tools are composable and agent-consumable
 through the real FastMCP server: a scripted client admits a mission plan by
 surfacing a policy violation via `explain_policy`, re-checking a corrected plan,

@@ -2,6 +2,12 @@
 
 **Date:** 2026-07-07
 **Host:** Intel Core i5-7400 @ 3.00 GHz (single core), Ubuntu 24.04, Python 3.12.3, OPA 1.15.1
+**Reproduce:** `python3 scripts/run_experiments.py --only scaling`. The filed
+transcript is [`results/scaling.txt`](results/scaling.txt), which records the commit,
+the harness digest, the interpreter, the copy of the compiler that ran and the CPU it
+measured on -- the header above is a hand-written claim about the same things, and a
+reader cannot tell whether the two agree without it.
+
 **Iterations:** 30 per plan size.
 **Note on the host:** this box also runs the single-node kubeadm cluster used in
 §V-D/§V-E, so the sub-100 ms `compile`/`render` phases carry background-load

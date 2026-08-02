@@ -149,6 +149,18 @@ EXPERIMENTS = [
         result_path=Path("docs/experiments/results/ablation.txt"),
     ),
     Experiment(
+        # The SV-B table that had no producing code at all. Its environment marker
+        # is the OPA build rather than the CPU: the claim is about OPA's
+        # per-invocation subprocess cost, so a transcript that does not say which
+        # OPA it timed is not evidence for it. The CPU is recorded too.
+        name="policy-engines",
+        script=Path("scripts/benchmark_policy_engines.py"),
+        inputs=("configs/policies/*.rego",),
+        environment_marker=r"^[^\S\n]*opa[^\S\n]*:[^\S\n]*(?!unknown|not on PATH)\S",
+        environment_description="the OPA build it timed",
+        result_path=Path("docs/experiments/results/policy-engines.txt"),
+    ),
+    Experiment(
         # The paper's Section IV evidence. Its inputs are the two plans and the
         # policy pack, because the whole transcript is a policy decision about
         # them: run it against an edited plan and it is a different demonstration.
