@@ -50,9 +50,11 @@ which is a different problem and is reported separately.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import os
 import re
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -82,7 +84,7 @@ class Experiment:
     # experiment has a cluster: a timing measurement's environment is the CPU, and
     # demanding an apiserver version of it would either fail a sound measurement or
     # teach the harness to print a line it does not mean.
-    environment_marker: str = r"^\s*kube-apiserver\s*:\s*v\d"
+    environment_marker: str = r"^[^\S\n]*kube-apiserver[^\S\n]*:[^\S\n]*v\d"
     environment_description: str = "the apiserver version it read from the cluster"
 
 
@@ -109,7 +111,7 @@ EXPERIMENTS = [
         name="scaling",
         script=Path("scripts/benchmark_scaling.py"),
         args=("--sizes", "10,50,100,500,1000", "--iterations", "30"),
-        environment_marker=r"^\s*cpu\s*:\s*\S",
+        environment_marker=r"^[^\S\n]*cpu[^\S\n]*:[^\S\n]*(?!unknown[^\S\n]*$)\S",
         environment_description="the CPU it measured on",
         result_path=Path("docs/experiments/results/scaling.txt"),
     ),
@@ -127,9 +129,15 @@ def _git(*args: str) -> str:
     the old substring check then found in every transcript. The gate reported `ok`
     on a transcript whose own text said `compiler commit: unknown`.
     """
-    proc = subprocess.run(
-        ["git", "-C", str(REPO), *args], capture_output=True, text=True
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(REPO), *args], capture_output=True, text=True
+        )
+    except OSError as exc:
+        # No git at all. Letting FileNotFoundError escape exited 1, which this
+        # module reserves for "an experiment failed"; an unanswerable git is the
+        # other outcome.
+        raise GitUnavailable(f"git could not be run: {exc}") from exc
     if proc.returncode != 0:
         raise GitUnavailable(
             f"git {' '.join(args)} failed ({proc.returncode}): {proc.stderr.strip()}"
@@ -142,13 +150,22 @@ def _sha256(path: Path) -> str:
 
 
 def _field(transcript: str, label: str) -> str | None:
-    """The value of one provenance line, or None if the line is not there.
+    """The value of one provenance line, or None if it is not there exactly once.
 
-    Anchored to the start of a line and to the whole value, so a mention of the
-    label inside prose or a log message is not mistaken for the field.
+    `[^\S\n]` rather than `\s`, because `\s` matches newlines: the previous
+    pattern spanned lines, so a transcript with every label on one line and every
+    value on the next satisfied all of them, and an empty value swallowed the
+    whole line that followed.
+
+    More than one occurrence is None, not the first. A harness that echoes an
+    earlier filed transcript before printing its own provenance -- a
+    regression-comparison run, say -- would otherwise be judged on the copy, and
+    the runner's own filed results are complete provenance blocks, so the material
+    to do it with is lying in the results directory.
     """
-    m = re.search(rf"^\s*{re.escape(label)}\s*:\s*(.*?)\s*$", transcript, re.M)
-    return m.group(1) if m else None
+    pattern = rf"^[^\S\n]*{re.escape(label)}[^\S\n]*:[^\S\n]*(.*?)[^\S\n]*$"
+    found = re.findall(pattern, transcript, re.M)
+    return found[0] if len(found) == 1 else None
 
 
 def citability_problems(
@@ -192,15 +209,42 @@ def citability_problems(
     return problems
 
 
-def run(exp: Experiment, results_dir: Path) -> tuple[str, str]:
+def _dirt(ignoring: set[str]) -> list[str]:
+    """Working-tree entries, minus the ones this runner filed itself.
+
+    A filed result is a change to the tree, and the dirty check is the first thing
+    every experiment does -- so filing one made the NEXT experiment uncitable, in
+    the same invocation, including experiments that file nothing at all. The
+    documented `python3 scripts/run_experiments.py` filed the first result and then
+    rejected the rest with the runner's loudest outcome, self-inflicted.
+
+    Only paths this process has just written are forgiven, and only those: a file
+    that was already dirty when the run began still stops it.
+    """
+    entries = []
+    for line in _git("status", "--porcelain").splitlines():
+        # `XY PATH`: two status columns and a space. Renames are `XY OLD -> NEW`;
+        # the whole entry is kept for reporting and the path is only used to match.
+        path = line[3:].strip().strip('"')
+        if not any(path == ig or path.startswith(ig.rstrip("/") + "/") for ig in ignoring):
+            entries.append(path)
+    return entries
+
+
+def run(exp: Experiment, results_dir: Path, filed: set[str] | None = None) -> tuple[str, str]:
     """Returns (outcome, detail). Outcome is one of ok / failed / not-citable / skipped."""
+    filed = filed if filed is not None else set()
     script = REPO / exp.script
     if not script.exists():
         return "skipped", f"{exp.script} is not on this branch"
 
     try:
-        if _git("status", "--porcelain"):
-            return "not-citable", "the worktree is dirty; commit or stash before running"
+        dirty = _dirt(filed)
+        if dirty:
+            return "not-citable", (
+                "the worktree is dirty; commit or stash before running "
+                f"({len(dirty)} entr{'y' if len(dirty) == 1 else 'ies'}, e.g. {dirty[0]})"
+            )
         head = _git("rev-parse", "HEAD")
     except GitUnavailable as exc:
         # Not "clean" and not "unknown commit": simply not answerable, so nothing
@@ -226,16 +270,29 @@ def run(exp: Experiment, results_dir: Path) -> tuple[str, str]:
     # kills only the direct child, which for a shell harness leaves its kubectl
     # waits alive and its EXIT trap unrun -- the teardown that removes
     # cluster-scoped objects.
+    # Popen rather than run(), because run()'s timeout path calls process.kill(),
+    # which signals one pid. A shell harness leaves its kubectl waits and its EXIT
+    # trap -- the teardown that removes cluster-scoped objects -- to a grandchild
+    # that survives and reparents. start_new_session gives the child its own
+    # process group so killpg can reach all of it, and without the killpg below
+    # that flag only made things worse: it also detaches the tree from the
+    # terminal, so an operator's Ctrl-C no longer reaches it either.
+    proc = subprocess.Popen(
+        argv, cwd=REPO, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
+    )
     try:
-        proc = subprocess.run(
-            argv, cwd=REPO, env=env, text=True, timeout=exp.timeout_s,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
-        )
-        transcript, returncode = proc.stdout, proc.returncode
-    except subprocess.TimeoutExpired as exc:
-        transcript = exc.stdout or ""
-        if isinstance(transcript, bytes):
-            transcript = transcript.decode("utf-8", "replace")
+        transcript = proc.communicate(timeout=exp.timeout_s)[0] or ""
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        try:
+            transcript = proc.communicate(timeout=10)[0] or ""
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            transcript = proc.communicate()[0] or ""
         returncode = -1
         results_dir.mkdir(parents=True, exist_ok=True)
         kept = results_dir / f"{exp.name}.timed-out.txt"
@@ -246,7 +303,7 @@ def run(exp: Experiment, results_dir: Path) -> tuple[str, str]:
         )
 
     try:
-        clean_after = not _git("status", "--porcelain")
+        clean_after = not _dirt(filed)
     except GitUnavailable as exc:
         return "not-citable", f"could not re-check the worktree after the run: {exc}"
     digest_after = _sha256(script)
@@ -277,9 +334,10 @@ def run(exp: Experiment, results_dir: Path) -> tuple[str, str]:
         # summarising the environment is exactly the hand-authored claim the
         # checks above exist to replace, and it goes stale the moment the run
         # changes underneath it.
-        filed = REPO / exp.result_path
-        filed.parent.mkdir(parents=True, exist_ok=True)
-        filed.write_text(transcript, encoding="utf-8")
+        target = REPO / exp.result_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(transcript, encoding="utf-8")
+        filed.add(str(exp.result_path))
         return "ok", f"{out} -> filed at {exp.result_path} (commit it to keep the tree clean)"
     return "ok", str(out)
 
@@ -310,10 +368,17 @@ def main() -> int:
         return 1
 
     results_dir = REPO / args.results_dir
+    # What this invocation has filed, so a later experiment is not rejected for a
+    # change this runner made a moment earlier.
+    filed: set[str] = set()
+    try:
+        filed.add(str((results_dir).relative_to(REPO)))
+    except ValueError:
+        pass  # a results directory outside the repository cannot dirty it
     worst = 0
     for exp in chosen:
         print(f"=== {exp.name} ===", flush=True)
-        outcome, detail = run(exp, results_dir)
+        outcome, detail = run(exp, results_dir, filed)
         print(f"  {outcome}: {detail}", flush=True)
         if outcome == "failed":
             worst = max(worst, 1)
