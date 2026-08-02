@@ -12,11 +12,11 @@
 # cluster, were present throughout, and were untouched:
 #   dra-paper-cq dra-unified-cq gmat-forge-cluster-queue orbital-demo-cq
 #
-=== run r17856201642634482 ===
-  namespace=prio-r17856201642634482 clusterQueue=prio-cq-r17856201642634482 classes=orbital-r17856201642634482-mission-critical,orbital-r17856201642634482-mission-normal
-  compiler commit: 7d755140d3b68ed5668eceaca89615486919822a
+=== run r17856322192754005 ===
+  namespace=prio-r17856322192754005 clusterQueue=prio-cq-r17856322192754005 classes=orbital-r17856322192754005-mission-critical,orbital-r17856322192754005-mission-normal
+  compiler commit: a36082e8ad5fca022e362b0ee27c3d004c19820b
   working tree   : clean
-  harness sha256 : 6985957b8dd71fdfc32e6e01abeda3b0cc4ca47353f782f63c750fbd824ed1bf
+  harness sha256 : ad00f5d31e3077f4cf9261efcbd1c3386da48d703925332e01bbcc12466172c7
 === 0. prerequisites ===
 [PASS] kubectl available
 [PASS] Kueue controller present
@@ -26,26 +26,27 @@
 [PASS] queue applied
 === 2. emit + apply the WorkloadPriorityClasses from the compiler ===
 [PASS] WorkloadPriorityClasses applied
-[PASS] orbital-r17856201642634482-mission-critical + orbital-r17856201642634482-mission-normal exist
-[PASS] class values as mapped (orbital-r17856201642634482-mission-critical=400, orbital-r17856201642634482-mission-normal=200)
+[PASS] orbital-r17856322192754005-mission-critical + orbital-r17856322192754005-mission-normal exist
+[PASS] class values as mapped (orbital-r17856322192754005-mission-critical=400, orbital-r17856322192754005-mission-normal=200)
 === 3. render HIGH (priority 90) and LOW (priority 50) Jobs ===
 === 4. blocker holds the cpu=1 quota ===
 [PASS] blocker admitted (holds quota)
 === 5. submit LOW first, then HIGH (reverse of priority) ===
-  LOW  job=prio-low-low-2026-04-15t10-00-00z-jcdhg workload=job-prio-low-low-2026-04-15t10-00-00z-jcdhg-3fc7d priority=200 class=orbital-r17856201642634482-mission-normal
-  HIGH job=prio-high-high-2026-04-15t10-00-00z-tvng8 workload=job-prio-high-high-2026-04-15t10-00-00z-tvng8-7602c priority=400 class=orbital-r17856201642634482-mission-critical
+  LOW  job=prio-low-low-2026-04-15t10-00-00z-w56z9 workload=job-prio-low-low-2026-04-15t10-00-00z-w56z9-a21d5 priority=200 class=orbital-r17856322192754005-mission-normal
+  HIGH job=prio-high-high-2026-04-15t10-00-00z-g64qq workload=job-prio-high-high-2026-04-15t10-00-00z-g64qq-6b233 priority=400 class=orbital-r17856322192754005-mission-critical
 === 5b. the chain the claim rests on ===
 [PASS] workload priorities resolved (HIGH=400 LOW=200)
 [PASS] workloads reference the emitted classes
+[PASS] both Jobs carry the mapping that named their class (v2)
 [PASS] the reference is a WorkloadPriorityClass, not a Pod PriorityClass
-[PASS] LOW was created before HIGH (2026-08-01T21:36:06Z < 2026-08-01T21:36:12Z)
+[PASS] LOW was created before HIGH (2026-08-02T00:57:01Z < 2026-08-02T00:57:07Z)
 === 6. both PENDING while blocker holds quota ===
 [PASS] LOW and HIGH both pending under full quota
 === 7. free quota (delete blocker); the higher-priority pending workload wins ===
   first admitted after quota freed: HIGH
-[PASS] HIGH (orbital-r17856201642634482-mission-critical, submitted LAST) admitted before LOW -> priority drove ordering
+[PASS] HIGH (orbital-r17856322192754005-mission-critical, submitted LAST) admitted before LOW -> priority drove ordering
 
 === Summary ===
-PASS: 14  FAIL: 0
+PASS: 15  FAIL: 0
 RESULT: PASS
-=== cleanup (run r17856201642634482) ===
+=== cleanup (run r17856322192754005) ===
