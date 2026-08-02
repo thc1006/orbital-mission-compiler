@@ -5,6 +5,7 @@ and renders valid Argo/Kueue YAML. Optionally runs argo lint if the
 CLI is available. Does NOT submit to a live cluster.
 """
 
+import inspect
 import shutil
 import subprocess
 import tempfile
@@ -212,6 +213,21 @@ class TestLiveScriptControlFlow:
         assert max(traps) < min(mutations), (
             f"a cluster mutation at line {min(mutations) + 1} precedes the trap at {max(traps) + 1}"
         )
+
+    def test_the_script_does_not_claim_a_lint_mode_it_does_not_use(self):
+        """The gate passes --offline, so the script cannot be doing a cluster-aware lint.
+
+        The comment saying otherwise described the standalone `argo lint` call that
+        publishing through the gate replaced.
+        """
+        from orbital_mission_compiler import compiler
+
+        gate_source = inspect.getsource(compiler.argo_lint_path)
+        assert "--offline" in gate_source
+
+        text = self._text()
+        assert "cluster-aware lint is the stronger one" not in text
+        assert "The gate lints offline" in text
 
     def test_the_signal_handlers_stop_the_script(self):
         """Without set -e a handler that returns lets the run continue and recreate

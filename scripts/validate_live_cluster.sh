@@ -190,8 +190,13 @@ mkdir -p "${ARGO_OUT}"
 # where a caller that ignores the verdict will apply them, which is what this script
 # used to do: it counted the failure and submitted the Workflow anyway.
 #
-# Not --offline, unlike the portable smoke: this script runs against a live cluster it
-# has already checked access to, so the cluster-aware lint is the stronger one.
+# The gate lints offline. That is a real trade against what this script used to do:
+# it ran `argo lint` without --offline, which resolves templates against the cluster
+# and so catches a reference this cannot. What it bought is the gate itself -- staging,
+# a verdict read before anything is published, and nothing written when the verdict is
+# no -- and running the linter separately from the writer is what let a rejected
+# manifest be submitted here in the first place. Restoring the cluster-aware check
+# means teaching the gate a lint mode, not calling the linter twice.
 ARGO_RENDER_LOG="${OUT_DIR}/argo-render.log"
 ARGO_GATE_JSON="${OUT_DIR}/argo-gate.json"
 ARGO_GATE_OK="false"
