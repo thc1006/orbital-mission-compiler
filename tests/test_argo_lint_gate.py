@@ -163,7 +163,10 @@ def test_a_lint_failure_leaves_the_output_directory_untouched(tmp_path, monkeypa
     args, out = _run(tmp_path, monkeypatch, "--argo-lint", "--argo-bin", str(exe))
     out.mkdir(parents=True)
     survivor = out / "previous-good.yaml"
-    survivor.write_text("kind: Workflow\n", encoding="utf-8")
+    survivor.write_text(
+        "apiVersion: argoproj.io/v1alpha1\nkind: Workflow\nmetadata:\n  name: previous-good\n",
+        encoding="utf-8",
+    )
 
     with pytest.raises(SystemExit) as exc:
         cmd_render_argo(args)
@@ -174,7 +177,7 @@ def test_a_lint_failure_leaves_the_output_directory_untouched(tmp_path, monkeypa
     assert "template undefined" in data["lint_output"]
     # Nothing new landed, and the render that did pass is still there.
     assert [p.name for p in out.glob("*.yaml")] == ["previous-good.yaml"]
-    assert survivor.read_text(encoding="utf-8") == "kind: Workflow\n"
+    assert "name: previous-good" in survivor.read_text(encoding="utf-8")
     # No staging directory left behind either.
     assert not list(tmp_path.glob(".argo-lint-staging-*"))
 
@@ -923,7 +926,10 @@ def test_a_file_the_linter_cannot_parse_is_not_a_pass(tmp_path, capsys):
     assert exit_info.value.code == 1, "an unreadable manifest in the set is a verdict, not a pass"
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "lint-failed", report
-    assert "yaml file is not valid" in report["lint_output"]
+    # Our diagnostic, not Argo's log line. The file is rejected before the CLI is
+    # invoked at all, so a reworded Argo message cannot turn this into a pass.
+    assert "zz-unparseable.yaml" in report["lint_output"]
+    assert "cannot be parsed" in report["lint_output"]
     # Nothing was published: the directory holds only what was already there.
     assert sorted(p.name for p in out.glob("*.yaml")) == ["zz-unparseable.yaml"]
 
@@ -1234,3 +1240,51 @@ def test_render_kueue_takes_the_same_lock_as_render_argo(tmp_path, monkeypatch, 
     cmd_render_kueue(args)
     capsys.readouterr()
     assert taken == [os.path.realpath(out)]
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: [unclosed\n", "cannot be parsed"),
+        ("- just\n- a\n- list\n", "not an object"),
+        ("kind: Workflow\n", "has no apiVersion"),
+        ("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\nmetadata:\n  name: b\n",
+         "duplicate key"),
+    ],
+    ids=["unparseable", "not-a-mapping", "missing-fields", "duplicate-key"],
+)
+def test_a_document_kubectl_would_reject_fails_the_gate_before_argo_runs(
+    tmp_path, capsys, body, expected
+):
+    """Syntax is decided here, not read out of Argo's log.
+
+    Argo logs a file it cannot parse and exits 0 as long as something else in the
+    target lints -- which is always, because the gate stages its own manifests
+    alongside. The compensation for that was matching the literal string
+    `msg="yaml file is not valid"` in its output, which a reworded release, a
+    locale or a log-format change would silently turn back into a pass.
+
+    So every staged document is read here first, with the CLI never invoked: it
+    must parse, be a mapping, and carry the fields that make it a Kubernetes
+    object. Duplicate keys are refused too, because yaml.safe_load keeps the last
+    of the pair and the loss is invisible in the result.
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "zz-bad.yaml").write_text(body, encoding="utf-8")
+    # A CLI that would PASS anything, so a failure here can only come from the
+    # local check.
+    exe = _fake_argo(tmp_path, 0)
+    args = build_parser().parse_args([
+        "render-argo", "--input", str(_multi_service_plan(tmp_path, ["a"])),
+        "--output-dir", str(out), "--argo-lint", "--argo-bin", str(exe),
+    ])
+
+    with pytest.raises(SystemExit) as exit_info:
+        cmd_render_argo(args)
+    assert exit_info.value.code == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "lint-failed", report
+    assert expected in report["lint_output"], report["lint_output"]
+    assert not (tmp_path / "argv.txt").exists(), "the CLI must not have been consulted"
+    assert [p.name for p in out.glob("*.yaml")] == ["zz-bad.yaml"], "nothing was published"

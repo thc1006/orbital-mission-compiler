@@ -382,6 +382,71 @@ class PublishLockUnsupported(PublishLockUnavailable):
     exists and cannot be opened is the other case entirely: something took it."""
 
 
+class _NoDuplicateKeys(yaml.SafeLoader):
+    """SafeLoader that refuses a mapping with a repeated key.
+
+    yaml.safe_load keeps the last of a duplicate pair silently, so a manifest with
+    two `metadata:` blocks parses, loses one, and the loss is invisible in the
+    output. For a gate whose job is to say what will be applied, that is the wrong
+    default.
+    """
+
+
+def _no_duplicate_keys(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict:
+    seen: set = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        try:
+            duplicate = key in seen
+        except TypeError:  # unhashable key; yaml will reject it below
+            duplicate = False
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", key_node.start_mark
+            )
+        try:
+            seen.add(key)
+        except TypeError:
+            pass
+    return loader.construct_mapping(node, deep=True)
+
+
+_NoDuplicateKeys.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicate_keys
+)
+
+
+def _unreadable_documents(directory: Path) -> list[str]:
+    """Every reason a staged file would not survive `kubectl apply`, named.
+
+    Checked before the linter rather than inferred from its output afterwards: a
+    document that does not parse, is not a mapping, or lacks the fields that make
+    it a Kubernetes object is not something a semantic linter should be asked
+    about. Empty documents are allowed -- a trailing `---` is legal and applies
+    nothing.
+    """
+    problems: list[str] = []
+    for path in sorted(directory.iterdir()):
+        if not path.is_file() or path.suffix not in (".yaml", ".yml", ".json"):
+            continue
+        try:
+            docs = list(yaml.load_all(path.read_text(encoding="utf-8"), Loader=_NoDuplicateKeys))
+        except (yaml.YAMLError, UnicodeDecodeError, OSError) as exc:
+            problems.append(f"{path.name}: cannot be parsed: {exc}")
+            continue
+        for index, doc in enumerate(docs):
+            if doc is None:
+                continue
+            where = f"{path.name} document {index + 1}"
+            if not isinstance(doc, dict):
+                problems.append(f"{where}: is a {type(doc).__name__}, not an object")
+                continue
+            missing = [k for k in ("apiVersion", "kind", "metadata") if k not in doc]
+            if missing:
+                problems.append(f"{where}: has no {', '.join(missing)}")
+    return problems
+
+
 @contextlib.contextmanager
 def _publish_lock(out_dir: Path, lock_timeout: float = _DEFAULT_LOCK_TIMEOUT) -> Iterator[None]:
     """Serialise publishing into one output directory.
@@ -522,7 +587,23 @@ class PruneIncomplete(OSError):
         self.remaining = remaining
 
 
-def _publish(staged: list[Path], out_dir: Path) -> list[Path]:
+def _discard_backup(backup_dir: Path, leftover_backups: list[str] | None) -> None:
+    """Remove the backup tree, and say so when it cannot be removed.
+
+    ignore_errors=True made this silent, so a publication could report a clean
+    directory while the previous generation stayed in a hidden tree inside it --
+    old manifests a recursive apply or a scanner can still reach, and storage
+    nobody knows to reclaim. The publication itself is complete and correct, so
+    this does not fail the command; it names the path instead of hiding it.
+    """
+    shutil.rmtree(backup_dir, ignore_errors=True)
+    if backup_dir.exists() and leftover_backups is not None:
+        leftover_backups.append(str(backup_dir))
+
+
+def _publish(
+    staged: list[Path], out_dir: Path, leftover_backups: list[str] | None = None
+) -> list[Path]:
     """Move a rendered set into the output directory, all of it or none of it.
 
     Each rename is atomic on its own, but the set is what a caller applies. A
@@ -586,9 +667,9 @@ def _publish(staged: list[Path], out_dir: Path) -> list[Path]:
         for created in created_dirs:
             with contextlib.suppress(OSError):
                 created.rmdir()
-        shutil.rmtree(backup_dir, ignore_errors=True)
+        _discard_backup(backup_dir, leftover_backups)
         raise
-    shutil.rmtree(backup_dir, ignore_errors=True)
+    _discard_backup(backup_dir, leftover_backups)
     return published
 
 
@@ -689,6 +770,23 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             }, indent=2))
             raise SystemExit(2) from exc
 
+        # Syntax first, and locally. Argo's own signal for an unparseable file is a
+        # line of human-readable log, which a release can reword, a locale can
+        # translate and a log-format change can move -- and the compensation below
+        # depends on matching it exactly. Reading the documents here makes the
+        # syntax verdict this tool's own, and leaves Argo the semantic lint it is
+        # actually for.
+        malformed = _unreadable_documents(staging)
+        if malformed:
+            print(json.dumps({
+                "status": "lint-failed", "files": [],
+                "lint_output": "\n".join(malformed),
+                "message": f"the manifests this render would leave in {out_dir} include "
+                           f"{len(malformed)} document(s) that cannot be read as Kubernetes "
+                           f"objects; it was left unchanged",
+            }, indent=2))
+            raise SystemExit(1)
+
         rc, output = argo_lint_path(staging, argo_bin=args.argo_bin, resolved=resolved)
         for copy in carried:
             copy.unlink()
@@ -717,11 +815,12 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         # can create the file in the gap, and the publish would then displace it
         # without looking again. Pruning outside it lets two renders of the same
         # mission delete each other's newly published files.
+        leftover_backups: list[str] = []
         try:
             preflight_writable(
                 [(out_dir / path.name, path.read_text(encoding="utf-8")) for path in written]
             )
-            published = _publish(written, out_dir)
+            published = _publish(written, out_dir, leftover_backups)
             _report_stale(result_stale, args.output_dir, published, args.prune)
         except ValueError as exc:
             print(json.dumps({
@@ -770,6 +869,19 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         # they can only do that if they are told.
         result["staging_left_behind"] = str(staging)
         print(f"warning: could not remove the staging directory {staging}", file=sys.stderr)
+    if leftover_backups:
+        # Same reasoning as the staging directory, and the same non-failure: the
+        # manifests are published and correct, so refusing here would tell a caller
+        # to redo work that is done. But the previous generation is still on disk
+        # inside their output root, where a recursive apply or a scanner can reach
+        # it, and only they can decide whether that matters.
+        result["backup_not_removed"] = leftover_backups
+        for path in leftover_backups:
+            print(
+                f"warning: the previous manifests are still in {path}; publication "
+                "succeeded and this directory is now yours to remove",
+                file=sys.stderr,
+            )
     print(json.dumps(result, indent=2))
 
 
