@@ -44,20 +44,27 @@ keeps the portable runtime env-var path and needs none of this.
 | KServe | strong inference serving option, but this repo is not an inference-serving platform |
 | Temporal / Flyte / Dagster | heavier or less transcript-aligned than the selected K3s + Argo path |
 
-## Upstream currency and forward compatibility (checked 2026-07-30)
+## Upstream currency and forward compatibility
 
-The "Version used in scaffold" column above is the **validated** record — the
-versions this repo was actually exercised against (host kubeadm cluster K8s
-**v1.36.1**; Kueue **v0.18.3**; Argo Workflows **v4.0.1**). It is intentionally
-*not* bumped to the newest upstream tag, because doing so would claim a
-validation that has not been run. This section instead tracks the **current
-upstream** and the repo's **forward compatibility**, so the two concerns stay
-separate and honest.
+Validated stack last exercised 2026-08-02; upstream tags last checked 2026-07-30.
+The two dates move independently, and the column headings below say which is which.
+
+The "Version used in scaffold" column above is the **install pin** — what the
+bootstrap scripts and CI fetch. Separately, the **validated** record is what the
+host kubeadm cluster has actually been exercised against, which as of 2026-08-02
+is K8s **v1.36.3**, Kueue **v0.19.0** and Argo Workflows **v4.0.8** (controller and
+local CLI; CI still installs the pinned CLI v4.0.1). `scripts/validate_live_cluster.sh`
+was run end to end on that stack.
+
+Neither is bumped to the newest upstream tag on sight, because doing so would claim
+a validation that has not been run; the validated line moves when a run moves it.
+This section tracks the **current upstream** and the repo's **forward
+compatibility**, so the two concerns stay separate.
 
 | Concern | Validated against (scaffold) | Current upstream (2026-07-30) | Notes |
 |---|---|---|---|
-| Kubernetes | host kubeadm **v1.36.1** / K3s pin v1.34.5+k3s1 | latest stable **v1.36.3** (2026-07-23); supported minors **1.34–1.36**; **no v1.37 GA yet** (GA ~2026-08-26) — a `v1.37.0-beta.0` **pre-release** exists and is installable for early testing only (not for production, feature/API surface may still change) | sources: https://kubernetes.io/releases/ ; https://github.com/kubernetes/kubernetes/releases/tag/v1.37.0-beta.0 |
-| Kueue | live cluster **v0.18.3** / scaffold pin v0.17.0 | **v0.19.0** (latest tag) | source: https://github.com/kubernetes-sigs/kueue/releases ; API `kueue.x-k8s.io/v1beta2` is served+storage across v0.17–v0.19 |
+| Kubernetes | host kubeadm **v1.36.3** / K3s pin v1.34.5+k3s1 | latest stable **v1.36.3** (2026-07-23); supported minors **1.34–1.36**; **no v1.37 GA yet** (GA ~2026-08-26) — a `v1.37.0-beta.0` **pre-release** exists and is installable for early testing only (not for production, feature/API surface may still change) | sources: https://kubernetes.io/releases/ ; https://github.com/kubernetes/kubernetes/releases/tag/v1.37.0-beta.0 |
+| Kueue | live cluster **v0.19.0** / scaffold pin v0.17.0 | **v0.19.0** (latest tag) | source: https://github.com/kubernetes-sigs/kueue/releases ; API `kueue.x-k8s.io/v1beta2` is served+storage across v0.17–v0.19 |
 | Argo Workflows | live cluster **v4.0.8** (Helm chart 1.0.23; upgraded from v3.5.11) / CLI v4.0.1 | **v4.0.8** (2026-07-22) | CRD group `argoproj.io/v1alpha1`; end-to-end DRA (pod-level `resourceClaims` via `podSpecPatch`, used by `render-argo --dra-fallback`) needs Argo **>= v4.0** — v3.5.x prunes the DRA fields and drops the claim. source: https://github.com/argoproj/argo-workflows/releases |
 
 ### Emitted API versions (still current on the latest stable stack)
