@@ -1154,11 +1154,18 @@ def _validate_typed_violation(item: Any) -> None:
         raise PolicyEngineUnavailableError(
             f"policy decision carries a violation without the typed shape: {item!r}"
         )
+    # The type check comes first on the two enumerated fields, and not only for
+    # tidiness: this list is built eagerly, so `item["severity"] in {...}` is
+    # evaluated before any check can be consulted. A list or dict there is
+    # unhashable, and the membership test raised TypeError straight out of this
+    # function -- an unstructured internal error at the one moment the contract
+    # promises a structured one, because an engine returning something undecidable
+    # is exactly when a gate has to fail closed on purpose rather than by crashing.
     checks: list[tuple[str, bool]] = [
         ("rule", item["rule"] is None or (isinstance(item["rule"], int) and not isinstance(item["rule"], bool))),
         ("rule_id", isinstance(item["rule_id"], str) and bool(item["rule_id"])),
-        ("severity", item["severity"] in {"T1", "T2", "T3", "T4"}),
-        ("provenance", item["provenance"] in {"A", "D"}),
+        ("severity", isinstance(item["severity"], str) and item["severity"] in {"T1", "T2", "T3", "T4"}),
+        ("provenance", isinstance(item["provenance"], str) and item["provenance"] in {"A", "D"}),
         ("path", isinstance(item["path"], str)),
         ("message", isinstance(item["message"], str) and bool(item["message"])),
     ]

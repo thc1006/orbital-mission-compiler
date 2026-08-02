@@ -299,3 +299,27 @@ def test_boolean_rule_number_is_not_a_rule_number():
     item["rule"] = True
     with pytest.raises(PolicyEngineUnavailableError, match="unusable 'rule'"):
         typed_violations_from_decision({"allow": False, "violations": [item]})
+
+
+@pytest.mark.parametrize("field", ["severity", "provenance"])
+@pytest.mark.parametrize(
+    "bad", [[], {}, None, True, 1, 1.5, (1,), "", "unknown"], ids=repr
+)
+def test_an_unusable_severity_or_provenance_is_reported_not_raised(field, bad):
+    """A malformed enumerated field must fail closed, not crash.
+
+    These two were tested for membership before being tested for type, in a list
+    built eagerly -- so an unhashable value raised TypeError("unhashable type")
+    out of the validator before any check could be consulted. The caller then saw
+    an internal Python error instead of the structured one, at the exact moment
+    the contract exists for: an engine returning something that cannot be judged.
+    """
+    from orbital_mission_compiler.compiler import (
+        PolicyEngineUnavailableError,
+        typed_violations_from_decision,
+    )
+
+    item = _typed("gpu step needs a fallback")
+    item[field] = bad
+    with pytest.raises(PolicyEngineUnavailableError, match=f"unusable {field!r}"):
+        typed_violations_from_decision({"allow": False, "violations": [item]})
