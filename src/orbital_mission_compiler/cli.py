@@ -63,6 +63,16 @@ _POLICY_ENGINE_HELP = (
 # hung one is reported rather than waited on. Overridable because "normal" depends
 # on how much a caller renders at once.
 _DEFAULT_LOCK_TIMEOUT = 30.0
+# flock failures that mean "no lock is obtainable here", as opposed to "someone
+# holds it" or "something went wrong". Everything outside both lists is an error,
+# because proceeding unlocked on an unclassified failure is the one outcome that
+# silently removes the guarantee.
+_LOCK_UNSUPPORTED_ERRNOS = frozenset({
+    errno.ENOLCK, errno.EOPNOTSUPP, errno.EINVAL, errno.ENOSYS,
+})
+# Beyond a day the wait is unbounded in every sense that matters; 1e308 seconds
+# passed the finiteness check and is 3e300 years.
+_MAX_LOCK_TIMEOUT = 86400.0
 
 _PRUNE_HELP = (
     "Delete artifacts in the output directory that an earlier render of this tool "
@@ -170,6 +180,10 @@ def _finite_seconds(raw: str) -> float:
         )
     if value < 0:
         raise argparse.ArgumentTypeError(f"{raw!r} is negative")
+    if value > _MAX_LOCK_TIMEOUT:
+        raise argparse.ArgumentTypeError(
+            f"{raw!r} is longer than a day; a wait that long is not a bound"
+        )
     return value
 
 
@@ -449,8 +463,17 @@ def _load_documents(path: Path, text: str) -> list:
     # kubectl's reader tolerates it and neither Python parser does.
     if text.startswith("\ufeff"):
         text = text[1:]
-    if text.lstrip()[:1] == "{":
-        return [json.loads(text)] if text.strip() else []
+    # ASCII whitespace, because that is what json.loads skips. `str.lstrip()` also
+    # skips NBSP and U+2003, so a file starting with one of those was sent to a
+    # parser that then refused it at column 1.
+    if text.lstrip(" \t\n\r")[:1] == "{":
+        try:
+            return [json.loads(text)] if text.strip() else []
+        except json.JSONDecodeError:
+            # A YAML flow mapping also starts with `{`, and it is legal YAML that
+            # kubectl accepts. NewYAMLOrJSONDecoder is a JSON decoder with a YAML
+            # fallback, not a JSON-only path, so this has one too.
+            pass
     return list(yaml.safe_load_all(text))
 
 
@@ -529,7 +552,18 @@ def _unreadable_documents(directory: Path) -> list[str]:
             if not isinstance(doc, dict):
                 problems.append(f"{where}: is a {type(doc).__name__}, not an object")
                 continue
-            missing = [k for k in ("apiVersion", "kind", "metadata") if k not in doc]
+            # Value, not membership. `metadata: null` and `apiVersion: null`
+            # satisfied `k not in doc` and were published with "lint: passed",
+            # while kubectl rejects both -- `metadata: null` IS the no-metadata
+            # case the table says to refuse.
+            if doc.get("apiVersion") and doc.get("kind") == "List":
+                # `kubectl get -o yaml` emits this for any multi-object export, so
+                # it is an ordinary thing to find in an output directory, and it
+                # carries no metadata of its own. kubectl accepts it; refusing it
+                # failed every future gated render, because the file is carried in
+                # from the output directory each time.
+                continue
+            missing = [k for k in ("apiVersion", "kind", "metadata") if not doc.get(k)]
             if missing:
                 problems.append(f"{where}: has no {', '.join(missing)}")
     return problems
@@ -621,19 +655,30 @@ def _publish_lock(out_dir: Path, lock_timeout: float = _DEFAULT_LOCK_TIMEOUT) ->
                 # lockd, most concretely -- and retrying for the whole timeout only
                 # to report "held by another render" is an assertion, and a false
                 # one. That case is what PublishLockUnsupported is for.
-                if exc.errno == errno.EINTR:
-                    # A signal arrived mid-call. Python retries most syscalls for
-                    # us (PEP 475) but the guarantee is not universal, and an
-                    # interruption says nothing about whether the lock is takeable
-                    # -- classifying it as "this filesystem cannot lock" would end
-                    # the run on a stray SIGWINCH.
-                    continue
-                if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                # An allowlist, not a denylist. The first version treated every
+                # errno except EAGAIN as "this filesystem cannot lock", which then
+                # let the two ungated writers proceed unlocked -- so a transient
+                # EIO or ENOMEM on the lock file silently disabled the mutual
+                # exclusion this branch is built on, possibly while a gated render
+                # was mid-lint holding it.
+                if exc.errno in _LOCK_UNSUPPORTED_ERRNOS:
                     raise PublishLockUnsupported(
                         f"the publish lock at {lock_path} cannot be taken on this "
                         f"filesystem ({exc.strerror}), so publishing cannot be "
                         "serialised here"
                     ) from exc
+                if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EINTR):
+                    # Not contention, not a filesystem that cannot lock: something
+                    # went wrong that neither retrying nor proceeding answers.
+                    raise PublishLockUnavailable(
+                        f"the publish lock at {lock_path} could not be taken "
+                        f"({exc.strerror}); publishing was not attempted"
+                    ) from exc
+                # EINTR falls through to the deadline check and the sleep with
+                # everything else. Skipping both, as an earlier revision did, was
+                # an unbounded spin at 100% of a core -- exactly what the timeout
+                # exists to prevent, and unreachable on CPython only because PEP
+                # 475 retries in C.
                 if time.monotonic() >= deadline:
                     raise PublishLockUnavailable(
                         f"the publish lock at {lock_path} is held by another render; "
@@ -853,8 +898,19 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                     q for q in out_dir.iterdir()
                     if q.suffix in (".yaml", ".yml", ".json")
                 )
+                # Only what --prune will ACTUALLY remove. Subtracting the whole
+                # stale candidate set excluded files from the lint that
+                # attribution then declined to delete -- so adding --prune turned
+                # a correct "lint-failed" into "lint: passed" about a directory
+                # kubectl still rejects. The RCT-only scheduler-fallback file is
+                # exactly that shape, and by design neither renderer can prune it.
                 leaving = (
-                    {p.name for p in stale_rendered_artifacts(out_dir, written)}
+                    {
+                        p.name
+                        for p in attribute_stale(
+                            stale_rendered_artifacts(out_dir, written), ARGO_EXCLUSIVE_KINDS
+                        )[0]
+                    }
                     if args.prune else set()
                 )
                 for existing in existing_manifests:
@@ -1007,7 +1063,6 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         )
     intents = compile_plan_to_intents(plan)
     out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     # Render everything first, then write: writing as we go leaves a partial set
     # behind when a later intent fails, and a consumer cannot tell that apart
     # from a complete render.
@@ -1081,8 +1136,18 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
     leftover_backups: list[str] = []
     stale_result: dict[str, object] = {}
     with lock_stack:
-        preflight_unique([path for path, _ in planned])
-        preflight_writable(planned)
+        try:
+            preflight_unique([path for path, _ in planned])
+            preflight_writable(planned)
+        except ValueError as exc:
+            # The gate answers the same condition with a structured exit 2. Here it
+            # was an uncaught ValueError: a traceback on stderr, nothing on stdout,
+            # and exit 1 -- which in this CLI is what a policy denial returns, so a
+            # caller keying on the exit code could not tell them apart.
+            print(json.dumps({
+                "status": "error", "reason": "not-owned", "message": str(exc),
+            }, indent=2))
+            raise SystemExit(2) from exc
         # Staged, then published as a set. Each atomic_write is atomic on its own,
         # but the set is what a caller deploys: a failure on the third of four
         # files left the directory holding some manifests from this render and
@@ -1093,6 +1158,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
             prefix=".kueue-render-staging-", dir=_nearest_existing_ancestor(out_dir)
         ))
         try:
+            out_dir.mkdir(parents=True, exist_ok=True)
             staged: list[Path] = []
             for out, text in planned:
                 staged_file = staging / out.name

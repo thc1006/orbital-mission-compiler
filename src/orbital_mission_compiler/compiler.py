@@ -1475,6 +1475,12 @@ def _is_rendered_artifact(path: Path) -> bool:
         docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8"))]
     except Exception:  # noqa: BLE001 - see the docstring: unreadable means not ours
         return False
+    # An empty document is not a document. A trailing `---` yields None, and
+    # treating the first non-dict as "not ours" made such a file invisible to
+    # the stale report: neither pruned nor listed, so `kubectl apply -f <dir>`
+    # went on redeploying a workload the plan no longer asks for, silently. The
+    # gate's own reader already says a trailing separator is legal.
+    docs = [d for d in docs if d is not None]
     if not docs:
         return False
     for doc in docs:
@@ -1559,11 +1565,19 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
     # an operator to delete a live artifact.
     return sorted(
         p for p in sorted(out.iterdir())
-        if p.suffix == ".yaml"
+        # Every extension `kubectl apply -f <dir>` consumes, which is what the
+        # gate's carry set already used. Filtering on `.yaml` alone left a stale
+        # `.yml` or `.json` artifact neither pruned nor reported.
+        if p.suffix in (".yaml", ".yml", ".json")
         and p.name not in current
         and _is_rendered_artifact(p)
         and _artifact_mission(p) in missions
     )
+
+
+# Every kind that belongs to exactly one renderer. Kept here so `attribute_stale`
+# can ask what the OTHER side owns without its caller having to say.
+_ALL_EXCLUSIVE_KINDS = frozenset({"Workflow", "Job", "WorkloadPriorityClass"})
 
 
 def attribute_stale(stale: list[Path], exclusive_kinds: set[str]) -> tuple[list[Path], list[Path]]:
@@ -1585,10 +1599,26 @@ def attribute_stale(stale: list[Path], exclusive_kinds: set[str]) -> tuple[list[
     second list: reported, never deleted. Erring toward a file that stays is the
     right direction for a delete, and reporting it keeps that from being silent.
     """
+    everyone_elses = _ALL_EXCLUSIVE_KINDS - exclusive_kinds
     mine: list[Path] = []
     unattributable: list[Path] = []
     for path in stale:
-        (mine if _artifact_kinds(path) & exclusive_kinds else unattributable).append(path)
+        kinds = _artifact_kinds(path)
+        # Mine AND not also theirs. "Intersects mine" alone let a file holding both
+        # a Workflow and a Job -- what an operator gets by concatenating the two
+        # renders into one bundle for `kubectl apply -f` -- be deleted by whichever
+        # command ran, which is the cross-renderer loss this function exists to
+        # stop, needing only the two kinds in one file.
+        if kinds & exclusive_kinds and not kinds & everyone_elses:
+            mine.append(path)
+        elif kinds & everyone_elses and not kinds & exclusive_kinds:
+            # Unambiguously the other renderer's. Not stale and not this command's
+            # business, so it is neither deleted nor reported: warning about it on
+            # every run of a directory that holds both renders would be noise, and
+            # noise about a live artifact invites someone to delete it.
+            continue
+        else:
+            unattributable.append(path)
     return mine, unattributable
 
 
