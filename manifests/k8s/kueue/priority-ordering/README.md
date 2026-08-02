@@ -85,9 +85,15 @@ Set `RUN_ID` to reproduce a specific run's names.
 
 ## Result (live, this cluster)
 
-Verified on Kubernetes v1.36.3 + Kueue v0.19.0. `results/` holds the captured run,
-including the compiler commit it was taken from; re-run it after any change to the
-compiler or the harness rather than citing an older capture.
+`results/` holds a captured run, verbatim -- the transcript is the artifact, with
+nothing written around it. Every version it was taken against is in the transcript,
+read from the cluster by the run itself, along with the commit, the working-tree
+state and the checksum of the harness that produced it.
+
+Produce it with `python3 scripts/run_experiments.py`, which files the transcript
+only when it carries all of those; otherwise it keeps it as `.rejected.txt` outside
+the results and exits 2. Re-run after any change to the compiler or the harness
+rather than citing an older capture.
 
 ```
 priority arm  LOW=200 submitted first, HIGH=400 submitted last -> HIGH admitted first
