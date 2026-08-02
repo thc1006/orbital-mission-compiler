@@ -429,6 +429,21 @@ echo "  namespace=${NS} clusterQueue=${CQ} classes=${HIGH_CLASS},${LOW_CLASS}"
 echo "  compiler commit: $(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)"
 echo "  working tree   : $( [ -n "$(git -C "$HERE" status --porcelain 2>/dev/null)" ] && echo 'DIRTY -- this capture cannot be rebuilt from a commit' || echo 'clean' )"
 echo "  harness sha256 : $(sha256sum "$0" 2>/dev/null | cut -d' ' -f1 || echo unknown)"
+# And the templates. The harness digest covers this file; the ClusterQueue's cpu
+# quota of 1 -- which is the entire reason the blocker blocks -- lives in
+# 00-namespace-and-queue.yaml, and the two plans are what the compiler renders the
+# racing Jobs from. All four sat outside this run's own provenance, so editing one
+# produced a different experiment under an unchanged digest.
+#
+# Basenames, not the paths sha256sum prints: a figure that changes when the
+# repository is cloned elsewhere cannot be compared across the two runs it exists
+# to compare. The glob is *.yaml and the transcripts land under results/, so a
+# filed result cannot feed back into the digest of the run that produced it.
+echo "  inputs sha256  : $( { sha256sum "${MANIFESTS}"/*.yaml 2>/dev/null \
+  | while read -r _h _p; do printf '%s  %s\n' "$_h" "$(basename "$_p")"; done \
+  | sort | sha256sum | cut -d' ' -f1; } || echo unknown)"
+echo "  harness inputs : $( { for _f in "${MANIFESTS}"/*.yaml; do
+    [ -e "$_f" ] && printf '%s ' "$(basename "$_f")"; done; } 2>/dev/null)"
 # Which interpreter, and which copy of the compiler it actually imported. The commit
 # above names the tree; it does not establish that the tree is what ran. `python -c`
 # puts the current directory ahead of PYTHONPATH, so a stray orbital_mission_compiler/
