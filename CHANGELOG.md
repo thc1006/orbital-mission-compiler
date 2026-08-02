@@ -125,10 +125,15 @@
   kept aside until the whole set lands and are restored if it does not. It is
   not crash-atomic to an external reader -- a process killed mid-publish still
   leaves a mixed directory, and a reader or a plain `render-argo` that does not
-  take the lock can observe one. A lint verdict exits 1; a gate that could not
-  run -- CLI absent, timeout, signal, an exit status that is not a verdict,
-  nothing rendered to lint, no `fcntl` on this platform, or a destination that
-  could not be read -- exits 2.
+  take the lock can observe one. A rejection by the linter exits 1. Exit 2 is
+  everything else, which is two situations and not one: a gate that never
+  reached a verdict -- CLI absent, timeout, signal, an exit status that is not a
+  verdict, nothing rendered to lint, no `fcntl` on this platform, or a
+  destination that could not be read -- and a gate whose verdict was a pass but
+  whose publish step did not finish, such as an interrupted rollback or a prune
+  that stopped part-way. The second leaves the output directory changed, so the
+  report carries `lint` and `output_modified` and a caller reads those rather
+  than the exit status alone.
 - A file the linter cannot parse is a failed verdict, not a pass. `argo lint`
   logs it and carries on, exiting 0 as long as anything else in the target
   lints -- which is always, because the gate stages its own manifests
@@ -138,8 +143,10 @@
 - A destination that cannot be listed is an error rather than an empty
   directory, and a lock file that cannot be opened is `publish-lock-unavailable`
   rather than a traceback. The lock lives at a derivable path in the shared temp
-  directory and is created 0600 by whoever renders first, so a second user
-  cannot open it.
+  directory and is created 0666, because whoever renders first would otherwise
+  own a 0600 file that every later user is refused on -- a permanent lockout of
+  everyone but the first. The mode is set explicitly rather than left to the
+  umask, which strips the group and other write bits on most defaults.
 - The gate distinguishes the ways it can leave the output directory modified,
   because the caller can only act on the difference. `rollback-incomplete`
   lists both the displaced files it could not restore and the newly published

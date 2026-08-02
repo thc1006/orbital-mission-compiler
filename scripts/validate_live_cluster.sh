@@ -211,9 +211,15 @@ else
 fi
 
 # The gate's own vocabulary: 0 published after a clean lint, 1 the linter rejected the
-# manifest, 2 no verdict was reached. Only the first may be submitted, and the status
-# is read back rather than inferred from the exit code alone.
+# manifest, 2 anything else. Only the first may be submitted, and the status is read
+# back rather than inferred from the exit code alone.
+#
+# 2 is not a synonym for "no verdict": the gate also exits 2 when the linter accepted
+# the manifests and the publish step afterwards did not finish -- an interrupted
+# rollback, or a prune that stopped part-way. Those leave the output directory
+# changed, so the report reads `lint` and `output_modified` rather than assuming.
 ARGO_GATE_STATUS="$(${PYTHON_BIN} -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('status','?'), d.get('lint','?'))" "${ARGO_GATE_JSON}" 2>/dev/null || echo "? ?")"
+ARGO_GATE_MODIFIED="$(${PYTHON_BIN} -c "import json,sys; print('yes' if json.load(open(sys.argv[1])).get('output_modified') else 'no')" "${ARGO_GATE_JSON}" 2>/dev/null || echo "unknown")"
 case "${ARGO_GATE_RC}" in
   0)
     if [ "${ARGO_GATE_STATUS}" = "ok passed" ]; then
@@ -224,7 +230,16 @@ case "${ARGO_GATE_RC}" in
     fi
     ;;
   1) report FAIL "Argo lint rejected the manifest (${ARGO_GATE_STATUS}); nothing published" ;;
-  2) report FAIL "Argo lint could not run (${ARGO_GATE_STATUS}); no verdict, nothing published" ;;
+  2)
+    case "${ARGO_GATE_STATUS}" in
+      *" unavailable")
+        report FAIL "Argo lint could not run (${ARGO_GATE_STATUS}); no verdict, nothing published" ;;
+      *" passed")
+        report FAIL "Argo lint passed but the gate did not finish publishing (${ARGO_GATE_STATUS}); output directory changed: ${ARGO_GATE_MODIFIED}" ;;
+      *)
+        report FAIL "Argo gate exited 2 (${ARGO_GATE_STATUS}); output directory changed: ${ARGO_GATE_MODIFIED}" ;;
+    esac
+    ;;
   *) report FAIL "Argo gate failed with exit ${ARGO_GATE_RC} (${ARGO_GATE_STATUS})" ;;
 esac
 if [ -s "${ARGO_RENDER_LOG}" ]; then
