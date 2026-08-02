@@ -6,11 +6,12 @@ order**, and that the effect comes from *priority*, not from *submission order*.
 ## Why this exists
 
 A rendered Kueue Job carries an `orbital/priority` annotation and a plain
-`priority` label. Neither is read by Kueue. Kueue orders workloads only by a
-`WorkloadPriorityClass` (or a Kubernetes `PriorityClass`), referenced through the
-`kueue.x-k8s.io/priority-class` label. So `render-kueue --priority-class` sets that
-label (mission priority -> ORCHIDE tier -> class), and `--emit-priority-classes`
-writes the four cluster-scoped classes:
+`priority` label. Neither is read by Kueue. Kueue sorts on the single `spec.priority`
+it writes onto the Workload, and it fills that from the `WorkloadPriorityClass` named
+by the `kueue.x-k8s.io/priority-class` label; with no such label it falls back to the
+pod template's own Kubernetes `PriorityClass`, then to a cluster default, then to 0.
+So `render-kueue --priority-class` sets that label (mission priority -> ORCHIDE tier
+-> class), and `--emit-priority-classes` writes the four cluster-scoped classes:
 
 | Mission priority | ORCHIDE tier | WorkloadPriorityClass | value |
 |---|---|---|---|
@@ -71,8 +72,11 @@ both PENDING under full quota
 [PASS] priority drove ordering, not creation order
 ```
 
-The `mission-critical`/`mission-normal` values landed on the Kueue **Workloads**
-(200 and 400), confirming the `kueue.x-k8s.io/priority-class` label propagated to
-Kueue's own priority field, which is what sorts the queue. Preemption and cohort
-borrowing use the same priority; this experiment demonstrates the queue-sorting
-half. The script tears down the namespace, queue, and classes on completion.
+The `...mission-critical`/`...mission-normal` values landed on the Kueue **Workloads**
+(400 and 200), confirming the `kueue.x-k8s.io/priority-class` label propagated to
+Kueue's own priority field, which is what sorts the queue. The run also reads back the
+reference's group and kind, so the value is known to have come from the emitted
+`WorkloadPriorityClass` rather than from the pod-template fallback above. Preemption
+and cohort borrowing use the same priority; this experiment demonstrates the
+queue-sorting half. The script tears down the namespace, queue, and classes on
+completion.

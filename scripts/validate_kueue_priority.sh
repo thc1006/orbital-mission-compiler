@@ -127,9 +127,12 @@ wl_for_job() { # $1 job name -> workload name (via job-uid label)
 }
 wl_admitted() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.status.conditions[?(@.type=="Admitted")].status}' 2>/dev/null; }
 wl_priority() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priority}' 2>/dev/null; }
-# v1beta2 carries the class as a reference, not a bare name: the group is what
-# separates a WorkloadPriorityClass from a Pod PriorityClass, and only the first
-# feeds queue sorting.
+# v1beta2 records the resolved class as a reference rather than a bare name, and the
+# group is what says the value came from the WorkloadPriorityClass this proof emitted.
+# It matters because the fallback is silent: with no such class Kueue takes the pod
+# template's own PriorityClass instead, writes that into the same spec.priority, and
+# sorts the queue by it just as well -- so the run would still admit HIGH first while
+# proving nothing about the compiler's mapping.
 wl_class() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClassRef.name}' 2>/dev/null; }
 wl_class_group() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClassRef.group}' 2>/dev/null; }
 wl_class_kind() { kubectl get workload "$1" -n "$NS" -o jsonpath='{.spec.priorityClassRef.kind}' 2>/dev/null; }
