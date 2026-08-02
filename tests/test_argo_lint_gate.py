@@ -1352,3 +1352,101 @@ def test_render_kueue_leaves_one_generation_or_the_other(tmp_path, monkeypatch, 
         "the directory must hold exactly the previous generation after a failed "
         f"publish, got {sorted(set(after) ^ set(before))} differing"
     )
+
+
+def test_tab_indented_json_is_read_the_way_kubectl_reads_it(tmp_path):
+    """PyYAML is YAML 1.1 and refuses a tab as indentation; kubectl does not.
+
+    A file beginning with `{` goes to kubectl's JSON decoder, where tabs are
+    ordinary whitespace -- and `json.MarshalIndent(v, "", "\t")`, the Go default,
+    produces exactly that. Reading it with the YAML parser called it malformed,
+    which is the same false verdict the duplicate-key rule was removed for, and
+    worse: the gate carries files in from the output directory on every run, so one
+    such file would have failed every future render permanently.
+    """
+    import json as _json
+
+    from orbital_mission_compiler.cli import _unreadable_documents
+
+    d = tmp_path / "staging"
+    d.mkdir()
+    (d / "operator-config.json").write_text(
+        _json.dumps(
+            {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "t"}}, indent="\t"
+        ),
+        encoding="utf-8",
+    )
+    assert _unreadable_documents(d) == []
+
+
+def test_a_parser_that_cannot_cope_is_not_a_lint_verdict(tmp_path):
+    """A crash must not read as "the linter rejected this".
+
+    PyYAML composes recursively, so deep nesting overflows the stack. The
+    RecursionError escaped as a bare traceback with exit 1 -- and 1 is this gate's
+    code for a lint failure, so CI would have recorded a crash as a rejected
+    manifest. It is a gate that could not run: exit 2, no verdict.
+    """
+    from orbital_mission_compiler.cli import _unreadable_documents
+    from orbital_mission_compiler.compiler import ArgoLintUnavailable
+
+    d = tmp_path / "staging"
+    d.mkdir()
+    (d / "deep.yaml").write_text("[" * 6000 + "]" * 6000, encoding="utf-8")
+    with pytest.raises(ArgoLintUnavailable, match="nests too deeply"):
+        _unreadable_documents(d)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "-1", "abc"], ids=repr)
+def test_a_lock_timeout_that_is_not_a_bound_is_refused(value):
+    """The flag existed to impose a bound and could be used to remove one.
+
+    argparse's `float` accepts nan and inf. With nan every comparison against the
+    deadline is False so the wait never ends, and `min(0.2, max(0.0, nan))` is 0.0
+    so it never sleeps either -- an unbounded busy-spin, worse than the blocking
+    LOCK_EX it replaced, which at least waited in the kernel.
+    """
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([
+            "render-kueue", "--input", VALID_PLAN, "--output-dir", "/tmp/x",
+            "--lock-timeout", value,
+        ])
+
+
+def test_render_kueue_prunes_under_the_lock_it_published_under(tmp_path, monkeypatch, capsys):
+    """The window between publishing and pruning was outside the lock.
+
+    The gate's own note says why that is not allowed: pruning outside it lets two
+    renders of the same mission delete each other's newly published files. This
+    command released the lock after publishing and pruned afterwards, so a gated
+    render could pass its lint, publish, and have its files deleted by this one --
+    with both reporting success.
+    """
+    import contextlib
+
+    from orbital_mission_compiler import cli
+    from orbital_mission_compiler.cli import cmd_render_kueue
+
+    held_during: list[str] = []
+
+    @contextlib.contextmanager
+    def _watch(out_dir, *args):
+        held_during.append("enter")
+        yield
+        held_during.append("exit")
+
+    real_report = cli._report_stale
+
+    def _note(*a, **kw):
+        held_during.append("prune")
+        return real_report(*a, **kw)
+
+    monkeypatch.setattr(cli, "_publish_lock", _watch)
+    monkeypatch.setattr(cli, "_report_stale", _note)
+    args = build_parser().parse_args([
+        "render-kueue", "--input", VALID_PLAN, "--output-dir", str(tmp_path / "out"),
+        "--prune", "--policy-engine", "baseline",
+    ])
+    cmd_render_kueue(args)
+    capsys.readouterr()
+    assert held_during == ["enter", "prune", "exit"], held_during

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -124,11 +125,33 @@ def _report_stale(result: dict[str, object], output_dir: str, written: list[Path
     )
 
 
+def _finite_seconds(raw: str) -> float:
+    """A timeout argparse's `float` would otherwise accept and the loop cannot use.
+
+    `float("nan")` and `float("inf")` both parse. With nan every comparison against
+    the deadline is False, so the wait never ends -- and `min(0.2, max(0.0, nan))`
+    is 0.0, so it never sleeps either: an unbounded busy-spin, worse than the
+    blocking LOCK_EX this replaced, which at least waited in the kernel. With inf
+    it is the same unbounded wait the bound exists to remove.
+    """
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a number of seconds") from None
+    if value != value or value in (float("inf"), float("-inf")):
+        raise argparse.ArgumentTypeError(
+            f"{raw!r} is not a finite number of seconds, so the wait would never end"
+        )
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{raw!r} is negative")
+    return value
+
+
 def _add_lock_args(p: argparse.ArgumentParser) -> None:
     """Add the output-root lock flag to a subcommand that writes artifacts."""
     p.add_argument(
         "--lock-timeout",
-        type=float,
+        type=_finite_seconds,
         default=_DEFAULT_LOCK_TIMEOUT,
         help="Seconds to wait for the output directory's publish lock before giving "
         "up. Every command that writes the directory takes the same lock, so a "
@@ -382,6 +405,23 @@ class PublishLockUnsupported(PublishLockUnavailable):
     exists and cannot be opened is the other case entirely: something took it."""
 
 
+def _load_documents(path: Path, text: str) -> list:
+    """Read one file the way the tool that will apply it reads that file.
+
+    A `.json` file goes through the JSON parser, not the YAML one. PyYAML is
+    YAML 1.1 and rejects a tab as indentation; kubectl sends a file beginning with
+    `{` to a pure JSON decoder, where tabs are ordinary whitespace. So
+    `json.MarshalIndent(v, "", "\t")` output -- the Go default -- parses for
+    kubectl and fails for PyYAML, and treating that as a malformed manifest is the
+    same false verdict the duplicate-key rule was removed for. Worse here: the file
+    is carried in from the output directory on every gated render, so one such file
+    would fail every future render permanently.
+    """
+    if path.suffix == ".json":
+        return [json.loads(text)] if text.strip() else []
+    return list(yaml.safe_load_all(text))
+
+
 def _unreadable_documents(directory: Path) -> list[str]:
     """Every reason a staged file would not survive `kubectl apply`, named.
 
@@ -414,10 +454,29 @@ def _unreadable_documents(directory: Path) -> list[str]:
         if not path.is_file() or path.suffix not in (".yaml", ".yml", ".json"):
             continue
         try:
-            docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
-        except (yaml.YAMLError, UnicodeDecodeError, OSError) as exc:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError) as exc:
+            problems.append(f"{path.name}: cannot be read: {exc}")
+            continue
+        try:
+            docs = _load_documents(path, text)
+        except (yaml.YAMLError, json.JSONDecodeError) as exc:
             problems.append(f"{path.name}: cannot be parsed: {exc}")
             continue
+        except RecursionError as exc:
+            # PyYAML composes recursively, so deep nesting overflows the stack. Not
+            # a verdict on the manifest: the gate could not read it. Raised rather
+            # than appended, because a problem here exits 1, and 1 means the linter
+            # rejected something -- CI would read a crash as a lint failure.
+            raise ArgoLintUnavailable(
+                f"{path.name} nests too deeply for the parser to read, so the gate "
+                f"could not decide whether it is valid: {exc}"
+            ) from exc
+        except MemoryError as exc:
+            raise ArgoLintUnavailable(
+                f"{path.name} could not be held in memory to be read, so the gate "
+                "could not decide whether it is valid"
+            ) from exc
         for index, doc in enumerate(docs):
             if doc is None:
                 continue
@@ -510,7 +569,19 @@ def _publish_lock(out_dir: Path, lock_timeout: float = _DEFAULT_LOCK_TIMEOUT) ->
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except OSError:
+            except OSError as exc:
+                # Only contention is worth retrying. EWOULDBLOCK/EAGAIN is another
+                # holder; ENOLCK, EOPNOTSUPP, EINVAL and friends mean this
+                # filesystem cannot take the lock at all -- an NFS mount with no
+                # lockd, most concretely -- and retrying for the whole timeout only
+                # to report "held by another render" is an assertion, and a false
+                # one. That case is what PublishLockUnsupported is for.
+                if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                    raise PublishLockUnsupported(
+                        f"the publish lock at {lock_path} cannot be taken on this "
+                        f"filesystem ({exc.strerror}), so publishing cannot be "
+                        "serialised here"
+                    ) from exc
                 if time.monotonic() >= deadline:
                     raise PublishLockUnavailable(
                         f"the publish lock at {lock_path} is held by another render; "
@@ -956,6 +1027,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         }, indent=2))
         raise SystemExit(2) from exc
     leftover_backups: list[str] = []
+    stale_result: dict[str, object] = {}
     with lock_stack:
         preflight_unique([path for path, _ in planned])
         preflight_writable(planned)
@@ -995,7 +1067,29 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
                 raise SystemExit(2) from exc
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+        if staging.exists():
+            # As the gate reports it: a staging directory left inside the caller's
+            # output holds a second copy of every manifest, and `kubectl create -R`
+            # submits each one twice.
+            staging_left = str(staging)
+            print(f"warning: could not remove the staging directory {staging}", file=sys.stderr)
+        else:
+            staging_left = ""
+        # Pruning stays inside the lock, with the publish it belongs to. The gate's
+        # own note says why -- "pruning outside it lets two renders of the same
+        # mission delete each other's newly published files" -- and this command
+        # was doing exactly that: it released the lock after publishing and pruned
+        # afterwards, so a gated render could pass its lint, publish, and have its
+        # files deleted by this one, while both reported success.
+        try:
+            _report_stale(stale_result, args.output_dir, written, args.prune)
+        except PruneIncomplete as exc:
+            print(json.dumps(_prune_failure_report(exc, written), indent=2))
+            raise SystemExit(2) from exc
     result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
+    result.update(stale_result)
+    if staging_left:
+        result["staging_left_behind"] = staging_left
     # Which verb each file takes, so a caller does not have to open them to find
     # out. A file holding any document without metadata.name cannot be applied.
     apply_files: list[str] = []
@@ -1040,11 +1134,6 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
                 "succeeded and this directory is now yours to remove",
                 file=sys.stderr,
             )
-    try:
-        _report_stale(result, args.output_dir, written, args.prune)
-    except PruneIncomplete as exc:
-        print(json.dumps(_prune_failure_report(exc, written), indent=2))
-        raise SystemExit(2) from exc
     print(json.dumps(result))
 
 
