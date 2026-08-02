@@ -232,7 +232,9 @@ case "${ARGO_GATE_RC}" in
   1) report FAIL "Argo lint rejected the manifest (${ARGO_GATE_STATUS}); nothing published" ;;
   2)
     case "${ARGO_GATE_STATUS}" in
-      *" unavailable")
+      *" unavailable"|*" not-run")
+        # Two vocabularies for the same thing: "unavailable" is the CLI missing,
+        # "not-run" is the publish lock unobtainable. Neither reached a verdict.
         report FAIL "Argo lint could not run (${ARGO_GATE_STATUS}); no verdict, nothing published" ;;
       *" passed")
         report FAIL "Argo lint passed but the gate did not finish publishing (${ARGO_GATE_STATUS}); output directory changed: ${ARGO_GATE_MODIFIED}" ;;

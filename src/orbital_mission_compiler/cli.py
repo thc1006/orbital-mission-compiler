@@ -9,6 +9,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -55,6 +56,11 @@ _POLICY_ENGINE_HELP = (
     "proven-equivalent in-process mirror (no opa subprocess), for offline use."
 )
 
+
+# Long enough that a normal concurrent render finishes first, short enough that a
+# hung one is reported rather than waited on. Overridable because "normal" depends
+# on how much a caller renders at once.
+_DEFAULT_LOCK_TIMEOUT = 30.0
 
 _PRUNE_HELP = (
     "Delete artifacts in the output directory that an earlier render of this tool "
@@ -115,6 +121,21 @@ def _report_stale(result: dict[str, object], output_dir: str, written: list[Path
         f"earlier render and were not replaced; applying the directory would "
         f"redeploy them. Re-run with --prune to remove them.",
         file=sys.stderr,
+    )
+
+
+def _add_lock_args(p: argparse.ArgumentParser) -> None:
+    """Add the output-root lock flag to a subcommand that writes artifacts."""
+    p.add_argument(
+        "--lock-timeout",
+        type=float,
+        default=_DEFAULT_LOCK_TIMEOUT,
+        help="Seconds to wait for the output directory's publish lock before giving "
+        "up. Every command that writes the directory takes the same lock, so a "
+        "render cannot replace files another one has staged, linted and is about to "
+        "publish. Waiting without a bound would let a hung holder stall this command "
+        "indefinitely, so a timeout exits 2 -- the gate could not run -- rather than "
+        "reporting a lint failure the linter never gave.",
     )
 
 
@@ -183,6 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
         "'argo submit --serviceaccount' cannot be used on it (argo submit drops "
         "the ResourceClaimTemplate document).",
     )
+    _add_lock_args(render_p)
     _add_policy_args(render_p)
     render_p.set_defaults(func=cmd_render_argo)
 
@@ -228,6 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
         f"(default {ORCHIDE_PRIORITY_CLASS_PREFIX!r}); set per-installation to avoid "
         "collisions on the cluster-scoped names.",
     )
+    _add_lock_args(kueue_p)
     _add_policy_args(kueue_p)
     kueue_p.set_defaults(func=cmd_render_kueue)
 
@@ -294,7 +317,7 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
     # exclusivity of its own.
     lock_stack = contextlib.ExitStack()
     try:
-        lock_stack.enter_context(_publish_lock(Path(args.output_dir)))
+        lock_stack.enter_context(_publish_lock(Path(args.output_dir), args.lock_timeout))
     except PublishLockUnsupported:
         # Nothing on this platform can lock, so nothing is holding the directory.
         pass
@@ -360,7 +383,7 @@ class PublishLockUnsupported(PublishLockUnavailable):
 
 
 @contextlib.contextmanager
-def _publish_lock(out_dir: Path) -> Iterator[None]:
+def _publish_lock(out_dir: Path, lock_timeout: float = _DEFAULT_LOCK_TIMEOUT) -> Iterator[None]:
     """Serialise publishing into one output directory.
 
     Two renders publishing at once interleave their files and the directory ends
@@ -425,10 +448,33 @@ def _publish_lock(out_dir: Path) -> Iterator[None]:
                 os.fchmod(handle, 0o666)
             except OSError:  # pragma: no cover - a filesystem that will not take it
                 pass
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        yield
+        # Bounded, not blocking. A plain LOCK_EX waits with no upper bound, so a
+        # holder that hung -- or one that simply takes longer than anyone is willing
+        # to wait -- turns this command into an indefinite stall, and the predictable
+        # path means any local user who can open the file can cause it. Failing to
+        # obtain exclusivity is a gate that could not run: exit 2 with no verdict and
+        # nothing published, never a lint rejection, which would assert something the
+        # linter never said.
+        started = time.monotonic()
+        deadline = started + lock_timeout
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise PublishLockUnavailable(
+                        f"the publish lock at {lock_path} is held by another render; "
+                        f"waited {time.monotonic() - started:.0f}s of {lock_timeout:.0f}s "
+                        f"for the output directory {canonical}. Nothing was linted or "
+                        "published."
+                    ) from None
+                time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
     finally:
-        fcntl.flock(handle, fcntl.LOCK_UN)
         os.close(handle)
 
 
@@ -585,7 +631,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         # against a set the linter never saw. Held across the lint so that the
         # state the verdict describes is the state that gets published.
         try:
-            lock_stack.enter_context(_publish_lock(out_dir))
+            lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout))
         except PublishLockUnavailable as exc:
             print(json.dumps({
                 "status": "error", "lint": "not-run", "reason": "publish-lock-unavailable",
@@ -795,12 +841,31 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
                 yaml.safe_dump_all(scheduler_route, sort_keys=False),
             ))
 
-    preflight_unique([path for path, _ in planned])
-    preflight_writable(planned)
-    written = []
-    for out, text in planned:
-        atomic_write(out, text)
-        written.append(out)
+    # The same lock render-argo takes on the same directory. Without it the gate's
+    # guarantee stopped at the Argo commands: this one could write into an output
+    # root between the gate's snapshot and its publish, so the directory a caller
+    # ends up with was not the directory that was linted. A lock held by only some
+    # of a directory's writers is not a lock on the directory.
+    lock_stack = contextlib.ExitStack()
+    try:
+        lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout))
+    except PublishLockUnsupported:
+        # No fcntl at all. render-kueue has no lint verdict to protect, so it keeps
+        # working here rather than refusing on a platform that cannot serialise --
+        # unlike the gate, whose whole claim rests on the lock.
+        pass
+    except PublishLockUnavailable as exc:
+        print(json.dumps({
+            "status": "error", "reason": "publish-lock-unavailable", "message": str(exc),
+        }, indent=2))
+        raise SystemExit(2) from exc
+    with lock_stack:
+        preflight_unique([path for path, _ in planned])
+        preflight_writable(planned)
+        written = []
+        for out, text in planned:
+            atomic_write(out, text)
+            written.append(out)
     result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
     # Which verb each file takes, so a caller does not have to open them to find
     # out. A file holding any document without metadata.name cannot be applied.

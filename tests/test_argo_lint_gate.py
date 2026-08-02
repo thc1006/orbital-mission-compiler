@@ -982,7 +982,7 @@ def test_plain_render_argo_takes_the_publish_lock(tmp_path, monkeypatch, capsys)
     taken: list[str] = []
 
     @contextlib.contextmanager
-    def _record(out_dir):
+    def _record(out_dir, *args):
         taken.append(os.path.realpath(out_dir))
         yield
 
@@ -1006,7 +1006,7 @@ def test_plain_render_argo_renders_where_no_process_can_lock(tmp_path, monkeypat
     from orbital_mission_compiler import cli
 
     @contextlib.contextmanager
-    def _unsupported(out_dir):
+    def _unsupported(out_dir, *args):
         raise cli.PublishLockUnsupported("no flock here")
         yield  # pragma: no cover - unreachable, keeps this a generator
 
@@ -1034,7 +1034,7 @@ def test_plain_render_argo_refuses_when_the_lock_exists_and_will_not_open(tmp_pa
     from orbital_mission_compiler import cli
 
     @contextlib.contextmanager
-    def _held(out_dir):
+    def _held(out_dir, *args):
         raise cli.PublishLockUnavailable("another user holds the lock file")
         yield  # pragma: no cover - unreachable, keeps this a generator
 
@@ -1173,3 +1173,64 @@ def test_a_symlink_at_the_lock_path_is_refused(tmp_path):
         assert victim.read_text() == "untouched"
     finally:
         lock.unlink()
+
+
+def test_a_held_lock_times_out_instead_of_waiting_forever(tmp_path, capsys):
+    """Waiting for exclusivity has an upper bound, and giving up is not a verdict.
+
+    flock(LOCK_EX) with no LOCK_NB waits indefinitely. The lock path is derived
+    from the output directory and lives in the shared temp directory, so a holder
+    that hung -- or any local user who can open that file -- turned this command
+    into an unbounded stall. Giving up has to report the gate could not run, never
+    that the linter rejected something: the linter never saw it.
+    """
+    from orbital_mission_compiler import cli
+
+    out = tmp_path / "out"
+    out.mkdir()
+    exe = _fake_argo(tmp_path, 0)
+    args = build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--argo-lint", "--argo-bin", str(exe), "--lock-timeout", "0.3",
+    ])
+    # A second descriptor on the same file, held for the duration of the call.
+    with cli._publish_lock(out):
+        with pytest.raises(SystemExit) as exc:
+            cmd_render_argo(args)
+    assert exc.value.code == 2, "a lock we could not take is 'could not run', not a rejection"
+    data = json.loads(capsys.readouterr().out)
+    # "not-run" is this path's vocabulary; "unavailable" is the missing-CLI one.
+    assert data["lint"] == "not-run" and data["reason"] == "publish-lock-unavailable", data
+    assert not list(out.glob("*.yaml")), "nothing may be published without the lock"
+
+
+def test_render_kueue_takes_the_same_lock_as_render_argo(tmp_path, monkeypatch, capsys):
+    """Every writer of the output root, not only the Argo ones.
+
+    The gate's claim is that what was linted is what was published. render-kueue
+    writes the same caller-selected directory, so while it took no lock it could
+    replace files between the gate's snapshot and its publish -- and the verdict
+    would then describe a directory that no longer existed. A lock only some of a
+    directory's writers take is not a lock on the directory.
+    """
+    import contextlib
+
+    from orbital_mission_compiler import cli
+    from orbital_mission_compiler.cli import cmd_render_kueue
+
+    taken: list[str] = []
+
+    @contextlib.contextmanager
+    def _record(out_dir, *args):
+        taken.append(os.path.realpath(out_dir))
+        yield
+
+    monkeypatch.setattr(cli, "_publish_lock", _record)
+    out = tmp_path / "out"
+    args = build_parser().parse_args([
+        "render-kueue", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline",
+    ])
+    cmd_render_kueue(args)
+    capsys.readouterr()
+    assert taken == [os.path.realpath(out)]
