@@ -1248,10 +1248,8 @@ def test_render_kueue_takes_the_same_lock_as_render_argo(tmp_path, monkeypatch, 
         ("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: [unclosed\n", "cannot be parsed"),
         ("- just\n- a\n- list\n", "not an object"),
         ("kind: Workflow\n", "has no apiVersion"),
-        ("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\nmetadata:\n  name: b\n",
-         "duplicate key"),
     ],
-    ids=["unparseable", "not-a-mapping", "missing-fields", "duplicate-key"],
+    ids=["unparseable", "not-a-mapping", "missing-fields"],
 )
 def test_a_document_kubectl_would_reject_fails_the_gate_before_argo_runs(
     tmp_path, capsys, body, expected

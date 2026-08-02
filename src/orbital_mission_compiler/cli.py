@@ -382,55 +382,39 @@ class PublishLockUnsupported(PublishLockUnavailable):
     exists and cannot be opened is the other case entirely: something took it."""
 
 
-class _NoDuplicateKeys(yaml.SafeLoader):
-    """SafeLoader that refuses a mapping with a repeated key.
-
-    yaml.safe_load keeps the last of a duplicate pair silently, so a manifest with
-    two `metadata:` blocks parses, loses one, and the loss is invisible in the
-    output. For a gate whose job is to say what will be applied, that is the wrong
-    default.
-    """
-
-
-def _no_duplicate_keys(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict:
-    seen: set = set()
-    for key_node, _ in node.value:
-        key = loader.construct_object(key_node, deep=True)
-        try:
-            duplicate = key in seen
-        except TypeError:  # unhashable key; yaml will reject it below
-            duplicate = False
-        if duplicate:
-            raise yaml.constructor.ConstructorError(
-                None, None, f"duplicate key {key!r}", key_node.start_mark
-            )
-        try:
-            seen.add(key)
-        except TypeError:
-            pass
-    return loader.construct_mapping(node, deep=True)
-
-
-_NoDuplicateKeys.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicate_keys
-)
-
-
 def _unreadable_documents(directory: Path) -> list[str]:
     """Every reason a staged file would not survive `kubectl apply`, named.
 
-    Checked before the linter rather than inferred from its output afterwards: a
-    document that does not parse, is not a mapping, or lacks the fields that make
-    it a Kubernetes object is not something a semantic linter should be asked
-    about. Empty documents are allowed -- a trailing `---` is legal and applies
-    nothing.
+    Checked before the linter rather than inferred from its output afterwards.
+    The rules are not this tool's opinion: each was checked against kubectl
+    itself, client-side with --validate=strict, on the version this repository is
+    validated against.
+
+        document                 kubectl apply   kubectl create
+        unparseable YAML         reject          reject
+        not a mapping            reject          reject
+        no apiVersion            reject          reject
+        no metadata              reject          accept
+        duplicate mapping key    accept          accept
+
+    So this rejects the first four and nothing else. In particular it does NOT
+    reject a duplicate key, though the earlier value is silently discarded by the
+    YAML-to-JSON conversion before the API server ever sees the object -- a real
+    hazard, and one an earlier revision of this function refused on. That was
+    wrong: kubectl applies such a document without complaint (and the server
+    accepts it under --dry-run=server --validate=strict), so refusing it here
+    would fail a manifest that deploys. A gate that says "invalid" about something
+    the cluster takes is giving a false verdict, which is worse than the hazard it
+    was guarding against.
+
+    Empty documents are allowed -- a trailing `---` is legal and applies nothing.
     """
     problems: list[str] = []
     for path in sorted(directory.iterdir()):
         if not path.is_file() or path.suffix not in (".yaml", ".yml", ".json"):
             continue
         try:
-            docs = list(yaml.load_all(path.read_text(encoding="utf-8"), Loader=_NoDuplicateKeys))
+            docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
         except (yaml.YAMLError, UnicodeDecodeError, OSError) as exc:
             problems.append(f"{path.name}: cannot be parsed: {exc}")
             continue
