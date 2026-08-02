@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
+import os
+import platform
 import statistics
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -310,6 +314,47 @@ def write_json_output(
     out_path.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
 
 
+def print_provenance() -> None:
+    """What this measurement can be attributed to, printed by the measurement.
+
+    A timing table is only comparable to another one if both say what they
+    measured. The backing data for the paper's Table V records the host, the
+    iteration count and the exact snippet, but not the commit -- so a reader
+    re-running it today cannot tell a regression from a different codebase, and
+    every phase in that table is a function the repository has changed since.
+
+    The CPU model matters for the same reason and is read from the machine rather
+    than typed in: the host these numbers came from has moved once already.
+    """
+    here = Path(__file__).resolve().parent.parent
+    head = subprocess.run(
+        ["git", "-C", str(here), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip() or "unknown"
+    dirty = subprocess.run(
+        ["git", "-C", str(here), "status", "--porcelain"], capture_output=True, text=True
+    ).stdout.strip()
+    cpu = "unknown"
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("model name"):
+                cpu = line.split(":", 1)[1].strip()
+                break
+    except OSError:
+        pass
+    print("=== provenance ===")
+    print(f"  compiler commit: {head}")
+    print(f"  working tree   : {'DIRTY -- this measurement cannot be rebuilt from a commit' if dirty else 'clean'}")
+    print(f"  harness sha256 : {hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}")
+    print(f"  interpreter    : {sys.executable}")
+    print(f"  python         : {platform.python_version()}")
+    print("=== environment ===")
+    print(f"  cpu            : {cpu}")
+    print(f"  cpu count      : {os.cpu_count()}")
+    print(f"  platform       : {platform.platform()}")
+    print(f"  opa            : {'available' if opa_available() else 'not on PATH'}")
+    print()
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point for the benchmark script.
 
@@ -335,6 +380,7 @@ def main(argv: list[str] | None = None) -> None:
         print("NOTE: --skip-policy set and OPA CLI not found; policy phase skipped.")
         print()
 
+    print_provenance()
     print(f"Scaling benchmark: sizes={sizes}, iterations={args.iterations}")
     print()
 

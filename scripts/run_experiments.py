@@ -3,25 +3,41 @@
 
 An experiment's transcript is the thing a paper cites, so a transcript that does
 not say what produced it is not evidence. This runner enforces that rather than
-trusting each script to: it checks the worktree before the run, and checks the
-transcript afterwards, and only writes the result file when both hold.
+trusting each script to.
 
-The four conditions, and why each one is disqualifying rather than cosmetic:
+Everything here is written against one assumption: **the transcript is written by
+the party being audited.** A script can print any string it likes, so a check that
+only asks "does this string appear" verifies nothing. Each check below therefore
+compares the transcript against something the runner obtained itself, and parses
+the transcript's provenance block structurally rather than searching it.
 
-  clean worktree    A capture from a dirty tree cannot be rebuilt from any commit.
-                    Checked before the run as well as read out of the transcript,
-                    so a script that forgets to report it cannot pass by silence.
+  names HEAD        The `compiler commit:` line must be exactly the commit the
+                    runner resolved before starting. Searching the whole
+                    transcript for the SHA would accept it appearing in a failure
+                    dump, or in a sentence saying it was reverted.
 
-  names HEAD        A transcript that names no commit, or names one that is not
-                    the commit it ran at, describes code nobody can retrieve.
+  clean worktree    Read from git by the runner, before AND after the run, and
+                    required to agree with what the transcript claims. Before,
+                    because a capture from a dirty tree cannot be rebuilt from any
+                    commit. After, because the run itself takes time, and the
+                    interesting tamper is the one that happens during it.
 
-  own checksum      The commit pins the script only if the script that ran is the
-                    committed one. `bash <(...)` and an edit mid-run both break
-                    that, and neither shows up in the commit.
+  own checksum      The script is hashed before the run and again after, both are
+                    required to match, and the transcript's `harness sha256:` line
+                    must equal them. bash reads a script incrementally, so an edit
+                    mid-run executes a hybrid of two versions.
 
-  read environment  Versions typed into a header afterwards are a claim about the
-                    cluster. Versions the run read from the cluster are evidence
-                    from it. Only the second can be checked by re-running.
+  read environment  A fact the run obtained from what it ran against, matched per
+                    experiment: a cluster experiment must record the apiserver
+                    version, a timing measurement the CPU. Weakest of the four --
+                    it cannot distinguish a version read from one printed -- so it
+                    is a floor, not a guarantee.
+
+What this does NOT establish: that the script told the truth about anything else,
+that the commit is reachable from a branch, or that no untracked-but-loaded file
+(a sitecustomize.py, an ignored config) changed the result. A determined author of
+an experiment script can still produce a false transcript. The checks close the
+accidents, which is what actually happens.
 
 Usage:
     python3 scripts/run_experiments.py [--list] [--only NAME] [--results-dir DIR]
@@ -45,14 +61,29 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 
+class GitUnavailable(RuntimeError):
+    """git could not answer. Not the same as git answering 'nothing to report'."""
+
+
 @dataclass(frozen=True)
 class Experiment:
     name: str
     script: Path
     env: dict[str, str] = field(default_factory=dict)
+    args: tuple[str, ...] = ()
     # Wall-clock bound. An experiment that hangs must not hang the runner: these
     # hold cluster-scoped objects while they run.
     timeout_s: int = 2400
+    # Where a citable transcript belongs in the repository, if it belongs anywhere.
+    # Filed only after the transcript passes, so this path can never hold one that
+    # did not -- which is the whole point of the runner.
+    result_path: Path | None = None
+    # What "recorded the environment it ran against" means here. Not every
+    # experiment has a cluster: a timing measurement's environment is the CPU, and
+    # demanding an apiserver version of it would either fail a sound measurement or
+    # teach the harness to print a line it does not mean.
+    environment_marker: str = r"^\s*kube-apiserver\s*:\s*v\d"
+    environment_description: str = "the apiserver version it read from the cluster"
 
 
 EXPERIMENTS = [
@@ -65,97 +96,206 @@ EXPERIMENTS = [
         # failing, so this runner is usable from any branch in the stack.
         name="kueue-priority",
         script=Path("scripts/validate_kueue_priority.sh"),
+        result_path=Path(
+            "manifests/k8s/kueue/priority-ordering/results/"
+            "run-k8s-1.36.3-kueue-0.19.0.txt"
+        ),
+    ),
+    Experiment(
+        # No cluster. Its environment is the CPU, because that is what the numbers
+        # are a property of: the paper's Table V backing data names a host but not
+        # the commit it measured, so a reader re-running it cannot tell a
+        # regression from a different codebase.
+        name="scaling",
+        script=Path("scripts/benchmark_scaling.py"),
+        args=("--sizes", "10,50,100,500,1000", "--iterations", "30"),
+        environment_marker=r"^\s*cpu\s*:\s*\S",
+        environment_description="the CPU it measured on",
+        result_path=Path("docs/experiments/results/scaling.txt"),
     ),
 ]
 
 
 def _git(*args: str) -> str:
-    return subprocess.run(
+    """Ask git, and refuse to turn a failure into an answer.
+
+    The first version of this returned `.stdout.strip()` and never looked at the
+    exit status. git writes to stderr and leaves stdout empty when it fails, so
+    every failure -- a repository without .git, a stale worktree pointer, a
+    checkout git considers unsafely owned -- came back as the empty string. That
+    made `_worktree_is_clean()` return True, and made the resolved commit "", which
+    the old substring check then found in every transcript. The gate reported `ok`
+    on a transcript whose own text said `compiler commit: unknown`.
+    """
+    proc = subprocess.run(
         ["git", "-C", str(REPO), *args], capture_output=True, text=True
-    ).stdout.strip()
-
-
-def _worktree_is_clean() -> bool:
-    return not _git("status", "--porcelain")
+    )
+    if proc.returncode != 0:
+        raise GitUnavailable(
+            f"git {' '.join(args)} failed ({proc.returncode}): {proc.stderr.strip()}"
+        )
+    return proc.stdout.strip()
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def citability_problems(transcript: str, script: Path, head: str) -> list[str]:
+def _field(transcript: str, label: str) -> str | None:
+    """The value of one provenance line, or None if the line is not there.
+
+    Anchored to the start of a line and to the whole value, so a mention of the
+    label inside prose or a log message is not mistaken for the field.
+    """
+    m = re.search(rf"^\s*{re.escape(label)}\s*:\s*(.*?)\s*$", transcript, re.M)
+    return m.group(1) if m else None
+
+
+def citability_problems(
+    transcript: str, exp: Experiment, head: str, digest: str, clean_after: bool
+) -> list[str]:
     """What stops this transcript being usable as evidence. Empty means nothing does."""
     problems: list[str] = []
 
-    if not re.search(rf"\b{re.escape(head)}\b", transcript):
-        problems.append(f"does not name the commit it ran at ({head[:12]})")
-
-    if "working tree" not in transcript:
-        problems.append("does not say whether the working tree was clean")
-    elif "DIRTY" in transcript:
-        problems.append("ran from a dirty tree, so it cannot be rebuilt from a commit")
-
-    digest = _sha256(REPO / script)
-    if digest not in transcript:
+    claimed_commit = _field(transcript, "compiler commit")
+    if claimed_commit is None:
+        problems.append("has no 'compiler commit' line")
+    elif claimed_commit != head:
         problems.append(
-            "does not carry the checksum of the script that ran, so the commit "
-            "does not pin what was executed"
+            f"names commit {claimed_commit[:12] or '(empty)'}, but the run was at {head[:12]}"
         )
 
-    # Read from the cluster, not written by hand afterwards. Any one of these is
-    # enough to show the run asked rather than assumed.
-    if not re.search(r"kube-apiserver\s*:\s*v\d", transcript):
-        problems.append("does not record the apiserver version it read from the cluster")
+    claimed_tree = _field(transcript, "working tree")
+    if claimed_tree is None:
+        problems.append("has no 'working tree' line")
+    elif claimed_tree != "clean":
+        problems.append(f"reports the working tree as {claimed_tree!r}")
+
+    if not clean_after:
+        # The tree was clean when the run started; something changed it while the
+        # run was in flight, which the transcript's own line -- printed at the
+        # start -- cannot know about.
+        problems.append("the worktree was modified while the experiment was running")
+
+    claimed_digest = _field(transcript, "harness sha256")
+    if claimed_digest is None:
+        problems.append("has no 'harness sha256' line")
+    elif claimed_digest != digest:
+        problems.append(
+            "the harness on disk does not match the one the transcript names, so "
+            "the script was edited while it ran"
+        )
+
+    if not re.search(exp.environment_marker, transcript, re.M):
+        problems.append(f"does not record {exp.environment_description}")
 
     return problems
 
 
 def run(exp: Experiment, results_dir: Path) -> tuple[str, str]:
     """Returns (outcome, detail). Outcome is one of ok / failed / not-citable / skipped."""
-    if not (REPO / exp.script).exists():
+    script = REPO / exp.script
+    if not script.exists():
         return "skipped", f"{exp.script} is not on this branch"
 
-    if not _worktree_is_clean():
-        # Checked before spending the cluster time, and separately from the
-        # transcript's own claim: a script that forgot to report the state cannot
-        # pass by staying quiet.
-        return "not-citable", "the worktree is dirty; commit or stash before running"
+    try:
+        if _git("status", "--porcelain"):
+            return "not-citable", "the worktree is dirty; commit or stash before running"
+        head = _git("rev-parse", "HEAD")
+    except GitUnavailable as exc:
+        # Not "clean" and not "unknown commit": simply not answerable, so nothing
+        # produced here could be cited even if the experiment succeeded.
+        return "not-citable", str(exc)
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        return "not-citable", f"git returned an unusable commit: {head!r}"
 
-    head = _git("rev-parse", "HEAD")
+    digest_before = _sha256(script)
     env = {**os.environ, **exp.env}
+    argv = (
+        ["bash", str(script), *exp.args]
+        if script.suffix == ".sh"
+        else [sys.executable, str(script), *exp.args]
+    )
+    # stderr is folded into the transcript. Keeping it separate discarded exactly
+    # the lines that matter: the priority harness names the cluster-scoped objects
+    # it failed to delete on stderr, and validate_live_cluster.sh rejects a bad
+    # argument there before printing anything at all -- which used to surface as
+    # four provenance complaints about an empty transcript.
+    #
+    # A new session, so a timeout can kill the whole process group. subprocess
+    # kills only the direct child, which for a shell harness leaves its kubectl
+    # waits alive and its EXIT trap unrun -- the teardown that removes
+    # cluster-scoped objects.
     try:
         proc = subprocess.run(
-            ["bash", str(REPO / exp.script)],
-            cwd=REPO, env=env, capture_output=True, text=True, timeout=exp.timeout_s,
+            argv, cwd=REPO, env=env, text=True, timeout=exp.timeout_s,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        return "failed", f"did not finish within {exp.timeout_s}s"
+        transcript, returncode = proc.stdout, proc.returncode
+    except subprocess.TimeoutExpired as exc:
+        transcript = exc.stdout or ""
+        if isinstance(transcript, bytes):
+            transcript = transcript.decode("utf-8", "replace")
+        returncode = -1
+        results_dir.mkdir(parents=True, exist_ok=True)
+        kept = results_dir / f"{exp.name}.timed-out.txt"
+        kept.write_text(transcript, encoding="utf-8")
+        return "failed", (
+            f"did not finish within {exp.timeout_s}s; partial transcript at {kept}. "
+            "Its teardown may not have run -- check for leftover objects."
+        )
 
-    transcript = proc.stdout
-    problems = citability_problems(transcript, exp.script, head)
+    try:
+        clean_after = not _git("status", "--porcelain")
+    except GitUnavailable as exc:
+        return "not-citable", f"could not re-check the worktree after the run: {exc}"
+    digest_after = _sha256(script)
+
+    problems = citability_problems(transcript, exp, head, digest_before, clean_after)
+    if digest_before != digest_after:
+        problems.append("the harness changed on disk while it was running")
 
     results_dir.mkdir(parents=True, exist_ok=True)
     out = results_dir / f"{exp.name}.txt"
     if problems:
-        # Written where it can be read, but not where results are kept: filing it
-        # as a result is what would make it look citable.
         rejected = results_dir / f"{exp.name}.rejected.txt"
         rejected.write_text(transcript, encoding="utf-8")
-        return "not-citable", "; ".join(problems) + f" (transcript kept at {rejected})"
-
-    if proc.returncode != 0:
-        out.write_text(transcript, encoding="utf-8")
-        return "failed", f"exit {proc.returncode}; transcript at {out}"
+        # The previous run's result is removed. Leaving it is how a regression
+        # keeps a passing transcript on disk while only the console says otherwise.
+        out.unlink(missing_ok=True)
+        detail = "; ".join(problems) + f" (transcript kept at {rejected})"
+        if returncode != 0:
+            detail = f"exit {returncode}, and " + detail
+        return "not-citable", detail
 
     out.write_text(transcript, encoding="utf-8")
+    if returncode != 0:
+        return "failed", f"exit {returncode}; transcript at {out}"
+
+    if exp.result_path is not None:
+        # The transcript verbatim, with nothing written around it. A preamble
+        # summarising the environment is exactly the hand-authored claim the
+        # checks above exist to replace, and it goes stale the moment the run
+        # changes underneath it.
+        filed = REPO / exp.result_path
+        filed.parent.mkdir(parents=True, exist_ok=True)
+        filed.write_text(transcript, encoding="utf-8")
+        return "ok", f"{out} -> filed at {exp.result_path} (commit it to keep the tree clean)"
     return "ok", str(out)
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--list", action="store_true", help="Show the registered experiments and exit")
     ap.add_argument("--only", help="Run one experiment by name")
-    ap.add_argument("--results-dir", default="out/experiments", help="Where transcripts are written")
+    ap.add_argument(
+        "--results-dir",
+        default="out/experiments",
+        help="Where transcripts are written. Keep it inside a gitignored directory: "
+        "a runner that dirties the tree makes its own next run uncitable.",
+    )
     args = ap.parse_args()
 
     if args.list:
