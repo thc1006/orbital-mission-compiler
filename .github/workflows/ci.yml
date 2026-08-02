@@ -3,13 +3,19 @@ name: CI
 "on":
   push:
     branches: [main]
+  # No base-branch filter: `branches:` matches the PR's BASE, so a stacked pull
+  # request whose base is another feature branch would get no CI at all. The
+  # checkout for a pull_request run is the head merged into its own base, which
+  # is exactly what a stacked PR should be tested as. `push` stays pinned to
+  # main so a branch with an open PR is not built twice.
   pull_request:
-    branches: [main]
 
 env:
   PYTHONPATH: src:.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   OPA_VERSION: v1.15.1
+  # Pinned in docs/07_installation_matrix.md alongside the live-cluster version.
+  ARGO_VERSION: v4.0.1
 
 jobs:
   verify:
@@ -35,6 +41,14 @@ jobs:
       - name: Type check
         run: python3 -m mypy src/orbital_mission_compiler
 
+      # OPA must be on PATH before the test suite: the pipeline is fail-closed on
+      # the 'opa' engine by default, so the CLI tests exercise the real policy path
+      # rather than skipping or erroring on a missing binary.
+      - name: Set up OPA
+        uses: ./.github/actions/setup-opa
+        with:
+          version: ${{ env.OPA_VERSION }}
+
       - name: Unit tests with coverage
         run: |
           python3 -m pytest -q --cov=orbital_mission_compiler --cov-report=term-missing --cov-report=xml --cov-fail-under=70
@@ -46,57 +60,275 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
+      # The default policy path uses the packaged Rego bundle, and an editable
+      # install resolves it from the source tree either way. Build and install the
+      # real artifact so a bundle missing from the wheel is caught here rather
+      # than by whoever pip-installs it.
+      - name: Wheel install smoke (default policy path from a clean venv)
+        env:
+          # The job-level PYTHONPATH puts src/ (and its egg-info) on the path, so
+          # pip would see the package as already satisfied and install only its
+          # dependencies, leaving nothing to import. Clearing it is also what
+          # makes this a clean-venv test rather than a source-tree one.
+          PYTHONPATH: ""
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet build
+          rm -rf dist
+          python3 -m build --wheel
+          python3 - <<'PYCHK'
+          import glob, zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          entries = zipfile.ZipFile(wheel).namelist()
+          assert "orbital_mission_compiler/policies/mission_plan.rego" in entries, entries
+          print(f"wheel ships the policy bundle: {wheel}")
+          PYCHK
+          python3 -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install dist/*.whl
+          workdir="$(mktemp -d)"
+          plan="$PWD/configs/mission_plans/sample_gpu_cpu_fallback.yaml"
+          cd "$workdir"
+          /tmp/wheel-venv/bin/python -m orbital_mission_compiler.cli compile \
+            --input "$plan" --output "$workdir/out.json"
+          test -s "$workdir/out.json"
+          echo "installed wheel resolved the default bundle from $workdir"
+
       - name: Golden evals
         run: python3 -m orbital_mission_compiler.eval_runner
 
-      - name: Cache OPA binary
-        uses: actions/cache@v4
-        id: opa-cache
-        with:
-          path: ~/.local/bin/opa
-          key: opa-${{ env.OPA_VERSION }}-linux-amd64
+      - name: OPA smoke (valid plans pass, deny fixtures are rejected)
+        run: |
+          # opa_smoke.sh now gates on the decision, so a plan that the policy
+          # rejects fails the step. demo_gpu_no_fallback.yaml exists to BE
+          # rejected (Rego Rule 4), so it is asserted separately: looping it in
+          # with the plans that must pass would just fail the build, and merely
+          # skipping it would leave the gate's reject path unverified.
+          DENY_FIXTURES=("demo_gpu_no_fallback.yaml")
+          for plan in configs/mission_plans/*.yaml; do
+            base="$(basename "$plan")"
+            skip=""
+            for deny in "${DENY_FIXTURES[@]}"; do
+              [ "$base" = "$deny" ] && skip=1 && break
+            done
+            if [ -n "$skip" ]; then
+              continue
+            fi
+            bash scripts/opa_smoke.sh "$plan"
+          done
+          for deny in "${DENY_FIXTURES[@]}"; do
+            echo "Asserting the policy gate rejects the deny fixture: $deny"
+            if bash scripts/opa_smoke.sh "configs/mission_plans/$deny"; then
+              echo "FAIL: deny fixture $deny was accepted by the policy gate" >&2
+              exit 1
+            fi
+            echo "OK: $deny was rejected as expected"
+          done
 
-      - name: Install OPA
-        if: steps.opa-cache.outputs.cache-hit != 'true'
+      # The Argo smoke's only real gate is `argo lint`. Without the CLI the script
+      # prints "skipped argo lint" and the step still passes, so a rendered
+      # manifest that Argo would reject reads as a green smoke.
+      - name: Cache the Argo CLI archive
+        uses: actions/cache@v4
+        id: argo-cache
+        with:
+          # The archive, not the unpacked binary: the published checksum is of the
+          # gzip, so caching that is what lets every run re-verify what it uses.
+          path: ~/.cache/argo/argo-linux-amd64.gz
+          key: argo-${{ env.ARGO_VERSION }}-linux-amd64
+
+      - name: Download the Argo CLI
+        if: steps.argo-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/argo"
+          curl -fSL -o "$HOME/.cache/argo/argo-linux-amd64.gz" \
+            "https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}/argo-linux-amd64.gz"
+
+      # Verified on every run, cache hit or miss. A cache entry that was poisoned
+      # or corrupted after it was written would otherwise become the binary that
+      # decides whether manifests are published, on the strength of a check that
+      # happened once.
+      - name: Verify the Argo checksum and install
         run: |
           set -euo pipefail
           TMP_DIR="$(mktemp -d)"
           trap 'rm -rf "$TMP_DIR"' EXIT
+          BASE="https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}"
+          curl -fSL -o "$TMP_DIR/checksums.txt" "${BASE}/argo-workflows-cli-checksums.txt"
+          grep 'argo-linux-amd64.gz$' "$TMP_DIR/checksums.txt" > "$TMP_DIR/expected.sha256"
+          test -s "$TMP_DIR/expected.sha256"
+          cp "$HOME/.cache/argo/argo-linux-amd64.gz" "$TMP_DIR/"
+          (cd "$TMP_DIR" && sha256sum -c expected.sha256)
+          gunzip -f "$TMP_DIR/argo-linux-amd64.gz"
           mkdir -p "$HOME/.local/bin"
-          OPA_BASE_URL="https://openpolicyagent.org/downloads/${OPA_VERSION}"
-          curl -fSL -o "$TMP_DIR/opa_linux_amd64_static" \
-            "${OPA_BASE_URL}/opa_linux_amd64_static"
-          curl -fSL -o "$TMP_DIR/opa_linux_amd64_static.sha256" \
-            "${OPA_BASE_URL}/opa_linux_amd64_static.sha256"
-          (
-            cd "$TMP_DIR"
-            sha256sum -c "opa_linux_amd64_static.sha256"
-          )
-          install -m 0755 "$TMP_DIR/opa_linux_amd64_static" "$HOME/.local/bin/opa"
-          chmod +x "$HOME/.local/bin/opa"
+          install -m 0755 "$TMP_DIR/argo-linux-amd64" "$HOME/.local/bin/argo"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/argo" version --short
 
-      - name: Verify OPA checksum
+      - name: Argo smoke (valid plans render, deny fixtures produce no artifact)
+        env:
+          # Fail rather than skip: see the cache step above.
+          REQUIRE_ARGO_LINT: "1"
+        run: |
+          # render-argo is fail-closed now, so the deny fixture produces no
+          # artifact by design. Assert that rather than looping it in with the
+          # plans that must render: a rendered artifact for a policy-denied plan
+          # is the exact failure the gate exists to prevent.
+          DENY_FIXTURES=("demo_gpu_no_fallback.yaml")
+          for plan in configs/mission_plans/*.yaml; do
+            base="$(basename "$plan")"
+            skip=""
+            for deny in "${DENY_FIXTURES[@]}"; do
+              [ "$base" = "$deny" ] && skip=1 && break
+            done
+            if [ -n "$skip" ]; then
+              continue
+            fi
+            # A fresh directory per plan: a shared one lets a previous plan's
+            # output satisfy the manifest check, so a plan that silently rendered
+            # nothing would still pass.
+            plan_out="$(mktemp -d)"
+            bash scripts/argo_smoke.sh "$plan" "$plan_out"
+            produced="$(find "$plan_out" -name '*.yaml' | wc -l)"
+            if [ "$produced" -eq 0 ]; then
+              echo "FAIL: $base rendered no manifest" >&2
+              exit 1
+            fi
+            rm -rf "$plan_out"
+          done
+
+          # The flagship path of this change: exercise --dra-fallback end to end
+          # and check the multi-doc invariants a plain render cannot show.
+          dra_out="$(mktemp -d)"
+          python3 -m orbital_mission_compiler.cli render-argo \
+            --input configs/mission_plans/sample_gpu_cpu_fallback.yaml \
+            --output-dir "$dra_out" --namespace dra-smoke-ns --dra-fallback
+          python3 - "$dra_out" <<'PYDRA'
+          import sys, pathlib, yaml
+          docs = []
+          for p in pathlib.Path(sys.argv[1]).glob("*.yaml"):
+              docs += [d for d in yaml.safe_load_all(p.read_text()) if d]
+          kinds = {d["kind"] for d in docs}
+          assert {"ResourceClaimTemplate", "Workflow"} <= kinds, kinds
+          ns = {d["metadata"].get("namespace") for d in docs}
+          assert ns == {"dra-smoke-ns"}, f"namespaces disagree: {ns}"
+          ids = [(d["apiVersion"], d["kind"], d["metadata"].get("namespace"),
+                  d["metadata"]["name"]) for d in docs]
+          assert len(ids) == len(set(ids)), f"duplicate object identity: {ids}"
+          rct = next(d for d in docs if d["kind"] == "ResourceClaimTemplate")
+          req = rct["spec"]["spec"]["devices"]["requests"][0]
+          assert "firstAvailable" in req, req
+          wf = next(d for d in docs if d["kind"] == "Workflow")
+          wired = [t for t in wf["spec"]["templates"] if "podSpecPatch" in t]
+          assert wired, "no template consumes the claim"
+          print(f"DRA smoke OK: {len(docs)} docs, namespace dra-smoke-ns, {len(wired)} wired")
+          PYDRA
+          # The multi-doc bundle is the shape an operator applies, and it is the
+          # one the plain smoke never lints: argo lint reads the Workflow document
+          # out of it and ignores the ResourceClaimTemplate.
+          argo lint --offline "$dra_out"/*.yaml
+          rm -rf "$dra_out"
+          for deny in "${DENY_FIXTURES[@]}"; do
+            echo "Asserting render-argo refuses the deny fixture: $deny"
+            out="$(mktemp -d)"
+            # Assert the reason, not just a non-zero exit. A corrupted fixture, a
+            # renamed subcommand or any crash also exits non-zero, so "it failed"
+            # is not evidence that the policy gate is what refused it.
+            err="$(mktemp)"
+            if python3 -m orbital_mission_compiler.cli render-argo \
+                 --input "configs/mission_plans/$deny" --output-dir "$out" 2>"$err"; then
+              echo "FAIL: render-argo produced artifacts for denied plan $deny" >&2
+              exit 1
+            fi
+            python3 - "$err" "$deny" <<'PYDENY'
+          import json, sys
+          raw = open(sys.argv[1], encoding="utf-8").read().strip()
+          try:
+              data = json.loads(raw)
+          except json.JSONDecodeError:
+              sys.exit(f"FAIL: {sys.argv[2]} did not fail through the policy gate; got:\n{raw[:800]}")
+          assert data.get("status") == "denied", data
+          assert data.get("violations"), data
+          rules = sorted({v["rule_id"] for v in data["violations"]})
+          print(f"OK: {sys.argv[2]} was denied by {', '.join(rules)}")
+          PYDENY
+            if [ -n "$(ls -A "$out")" ]; then
+              echo "FAIL: $deny was denied but left artifacts behind in $out" >&2
+              exit 1
+            fi
+            rm -rf "$out" "$err"
+          done
+
+  # The MCP surface is a required check of its own. FastMCP lives in a separate
+  # extra, and the MCP test modules skip themselves when it is missing, so the
+  # main job's green run never exercised them -- it reported passes and skips
+  # without saying which. This job installs the extra and treats a skip as a
+  # failure, so the MCP fixes cannot silently stop being tested.
+  mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install with the MCP extra
+        run: pip install -e ".[dev,mcp]"
+
+      # The MCP server selects its engine from ORBITAL_MCP_POLICY_ENGINE and
+      # defaults to the in-process baseline, so the tests below run once per
+      # engine: checking the fail-closed gate against the mirror alone would say
+      # nothing about the Rego bundle an operator actually enforces with.
+      - name: Set up OPA
+        uses: ./.github/actions/setup-opa
+        with:
+          version: ${{ env.OPA_VERSION }}
+
+      - name: Confirm FastMCP is importable
+        run: python3 -c "import fastmcp; print(fastmcp.__version__)"
+
+      - name: MCP tests on both policy engines (a skip here is a failure)
         run: |
           set -euo pipefail
-          OPA_BASE_URL="https://openpolicyagent.org/downloads/${OPA_VERSION}"
-          EXPECTED_SHA="$(curl -fsSL "${OPA_BASE_URL}/opa_linux_amd64_static.sha256" | awk '{print $1}')"
-          ACTUAL_SHA="$(sha256sum "$HOME/.local/bin/opa" | awk '{print $1}')"
-          test -n "$EXPECTED_SHA"
-          test "$EXPECTED_SHA" = "$ACTUAL_SHA"
-
-      - name: Add OPA to PATH and verify
-        run: |
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/opa" version
-
-      - name: OPA smoke (all plans)
-        run: |
-          for plan in configs/mission_plans/*.yaml; do
-            bash scripts/opa_smoke.sh "$plan"
+          for engine in baseline opa; do
+            echo "== MCP tests with ORBITAL_MCP_POLICY_ENGINE=$engine =="
+            ORBITAL_MCP_POLICY_ENGINE="$engine" \
+              python3 -m pytest -q -rs tests/test_mcp.py tests/test_mcp_expansion.py \
+              | tee "/tmp/mcp-$engine.log"
+            if grep -qE '[0-9]+ (skipped|xfailed)' "/tmp/mcp-$engine.log"; then
+              echo "FAIL: an MCP test did not run under $engine" >&2
+              grep -E '^(SKIPPED|XFAIL)' "/tmp/mcp-$engine.log" >&2 || true
+              exit 1
+            fi
           done
 
-      - name: Argo smoke (Python sanity only)
+      # The packaged path this PR exists to support: an installed wheel resolving
+      # its own policy bundle, with the plan root pointed somewhere real.
+      - name: Installed-wheel MCP smoke
+        env:
+          PYTHONPATH: ""
         run: |
-          for plan in configs/mission_plans/*.yaml; do
-            bash scripts/argo_smoke.sh "$plan"
-          done
+          set -euo pipefail
+          python3 -m pip install --quiet build
+          rm -rf dist && python3 -m build --wheel
+          python3 -m venv /tmp/mcp-venv
+          /tmp/mcp-venv/bin/pip install "$(echo dist/*.whl)[mcp]"
+          plan_root="$(mktemp -d)"
+          cp configs/mission_plans/sample_gpu_cpu_fallback.yaml "$plan_root/"
+          cp configs/mission_plans/demo_gpu_no_fallback.yaml "$plan_root/"
+          ORBITAL_MCP_PLAN_ROOT="$plan_root" ORBITAL_MCP_POLICY_ENGINE=baseline \
+            /tmp/mcp-venv/bin/python - <<'PYMCP'
+          import asyncio, json
+          from orbital_mission_compiler.mcp.server import build_server
+          server = build_server()
+          def call(name, args):
+              return asyncio.run(server.call_tool(name, args)).structured_content
+          ok = call("render_argo", {"path": "sample_gpu_cpu_fallback.yaml"})
+          assert ok["status"] == "ok" and ok["count"] >= 1, ok
+          denied = call("render_argo", {"path": "demo_gpu_no_fallback.yaml"})
+          assert denied["status"] == "denied" and denied["violations"], denied
+          print(f"installed-wheel MCP smoke OK: rendered {ok['count']}, denied 1")
+          PYMCP

@@ -12,6 +12,10 @@
 #      → After applying, restart the controller:
 #        kubectl rollout restart deployment/kueue-controller-manager -n kueue-system
 #      → Then ensure the deployment args include BOTH feature gates:
+# NOTE: these are the Kueue v0.17.x gate names, kept as the record of the
+# experiment as it was run. Kueue renamed them in v0.18
+# (KueueDRAIntegration / KueueDRAIntegrationExtendedResource), and v0.19 needs no
+# gate argument. Do not copy this line onto a current cluster.
 #        --feature-gates=DRAExtendedResources=true,DynamicResourceAllocation=true
 #        (set via deployment patch; cannot also be set in this ConfigMap or
 #         Kueue refuses to start with "feature gates for CLI and configuration

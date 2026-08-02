@@ -41,7 +41,7 @@ Note: this repo produces **rendered YAML artifacts**. It does not deploy to or c
 
 ## Validation layering
 
-Schema validation (Pydantic) and policy validation (OPA/Rego) intentionally overlap on some rules for defense-in-depth:
+Schema validation (Pydantic) and policy validation (OPA/Rego) intentionally overlap on some rules for defense-in-depth. The schema layer is fail-closed on shape: a plan carrying a field the models do not define is rejected rather than loaded with that field dropped, because the policy layer evaluates the model dump and cannot see what Pydantic discarded.
 
 | Constraint | Schema (schemas.py) | Policy (mission_plan.rego) |
 |---|---|---|
@@ -55,8 +55,18 @@ Schema validation (Pydantic) and policy validation (OPA/Rego) intentionally over
 | CPU+acceleration is contradictory | — | Rule 6 denies |
 | Service needs ≥1 step | `Field(min_length=1)` | Rule 9 denies |
 | Invalid landscape_type | — | Rule 10 denies |
+| Unknown field anywhere in a plan | `StrictModel` sets `extra="forbid"`, so a typo is rejected | — (the policy layer sees the model dump, from which a misspelled key is already gone) |
+| `priority` given as a boolean | `field_validator` rejects it | — (Python reads `True` as 1, so the policy layer would see the lowest tier) |
 
-Design intent: schema catches structural errors at parse time. Policy catches semantic errors that require cross-field reasoning. Where both layers enforce the same rule, the earlier layer (schema) prevents bad data from entering the pipeline, and the later layer (policy) catches data that bypasses schema validation (e.g., raw JSON sent directly to OPA).
+Design intent: schema catches structural errors at parse time. Policy catches semantic errors that require cross-field reasoning. Where both layers enforce the same rule, the earlier layer (schema) prevents bad data from entering the pipeline, and the later layer (policy) catches data that bypasses schema validation (e.g., raw JSON sent directly to OPA). The Rego guards on that bypass path are deliberately scoped to CONTAINER structure: they fail closed when `events`, a service's `steps`, or the objects inside them are not of the expected shape, so a malformed container cannot suppress the rules that walk it. They are not a reimplementation of the schema's field-level type checking, so a hand-crafted payload sent straight to OPA can still carry a field type Pydantic would have rejected. The schema remains the field-level authority; every supported entrypoint parses through it.
+
+### Fail-closed enforcement
+
+The policy layer is a real admission gate, not just an available check: the file-level entrypoints (`compile_file`, `write_individual_workflows`, `render_workflows_for_file`), the CLI `compile` / `render-argo` / `render-kueue` commands, and the MCP `compile_plan` / `render_argo` tools **fail closed by default** — a plan the policy layer would deny produces no artifact and a non-zero exit / `denied` result carrying the typed violations (`rule`/`rule_id`/`severity`/`provenance`/`path`/`message`).
+
+The gate runs through `evaluate_policy_decision(plan, engine, bundle, decision)` with a selectable engine. The CLI artifact commands default to **`opa`** — executing the versioned, independently-auditable Rego bundle, the same artifact an external reviewer runs — and fail closed (a distinct exit code) if `opa` cannot render a decision, never silently downgrading. The **`baseline`** engine (`baseline_validator`) is the proven-equivalent in-process mirror used offline/in tests and as the library default. Equivalence is asserted in `tests/test_structured_violations.py` (identical typed violations on well-formed inputs) and `tests/test_policy_engine.py` (identical decisions across engines).
+
+The four stages nonetheless remain independent modules — the enforcement-free primitives (`compile_plan_to_intents`, `render_argo_workflow`, `render_kueue_job`, `baseline_validator`) are callable in isolation for ablation, benchmarking, and standalone audit — and an explicit `enforce_policy=False` / `--unsafe-skip-policy` / `unsafe_skip_policy=True` opt-out bypasses the gate for development, forfeiting the pre-uplink guarantee. The standalone `policy` subcommand and `scripts/opa_smoke.sh` gate on the OPA decision itself (non-zero exit on any deny via `--fail-defined`), so OPA-side CI also fails closed.
 
 ## Relationship to ORCHIDE
 

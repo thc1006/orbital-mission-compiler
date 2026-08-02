@@ -46,11 +46,52 @@ _require_non_negative_integer "ARGO_TIMEOUT_SECONDS" "${ARGO_TIMEOUT_SECONDS}"
 _require_non_negative_integer "KUEUE_ADMISSION_TIMEOUT_SECONDS" "${KUEUE_ADMISSION_TIMEOUT_SECONDS}"
 _require_non_negative_integer "KUEUE_COMPLETION_TIMEOUT_SECONDS" "${KUEUE_COMPLETION_TIMEOUT_SECONDS}"
 
+# Every API call gets a bound. Without one a wedged apiserver or an admission
+# webhook that never answers leaves this waiting indefinitely, and it submits
+# workloads. `command` is what keeps the wrapper from recursing into itself.
+K8S_TIMEOUT="${K8S_TIMEOUT:-30s}"
+KUBECTL_BIN="$(command -v kubectl 2>/dev/null || true)"
+kubectl() { command kubectl --request-timeout="${K8S_TIMEOUT}" "$@"; }
+
+# ── Provenance ─────────────────────────────────────────────────────────
+#
+# What this run can be rebuilt from, and what it ran against. Both printed by the
+# run rather than written into a transcript afterwards: a version recorded by hand
+# is a claim about the cluster, not evidence from it, and docs/07 cites this
+# script's output as the record of what the repository has been exercised against.
+# A capture from a dirty tree cannot be rebuilt from any commit at all.
+HERE_REPO="$(cd "$(dirname "$0")/.." && pwd)"
+echo "=== provenance ==="
+echo "  compiler commit: $(git -C "${HERE_REPO}" rev-parse HEAD 2>/dev/null || echo unknown)"
+# git failing and git reporting a clean tree printed identically here, and "clean"
+# is the reassuring one: a capture from a repository git cannot read carried an
+# unverifiable claim that it was rebuildable. The status is captured first so its
+# exit code can be read.
+if TREE_STATUS="$(git -C "${HERE_REPO}" status --porcelain 2>/dev/null)"; then
+  [ -n "${TREE_STATUS}" ] \
+    && echo "  working tree   : DIRTY -- this capture cannot be rebuilt from a commit" \
+    || echo "  working tree   : clean"
+else
+  echo "  working tree   : unknown -- git could not answer, so this capture cannot be rebuilt"
+fi
+echo "  harness sha256 : $(sha256sum "$0" 2>/dev/null | cut -d' ' -f1 || echo unknown)"
+echo "  interpreter    : $("${PYTHON_BIN}" -c 'import sys; print(sys.executable)' 2>/dev/null || echo unknown)"
+echo "  compiler module: $(PYTHONPATH="${HERE_REPO}/src" "${PYTHON_BIN}" -c 'import orbital_mission_compiler.compiler as m; print(m.__file__)' 2>/dev/null || echo unresolved)"
+echo "=== environment ==="
+echo "  kube-apiserver : $(kubectl version -o json 2>/dev/null | "${PYTHON_BIN}" -c 'import json,sys; print(json.load(sys.stdin)["serverVersion"]["gitVersion"])' 2>/dev/null || echo unknown)"
+echo "  nodes          : $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}={.status.nodeInfo.kubeletVersion} {end}' 2>/dev/null || echo unknown)"
+echo "  argo CLI       : $(argo version --short 2>/dev/null | head -1 || echo unknown)"
+echo "  argo controller: $(kubectl get deployment -n argo -o jsonpath='{range .items[*]}{.metadata.name}={.spec.template.spec.containers[0].image} {end}' 2>/dev/null || echo unknown)"
+echo "  kueue image    : $(kubectl get deployment -n kueue-system kueue-controller-manager -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].image}' 2>/dev/null || echo unknown)"
+echo "  kueue imageID  : $(kubectl get pods -n kueue-system -l control-plane=controller-manager -o jsonpath='{.items[0].status.containerStatuses[?(@.name=="manager")].imageID}' 2>/dev/null || echo unknown)"
+
 # ── Step 1: Check prerequisites ────────────────────────────────────────
 
 echo "=== Checking prerequisites ==="
 
-if command -v kubectl >/dev/null 2>&1; then
+# The binary, resolved before the wrapper shadowed the name: `command -v kubectl`
+# now finds the function and would report a missing binary as present.
+if [ -n "${KUBECTL_BIN}" ]; then
   report PASS "kubectl available"
 else
   report FAIL "kubectl not found"
@@ -67,13 +108,20 @@ fi
 echo ""
 echo "=== Checking cluster controllers ==="
 
-if command -v kubectl >/dev/null 2>&1; then
-  if kubectl get deployment -n argo workflow-controller >/dev/null 2>&1; then
-    ARGO_READY=$(kubectl get deployment -n argo workflow-controller -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+if [ -n "${KUBECTL_BIN}" ]; then
+  # Match both install layouts: the release manifest names the deployment
+  # "workflow-controller"; the Helm chart prefixes it ("argo-workflows-workflow-controller").
+  ARGO_CTRL_DEPLOY="$(
+    kubectl get deployments -n argo \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+      | grep -E '(^|-)workflow-controller$' | head -n1
+  )"
+  if [ -n "${ARGO_CTRL_DEPLOY}" ]; then
+    ARGO_READY=$(kubectl get deployment -n argo "${ARGO_CTRL_DEPLOY}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
     if [ "${ARGO_READY}" -ge 1 ] 2>/dev/null; then
-      report PASS "Argo Workflow controller running (${ARGO_READY} replica(s))"
+      report PASS "Argo Workflow controller running (${ARGO_CTRL_DEPLOY}, ${ARGO_READY} replica(s))"
     else
-      report FAIL "Argo Workflow controller not ready"
+      report FAIL "Argo Workflow controller not ready (${ARGO_CTRL_DEPLOY})"
     fi
   else
     report FAIL "Argo Workflow controller not found"
@@ -125,6 +173,7 @@ mkdir -p "${ARGO_OUT}"
 ARGO_RENDER_LOG="${OUT_DIR}/argo-render.log"
 if PYTHONPATH="${PYTHONPATH:-src}" ${PYTHON_BIN} -m orbital_mission_compiler.cli render-argo \
     --input "${MISSION_FILE}" \
+    --namespace "${NAMESPACE}" \
     --output-dir "${ARGO_OUT}" >"${ARGO_RENDER_LOG}" 2>&1; then
   report PASS "Argo Workflow rendered"
 else
@@ -204,6 +253,16 @@ else
   echo "Skipping Argo submission (no rendered file or argo CLI unavailable)"
 fi
 
+# Interrupt, timeout or a failed step would otherwise leave the Job, its Workload
+# and the claim templates on the cluster, and the next run would collide with them.
+cleanup_all() {
+  [ -n "${JOB_NAME:-}" ] && kubectl delete "job/${JOB_NAME}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1
+  [ -n "${RCT_FILE:-}" ] && [ -s "${RCT_FILE}" ] && kubectl delete -f "${RCT_FILE}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1
+  [ -n "${WF_NAME:-}" ] && argo delete "${WF_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1
+  return 0
+}
+trap cleanup_all EXIT INT TERM
+
 # ── Step 5: Render and submit Kueue Job ────────────────────────────────
 
 echo ""
@@ -230,8 +289,27 @@ fi
 
 JOB_FILE=$(find "${KUEUE_OUT}" -name '*-kueue.yaml' -print -quit 2>/dev/null)
 if [ -n "${JOB_FILE}" ] && command -v kubectl >/dev/null 2>&1; then
+  # The bundle mixes a fixed-name ResourceClaimTemplate with a generateName Job,
+  # so `kubectl create` over the whole file is not repeatable: the second run
+  # fails on the template that the first run left behind. Apply the named
+  # documents, which is idempotent, and create only the Job.
+  RCT_FILE="${KUEUE_OUT}/claims.yaml"
+  JOB_ONLY_FILE="${KUEUE_OUT}/job.yaml"
+  ${PYTHON_BIN} - "${JOB_FILE}" "${RCT_FILE}" "${JOB_ONLY_FILE}" <<'PYSPLIT'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1], encoding="utf-8")) if d]
+named = [d for d in docs if d.get("kind") != "Job"]
+jobs = [d for d in docs if d.get("kind") == "Job"]
+open(sys.argv[2], "w", encoding="utf-8").write(yaml.safe_dump_all(named, sort_keys=False) if named else "")
+open(sys.argv[3], "w", encoding="utf-8").write(yaml.safe_dump_all(jobs, sort_keys=False))
+PYSPLIT
+  if [ -s "${RCT_FILE}" ]; then
+    kubectl apply -f "${RCT_FILE}" -n "${NAMESPACE}" >/dev/null 2>&1 \
+      && report PASS "Kueue claim template(s) applied" \
+      || report FAIL "Kueue claim template(s) failed to apply"
+  fi
   echo "Submitting Kueue Job to cluster ..."
-  if JOB_NAME=$(kubectl create -f "${JOB_FILE}" -o jsonpath='{.metadata.name}' 2>/dev/null); then
+  if JOB_NAME=$(kubectl create -f "${JOB_ONLY_FILE}" -o jsonpath='{.metadata.name}' 2>/dev/null); then
     report PASS "Kueue Job submitted: ${JOB_NAME}"
 
     echo "Checking Kueue admission (up to ${KUEUE_ADMISSION_TIMEOUT_SECONDS}s) ..."
@@ -280,9 +358,18 @@ if [ -n "${JOB_FILE}" ] && command -v kubectl >/dev/null 2>&1; then
       fi
     fi
 
+    # A Kueue Job runs one container, so a multi-step service is admitted as its
+    # primary step and the rest are not in this Job. Name the step being waited
+    # on, so "Kueue Job completed" is not read as "the service ran".
+    EXECUTED_STEP="$(kubectl get "job/${JOB_NAME}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.orbital/executed-step}' 2>/dev/null || true)"
+    SKIPPED_STEPS="$(kubectl get "job/${JOB_NAME}" -n "${NAMESPACE}" -o jsonpath='{.metadata.annotations.orbital/steps-not-in-this-job}' 2>/dev/null || true)"
     echo "Waiting for Job completion (up to ${KUEUE_COMPLETION_TIMEOUT_SECONDS}s) ..."
     if kubectl wait --for=condition=complete "job/${JOB_NAME}" -n "${NAMESPACE}" --timeout="${KUEUE_COMPLETION_TIMEOUT_SECONDS}s" >/dev/null 2>&1; then
-      report PASS "Kueue Job completed"
+      if [ -n "${SKIPPED_STEPS}" ]; then
+        report PASS "Kueue Job completed (admission artifact: ran step '${EXECUTED_STEP}'; not in this Job: ${SKIPPED_STEPS} -- the Argo Workflow runs the full sequence)"
+      else
+        report PASS "Kueue Job completed"
+      fi
     else
       report FAIL "Kueue Job did not complete within timeout"
       POD_NAME="$(kubectl get pods -n "${NAMESPACE}" -l "job-name=${JOB_NAME}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
@@ -294,8 +381,12 @@ if [ -n "${JOB_FILE}" ] && command -v kubectl >/dev/null 2>&1; then
       fi
     fi
 
-    # Cleanup
+    # Cleanup. The claim templates go too: leaving them behind is what made a
+    # second run of this script fail on a GPU plan.
     kubectl delete "job/${JOB_NAME}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+    if [ -s "${RCT_FILE}" ]; then
+      kubectl delete -f "${RCT_FILE}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+    fi
   else
     report FAIL "Kueue Job submission failed"
   fi

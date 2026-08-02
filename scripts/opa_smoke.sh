@@ -21,3 +21,15 @@ PYSMOKE
 
 echo "Running OPA policy evaluation against ${MISSION_FILE}"
 opa eval   --format=pretty   --stdin-input   --data "${BUNDLE_DIR}"   'data.orbitalmission' < "$TMPFILE"
+
+# Gate on the DECISION, not just on whether OPA ran: `opa eval` returns exit 0
+# even for a denied plan, so this smoke must inspect the deny set itself. The
+# --fail-defined flag exits non-zero when the query is defined, i.e. when at
+# least one deny rule fired -- turning this into a real admission check.
+echo "Gating on policy decision (the deny set must be empty) ..."
+if opa eval --fail-defined --format=raw --stdin-input --data "${BUNDLE_DIR}" 'data.orbitalmission.deny[_]' < "$TMPFILE"; then
+  echo "POLICY PASS: no deny rules fired for ${MISSION_FILE}"
+else
+  echo "POLICY DENIED: ${MISSION_FILE} violates one or more policy rules (see messages above)" >&2
+  exit 1
+fi

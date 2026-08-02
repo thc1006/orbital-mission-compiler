@@ -45,14 +45,14 @@ The compiler operates across four trust boundaries:
 
 | ID | STRIDE Category | Threat | Attack Vector | Existing Mitigation | Residual Risk |
 |---|---|---|---|---|---|
-| T1 | **Tampering** | YAML deserialization attack (billion laughs / alias bomb) | Crafted YAML with recursive anchors or entity expansion | `yaml.safe_load` used consistently (CWE-502); Pydantic typed validation post-parse | No explicit document size limit; `safe_load` prevents code execution but large documents may exhaust memory |
+| T1 | **Tampering** | YAML deserialization attack (billion laughs / alias bomb) | Crafted YAML with recursive anchors or entity expansion | plans load through `_StrictLoader`, a `yaml.SafeLoader` subclass that also rejects duplicate mapping keys (`compiler.py` `load_mission_plan`); no unsafe loader is used | No explicit document size limit; `safe_load` prevents code execution but large documents may exhaust memory |
 | T2 | **Tampering** | OPA policy bypass via crafted input | Input fields engineered to satisfy policy rules while violating semantic intent | Schema + Policy dual-layer validation (12 error categories in ablation study); defense-in-depth on 5 overlapping rules | Novel field combinations outside tested corpus may bypass rules; policy coverage depends on rule completeness |
-| T3 | **Tampering** | MCP path traversal | `../../etc/passwd` in plan path argument to MCP tools | CWE-22: multi-layer validation — rejects absolute paths, `..` components, directory components; symlink-safe `resolve()` + `relative_to()` boundary check | Plan paths restricted to `configs/mission_plans/`; bundle paths restricted to `configs/policies/` via repo-root-relative resolution |
+| T3 | **Tampering** | MCP path traversal | `../../etc/passwd` in plan path argument to MCP tools | CWE-22: multi-layer validation — rejects absolute paths, `..` components, directory components; symlink-safe `resolve()` + `relative_to()` boundary check | Plan paths are confined to a single root, but that root is now configurable via `ORBITAL_MCP_PLAN_ROOT` (the checkout layout is only the default, and does not exist for an installed wheel). The boundary check is as strong as before; what changed is that the trust placed in the directory is the operator's to establish — see the assumptions below |
 | T4 | **Denial of Service** | OPA subprocess hang or resource exhaustion | Pathological Rego evaluation or extremely large input payload | CWE-400: 30-second timeout (`OPA_TIMEOUT_SECONDS`); subprocess killed on expiry | No memory limit on OPA process; no rate limiting on MCP tool invocations |
 | T5 | **Information Disclosure** | OPA stderr leaks internal filesystem paths | OPA debug/warning messages exposing server directory structure | CWE-209: stdout prioritized over stderr; stderr returned only as fallback when stdout is empty | Partial leak path remains when OPA produces no stdout (edge case) |
 | T6 | **Spoofing** | Rendered artifact substitution between compiler and deployment | Man-in-the-middle replaces output YAML before satellite uplink | None — out of compiler scope | **No artifact signing or integrity hash**; output YAML has no provenance chain; deployment interface (TB3) must verify independently |
 | T7 | **Repudiation** | Untraceable compilation decisions | Operator disputes which plan/policy version produced specific artifacts | Python `logging` module; rendered YAML includes `metadata.labels` for identity (`mission-id`, `service-id`, `priority`) and `metadata.annotations` for operational hints (`orbital/priority`, `orbital/execution-mode`, `orbital/requires-gpu`, `orbital/fallback-enabled`) | **No immutable audit trail**; no compilation receipt linking input hash → output hash → policy version |
-| T8 | **Elevation of Privilege** | MCP tool used to compile arbitrary plans | AI agent invokes tools with manipulated path arguments | CWE-22 path validation restricts to `configs/mission_plans/` directory | MCP stdio transport has no authentication; any connected client has full tool access; authorization depends on transport layer |
+| T8 | **Elevation of Privilege** | MCP tool used to compile arbitrary plans | AI agent invokes tools with manipulated path arguments | CWE-22 path validation confines the agent to the configured plan root (`ORBITAL_MCP_PLAN_ROOT`, default `configs/mission_plans/`) | MCP stdio transport has no authentication; any connected client has full tool access; authorization depends on transport layer |
 | T9 | **Tampering** | OPA binary supply chain compromise | Attacker replaces `opa` binary on system PATH | `shutil.which("opa")` locates binary; CI pins OPA version (v1.15.1) with HTTPS download | **No runtime checksum verification** of OPA binary; local development relies on system PATH trust |
 | T10 | **Tampering** | Kubernetes YAML injection via unsanitized fields | Malicious values in mission plan string fields pass through to Argo/Kueue annotations | `sanitize_k8s_name()` applies RFC 1123 sanitization to names and labels | Annotation values and container args are not fully sanitized; K8s API server provides final validation layer |
 
@@ -64,7 +64,7 @@ The compiler implements hardening for the following CWEs. Test coverage is summa
 
 | CWE | Name | Mitigation | Location | Tests |
 |---|---|---|---|---|
-| CWE-22 | Path Traversal | Multi-layer validation: no `..`, no absolute, bare filenames, symlink-safe resolve | `src/orbital_mission_compiler/mcp/server.py:33-59` | `test_mcp_security.py` (6 tests) |
+| CWE-22 | Path Traversal | Multi-layer validation: no `..`, no absolute, bare filenames, symlink-safe resolve | `src/orbital_mission_compiler/mcp/server.py `_is_within` / `_validate_plan_path`` | `test_mcp_security.py` (6 tests) |
 | CWE-209 | Error Message Info Disclosure | stdout prioritized over stderr for OPA output | `src/orbital_mission_compiler/policy.py:39-42` | `test_policy_security.py` (1 test) |
 | CWE-250 | Unnecessary Privileges | Non-root `USER appuser` in Dockerfile | `Dockerfile` (`USER appuser`) | CI runs as non-root |
 | CWE-377 | Insecure Temporary File | `mktemp` + `trap` cleanup; Python `tempfile.TemporaryDirectory` | `scripts/opa_smoke.sh:12-13`, `src/orbital_mission_compiler/mcp/server.py` | Scripts + context managers |
@@ -92,6 +92,32 @@ The compiler implements hardening for the following CWEs. Test coverage is summa
 | **T10: Annotation injection** | K8s API server validates all resources before admission; compiler is not the final trust boundary |
 
 ---
+
+
+### Assumptions about the MCP plan root
+
+The plan root is configurable (`ORBITAL_MCP_PLAN_ROOT`), so the guarantee the
+path check provides is "the agent cannot leave this directory", not "this
+directory is trustworthy". That makes the following the operator's to hold:
+
+- The root and its contents are writable only by principals allowed to author
+  mission plans. The MCP server treats every file inside it as a candidate plan.
+- Nothing else replaces files there while a tool call is in flight. The tools
+  read each plan **once** and evaluate and render the same in-memory object, so a
+  replacement cannot get an approved verdict applied to unreviewed content; it
+  can still decide which of two plans a call sees.
+- Symlinks inside the root resolve inside it. The boundary check resolves before
+  comparing, so a symlink pointing outside is rejected rather than followed.
+
+### Check-use consistency
+
+An admission gate is only as good as the identity of the thing it judged.
+Evaluating a path and then re-reading that path to render it is two reads of a
+mutable resource, and the second can differ from the first. The rule this
+codebase follows is that a policy verdict attaches to a loaded plan object, never
+to a filename: `render_argo` loads once and passes the object to the renderer,
+and the renderers accept a `MissionPlan` for exactly this reason.
+
 
 ## 5. CCSDS Terminology Alignment
 
@@ -128,4 +154,4 @@ ORCHIDE D3.1 §3.2.1.4 defines a Security Manager responsible for encryption and
 - Authentication of the deployment uplink (transport-layer concern)
 - On-satellite integrity verification (ORCHIDE scope)
 
-The compiler's security scope is limited to **input validation, policy enforcement, and safe rendering** within the ground environment. Security at TB3 (deployment) and beyond is delegated to ORCHIDE's Security Manager.
+The compiler's security scope is limited to **input validation, policy enforcement, and safe rendering** within the ground environment. Policy enforcement is **fail-closed by default**: the artifact-producing entrypoints refuse to emit output for a denied plan, running either the versioned, independently-auditable OPA/Rego bundle (default) or its proven-equivalent in-process baseline — see the fail-closed enforcement note in `docs/04_architecture.md`. Security at TB3 (deployment) and beyond is delegated to ORCHIDE's Security Manager.

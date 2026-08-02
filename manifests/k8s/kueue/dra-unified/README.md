@@ -49,7 +49,19 @@ kubectl get cm -n kueue-system kueue-manager-config -o yaml > ~/kueue-config-bac
 kubectl apply -f 00-kueue-configuration-patch.yaml
 kubectl rollout restart deployment/kueue-controller-manager -n kueue-system
 # ensure the deployment args carry BOTH feature gates (NOT the ConfigMap):
-#   --feature-gates=DRAExtendedResources=true,DynamicResourceAllocation=true
+#   Kueue v0.17.x (the verified environment above):
+#     --feature-gates=DRAExtendedResources=true,DynamicResourceAllocation=true
+#   Kueue v0.18:
+#     --feature-gates=KueueDRAIntegration=true,KueueDRAIntegrationExtendedResource=true
+#   Kueue v0.19: no gate argument
+#
+# The gates were renamed in v0.18 to avoid colliding with the upstream Kubernetes
+# ones, and v0.19 enables the integration without them: verified on this cluster,
+# whose controller runs with only --config and --zap-log-level while
+# dra.gpu.nvidia.com and dra.cpu are tracked in ClusterQueue status. Use the line
+# matching the Kueue you are running, not the one above the results you are
+# reading -- the captured results in results-v0.18.3-20260716/ were produced on
+# v0.18.3, later than the v0.17.3 environment this README's header records.
 kubectl apply -f 01-namespace-and-queue.yaml
 kubectl apply -f 02-resourceclaimtemplates.yaml
 ```
@@ -97,8 +109,11 @@ python -m orbital_mission_compiler.cli render-kueue \
   --input configs/mission_plans/demo_gpu_fallback_fixed.yaml \
   --output-dir out/dra-fallback --dra-fallback --namespace dra-unified
 ```
-Without `--dra-fallback` the compiler keeps the §V-D runtime env-var switch
-(portable default); the flag opts into the scheduler-level DRA claim. See
+This writes two files: `*-kueue.yaml` holds the `exactly` GPU claim and the Job
+admitted on it, and `*-scheduler-fallback.yaml` holds the `firstAvailable` claim
+for the non-Kueue route. Without `--dra-fallback` the compiler keeps the §V-D
+runtime env-var switch (portable default); the flag opts into the
+scheduler-level DRA claim. See
 `DRA_DEVICE_CLASS` in `src/orbital_mission_compiler/compiler.py`.
 
 ## Limitations (honest)

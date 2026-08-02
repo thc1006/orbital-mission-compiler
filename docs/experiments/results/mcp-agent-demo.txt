@@ -1,0 +1,35 @@
+=== provenance ===
+  compiler commit: 18199762efac03fd2aa32ee3f076d998449e5f70
+  working tree   : clean
+  harness sha256 : 3c22a93c5ea003fe10650abc3572ba59ca954a1ae866f3b477d94ed4cb6c85d8
+  inputs sha256  : 89dc7048e529dcb138dd416289db3ffcb2a5e33d66a78d7098ae03af2127a079
+  harness inputs : demo_gpu_no_fallback.yaml demo_gpu_fallback_fixed.yaml mission_plan.rego
+  interpreter    : /mnt/fast/work/satellite-mission-compiler/.venv-verify/bin/python
+  compiler module: /mnt/fast/work/satellite-guardrail/src/orbital_mission_compiler/compiler.py
+  python         : 3.12.3
+=== environment ===
+  opa            : 1.15.1 (/home/thc1006/.local/bin/opa)
+
+=== MCP agent workflow: admit a mission plan ===
+
+[1] validate_plan(demo_gpu_no_fallback.yaml)  -- agent parses the candidate plan
+    {'mission_id': 'demo-gpu-no-fallback', 'events': 1, 'schema': 'valid', 'policy_allowed': False, 'violations': [{'rule': 4, 'rule_id': 'OMP-004', 'severity': 'T2', 'provenance': 'A', 'path': '/events/0/services/0/steps/1', 'message': 'accelerator step "detect-ships" (resource_class "gpu") must declare fallback_resource_class'}], 'status': 'policy_denied'} 
+
+[2] explain_policy(demo_gpu_no_fallback.yaml)  -- agent checks the guardrails
+    allow: False
+    DENY: accelerator step "detect-ships" (resource_class "gpu") must declare fallback_resource_class
+
+[3] agent applies the fix suggested by the deny message:
+    declares fallback_resource_class on the GPU step
+    (-> demo_gpu_fallback_fixed.yaml)
+
+[4] explain_policy(demo_gpu_fallback_fixed.yaml)  -- agent re-checks the fix
+    allow: True | deny: [] 
+
+[5] compile_plan(demo_gpu_fallback_fixed.yaml)  -- agent compiles to WorkflowIntent IR
+    {'status': 'ok', 'mission_id': 'demo-gpu-fallback-fixed', 'intent_count': 1, 'services': ['ship-detection']} 
+
+[6] render_argo(demo_gpu_fallback_fixed.yaml)  -- agent renders onboard artifacts
+    {'status': 'ok', 'count': 1, 'manifests': [{'name': 'demo-gpu-fallback-fixed-ship-detection-2026-04-15t10-30-00z.yaml', 'yaml': 'apiVersion: argoproj.io/v1alpha1\nkind: Workflow\nmetadata:\n  name: demo-gpu-fallback-fixed-ship-detection-2026-04-15t10-30-00z\n  labels:\n    mission-id: demo-gpu-fallback-fixed\n    service-id: ship-detection\n    priority: \'90\'\n    app.kubernetes.io/managed-by: orbital-mission-compiler\n    orbital/mission-fingerprint: eeb46c397e43032d\n  annotations:\n    orbital/priority: \'90\'\n    orbital/orchide-priority: \'1\'\n    orbital/execution-mode: sequential\n    orbital/requires-gpu: \'true\'\n    orbital/requires-fpga: \'false\'\n    orbital/fallback-enabled: \'true\'\n    orbital/raw-mission-id: demo-gpu-fallback-fixed\nspec:\n  entrypoint: main\n  templates:\n  - name: main\n    dag:\n      tasks:\n      - name: step-0-preprocess\n        template: step-0-preprocess\n      - name: step-1-detect-ships\n        template: step-1-detect-ships\n        depends: step-0-preprocess\n      - name: step-2-postprocess\n        template: step-2-postprocess\n        depends: step-1-detect-ships\n  - name: step-0-preprocess\n    container:\n      image: ghcr.io/example/preprocess:0.1.0\n      command:\n      - sh\n      - -c\n      args:\n      - echo "run preprocess"\n      env:\n      - name: ORBITAL_RESOURCE_CLASS\n        value: cpu\n      - name: ORBITAL_NEEDS_ACCELERATION\n        value: \'false\'\n    metadata:\n      annotations:\n        resource-class: cpu\n        needs-acceleration: \'false\'\n  - name: step-1-detect-ships\n    container:\n      image: ghcr.io/example/ship-detector:0.1.0\n      command:\n      - sh\n      - -c\n      args:\n      - echo "run detect-ships"\n      env:\n      - name: ORBITAL_RESOURCE_CLASS\n        value: gpu\n      - name: ORBITAL_NEEDS_ACCELERATION\n        value: \'true\'\n      - name: ORBITAL_FALLBACK_RESOURCE_CLASS\n        value: cpu\n    metadata:\n      annotations:\n        resource-class: gpu\n        needs-acceleration: \'true\'\n        fallback-resource-class: cpu\n  - name: step-2-postprocess\n    container:\n      image: ghcr.io/example/postprocess:0.1.0\n      command:\n      - sh\n      - -c\n      args:\n      - echo "run postprocess"\n      env:\n      - name: ORBITAL_RESOURCE_CLASS\n        value: cpu\n      - name: ORBITAL_NEEDS_ACCELERATION\n        value: \'false\'\n    metadata:\n      annotations:\n        resource-class: cpu\n        needs-acceleration: \'false\'\n'}]} 
+
+=== plan admitted: diagnosed, fixed, verified, and compiled via MCP tools ===

@@ -1,0 +1,22 @@
+=== provenance ===
+  compiler commit: 18199762efac03fd2aa32ee3f076d998449e5f70
+  working tree   : clean
+  harness sha256 : 03a71b84abaf73083f7a62c9c1f3502dfe486fff743d5d08336e2224f056fc1e
+  interpreter    : /mnt/fast/work/satellite-mission-compiler/.venv-verify/bin/python
+  compiler module: /mnt/fast/work/satellite-guardrail/src/orbital_mission_compiler/compiler.py
+  python         : 3.12.3
+=== environment ===
+  cpu            : Intel(R) Core(TM) i5-7400 CPU @ 3.00GHz
+  cpu count      : 4
+  platform       : Linux-7.0.0-28-generic-x86_64-with-glibc2.39
+  opa            : available
+
+Scaling benchmark: sizes=[10, 50, 100, 500, 1000], iterations=30
+
+     N          parse (ms)         policy (ms)        compile (ms)           argo (ms)          kueue (ms)
+----------------------------------------------------------------------------------------------------------
+    10      12.35 +/- 0.34      18.82 +/- 0.83       0.28 +/- 0.04       0.34 +/- 0.04       0.27 +/- 0.04
+    50      61.83 +/- 3.72      24.68 +/- 2.92       1.03 +/- 0.04       1.57 +/- 0.37       1.23 +/- 0.07
+   100     122.80 +/- 4.18      31.66 +/- 3.46       1.99 +/- 0.09       2.96 +/- 0.13       2.54 +/- 0.48
+   500     634.48 +/- 7.99      85.59 +/- 5.16      10.40 +/- 3.39      14.52 +/- 0.46      12.01 +/- 0.47
+  1000   1304.55 +/- 27.61     154.75 +/- 5.98      22.79 +/- 9.49      29.36 +/- 0.59      24.29 +/- 0.46

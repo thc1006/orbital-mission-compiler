@@ -89,10 +89,10 @@ def test_check_timeline_detects_overlap(server):
             },
         ],
     }
-    from orbital_mission_compiler.mcp.server import _ALLOWED_PLANS
+    from orbital_mission_compiler.mcp.server import _plan_root
 
     filename = f"test_overlap_{uuid.uuid4().hex[:8]}.yaml"
-    overlap_file = _ALLOWED_PLANS / filename
+    overlap_file = _plan_root() / filename
     overlap_file.write_text(yaml.safe_dump(plan), encoding="utf-8")
     try:
         result = _call(server, "check_timeline_conflicts", {

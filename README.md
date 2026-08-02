@@ -91,6 +91,34 @@ Mission Plan YAML
 
 This repo produces rendered YAML artifacts. It does not deploy to or control a live cluster. See [docs/04_architecture.md](docs/04_architecture.md) for the full source-to-ORCHIDE-slide mapping.
 
+### Fail-closed admission gate
+
+The policy layer runs on **every** plan before any artifact is produced. The CLI `compile` / `render-argo` / `render-kueue` commands and the MCP `compile_plan` / `render_argo` tools are **fail-closed by default**: a plan that violates a policy rule yields no artifact and a non-zero exit (CLI) or a `{"status": "denied", ...}` result (MCP), with the typed violations (`rule`/`rule_id`/`severity`/`provenance`/`path`/`message`) surfaced for triage.
+
+Two interchangeable policy engines back the gate, selected with `--policy-engine`:
+
+- **`opa`** (default for the CLI artifact commands) executes the versioned, independently-auditable Rego bundle — the same policy-as-code artifact an external reviewer runs with `opa eval`, honouring `--bundle` / `--decision`. It **fails closed** if `opa` is unavailable or returns no decision (a distinct non-zero exit); it never silently downgrades.
+- **`baseline`** is the proven-equivalent in-process mirror (no subprocess), used for offline/CI use and as the library default. The two engines are asserted to produce identical typed violations on well-formed inputs and identical accept/reject decisions on all inputs.
+
+The four stages remain independent modules callable in isolation (schema, policy, IR, renderer); an explicit `--unsafe-skip-policy` flag (CLI) / `unsafe_skip_policy=True` argument (MCP, honoured only when the server sets `ORBITAL_MCP_ALLOW_POLICY_BYPASS=1`, since the calling agent is untrusted) bypasses the gate for development and forfeits the pre-uplink guarantee. The standalone `policy` subcommand and `opa_smoke.sh` also gate on the decision (non-zero exit on any deny), so they are usable in CI.
+
+On denial the compiler writes **no** new artifact; a file that already exists at the output path is left untouched (it is not deleted, to avoid destroying a prior valid artifact). Consumers should key on the exit code / `denied` status, not on file existence alone.
+
+### Opt-in render flags
+
+All of these are off by default, so the default render is unchanged by them.
+
+| Flag | Command | What it does |
+|---|---|---|
+| `--priority-class` | `render-kueue` | Labels the Job `kueue.x-k8s.io/priority-class` (mission priority → ORCHIDE tier → class name), which is the field Kueue resolves into the `spec.priority` it sorts a ClusterQueue on. The named class must already exist, so pair it with `--emit-priority-classes` and apply those first; Kueue rejects a Job naming a class it cannot find. |
+| `--emit-priority-classes` | `render-kueue` | Also writes `workload-priority-classes.yaml`, the four cluster-scoped `WorkloadPriorityClass` objects, one per ORCHIDE tier. |
+| `--priority-class-prefix` | `render-kueue` | Prefix for both the class names and the Job label, defaulting to `orbital-`. The objects are cluster-scoped, so an installation sharing a cluster with another copy sets its own here rather than overwriting the other's classes. |
+| `--dra-fallback` | `render-argo` | Wires the accelerator-fallback step to a DRA `firstAvailable` ResourceClaimTemplate through `podSpecPatch`, and emits the template alongside the Workflow as one multi-doc file. This is scheduler-level GPU→CPU fallback; the default remains the runtime environment-variable switch. A `firstAvailable` claim is **not** Kueue quota-counted, and the CPU leg needs a cluster running dra-driver-cpu — see `docs/07_installation_matrix.md`. |
+
+`--priority-class` makes a plan's priority visible to Kueue's queue sorting. Whether an
+onboard executor acts on that priority is out of scope here, and preemption and cohort
+borrowing, which read the same field, are not exercised by this repository's live checks.
+
 ## Project structure
 
 ```
@@ -122,7 +150,7 @@ All changes follow test-first development. See [AGENTS.md](AGENTS.md) for TDD ru
 
 ```bash
 make verify      # File structure + syntax check
-make test        # Unit tests with coverage
+make test        # Unit tests
 make eval        # Golden translation evals
 make lint        # Ruff linter
 ```

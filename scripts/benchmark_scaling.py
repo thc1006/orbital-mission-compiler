@@ -32,6 +32,7 @@ from orbital_mission_compiler.compiler import (
     render_kueue_job,
 )
 from orbital_mission_compiler.policy import eval_policy, opa_available
+from orbital_mission_compiler.provenance import emit
 from orbital_mission_compiler.schemas import MissionPlan
 
 BUNDLE = "configs/policies"
@@ -310,6 +311,28 @@ def write_json_output(
     out_path.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
 
 
+def print_provenance() -> None:
+    """What this measurement can be attributed to, printed by the measurement.
+
+    A timing table is only comparable to another one if both say what they
+    measured. The backing data for the paper's Table V records the host, the
+    iteration count and the exact snippet, but not the commit -- so a reader
+    re-running it today cannot tell a regression from a different codebase, and
+    every phase in that table is a function the repository has changed since.
+
+    The CPU model matters for the same reason and is read from the machine rather
+    than typed in: the host these numbers came from has moved once already.
+
+    The body used to live here, and again in the ablation script, and a third time
+    in each shell harness. That is how the `_git` exit-status bug -- a git failure
+    reading back as a clean tree -- was fixed in one copy and left in the others.
+    """
+    emit(
+        Path(__file__),
+        environment=(("opa", "available" if opa_available() else "not on PATH"),),
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point for the benchmark script.
 
@@ -335,6 +358,7 @@ def main(argv: list[str] | None = None) -> None:
         print("NOTE: --skip-policy set and OPA CLI not found; policy phase skipped.")
         print()
 
+    print_provenance()
     print(f"Scaling benchmark: sizes={sizes}, iterations={args.iterations}")
     print()
 

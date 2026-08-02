@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -11,16 +12,87 @@ except ImportError:
     FastMCP = None  # type: ignore[assignment,misc]
 
 from orbital_mission_compiler.compiler import (
+    DEFAULT_POLICY_BUNDLE,
+    DEFAULT_POLICY_DECISION,
+    PolicyEngineUnavailableError,
+    evaluate_policy_decision,
+    PolicyViolationError,
     analyze_timeline_conflicts,
-    load_mission_plan,
     compile_plan_to_intents,
+    load_mission_plan,
+    typed_violations_from_decision,
     write_individual_workflows,
 )
 from orbital_mission_compiler.policy import eval_policy
 
+# Which engine the MCP tools enforce with. The CLI defaults to the authoritative
+# Rego bundle; a server that quietly used the in-process mirror would give an
+# agent a different verdict from the command line for the same plan, which is a
+# second authority in a fail-closed system. Set ORBITAL_MCP_POLICY_ENGINE=opa to
+# make the server match the CLI; baseline stays the default because an MCP server
+# is often run where no opa binary is installed.
+MCP_POLICY_ENGINE = os.environ.get("ORBITAL_MCP_POLICY_ENGINE", "baseline")
+
+# The threat model treats the calling agent as an untrusted client, so the policy
+# bypass is an operator switch rather than a tool argument: an argument is
+# reachable by anything that can shape a tool call, including injected text.
+# Set ORBITAL_MCP_ALLOW_POLICY_BYPASS=1 on a development server to honour it.
+ALLOW_POLICY_BYPASS_ENV = "ORBITAL_MCP_ALLOW_POLICY_BYPASS"
+
+
+def _bypass_requested(unsafe_skip_policy: bool) -> bool:
+    """Honour a bypass request only when the operator enabled it on the server.
+
+    Read at call time rather than at import: the switch belongs to whoever runs
+    the server, and a value captured at import would depend on module load order.
+    """
+    return unsafe_skip_policy and os.environ.get(ALLOW_POLICY_BYPASS_ENV) == "1"
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-_ALLOWED_PLANS = (_REPO_ROOT / "configs" / "mission_plans").resolve()
-_ALLOWED_BUNDLES = (_REPO_ROOT / "configs" / "policies").resolve()
+
+# Where the server is allowed to read mission plans from. The checkout layout is
+# the default, but it does not exist once the package is installed from a wheel,
+# so an operator running the packaged server points this at their own directory.
+PLAN_ROOT_ENV = "ORBITAL_MCP_PLAN_ROOT"
+
+
+def _plan_root() -> Path:
+    configured = os.environ.get(PLAN_ROOT_ENV)
+    if configured:
+        return Path(configured).resolve()
+    return (_REPO_ROOT / "configs" / "mission_plans").resolve()
+# Resolve through the same helper the CLI uses, so the sandbox root exists for an
+# installed package too; _REPO_ROOT only exists in a source checkout.
+_ALLOWED_BUNDLES = Path(DEFAULT_POLICY_BUNDLE).resolve()
+
+
+class PolicyUndecidable(Exception):
+    """The configured engine could not render a decision."""
+
+
+def _server_policy_violations(plan: Any) -> list[dict[str, Any]]:
+    """Evaluate a plan with the server's configured engine.
+
+    Every tool that *gates* on policy goes through here -- validate_plan,
+    compile_plan and render_argo. Reading the verdict from a different engine per
+    tool would let validate_plan report allowed while compile_plan denies the
+    same plan, which is two authorities in a system whose whole claim is one
+    fail-closed gate. explain_policy is deliberately not one of them: it reports
+    what the Rego bundle says and therefore always runs OPA.
+    """
+    if MCP_POLICY_ENGINE not in ("opa", "baseline"):
+        raise PolicyUndecidable(
+            f"ORBITAL_MCP_POLICY_ENGINE must be 'opa' or 'baseline', got {MCP_POLICY_ENGINE!r}"
+        )
+    try:
+        return evaluate_policy_decision(plan.model_dump(mode="json"), engine=MCP_POLICY_ENGINE)
+    except PolicyEngineUnavailableError as exc:
+        raise PolicyUndecidable(str(exc)) from exc
+
+
+def _undecidable(exc: PolicyUndecidable, **extra: Any) -> dict[str, Any]:
+    """A structured result, so an agent sees a reason rather than a raw exception."""
+    return {"status": "error", "reason": "policy_engine_unavailable", "error": str(exc), **extra}
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -40,11 +112,17 @@ def _validate_plan_path(path: str) -> Path:
     # Only accept bare filenames — reject paths with directory components
     if candidate != Path(candidate.name):
         raise ValueError(f"Path outside allowed directory: {path}")
-    resolved = (_ALLOWED_PLANS / candidate.name).resolve()
-    if not _is_within(resolved, _ALLOWED_PLANS):
+    root = _plan_root()
+    resolved = (root / candidate.name).resolve()
+    if not _is_within(resolved, root):
         raise ValueError(f"Path outside allowed directory: {path}")
     if not resolved.exists():
         raise ValueError(f"Plan file not found: {path}")
+    if not resolved.is_file():
+        # A directory passes `exists()`, and the loader then fails on the read
+        # with an IsADirectoryError that escapes this tool as a raw exception
+        # rather than the structured error every other rejection produces.
+        raise ValueError(f"Plan path is not a file: {path}")
     return resolved
 
 
@@ -71,37 +149,141 @@ def build_server() -> Any:
 
     @server.tool
     def validate_plan(path: str) -> dict[str, Any]:
+        """Report BOTH schema validity and policy admissibility for a plan.
+
+        Non-blocking: it tells the caller whether the plan would pass the admission
+        gate (``policy_allowed``) and lists any ``violations``, so an agent sees the
+        full picture before calling ``compile_plan``/``render_argo`` (which fail
+        closed on a denied plan by default).
+        """
         safe_path = _validate_plan_path(path)
         plan = load_mission_plan(safe_path)
-        return {"mission_id": plan.mission_id, "events": len(plan.events), "status": "validated"}
+        # Typed, occurrence-level violations {rule, rule_id, severity, provenance,
+        # path, message} from the server's configured engine, so this verdict
+        # matches the one compile_plan and render_argo enforce.
+        try:
+            violations = _server_policy_violations(plan)
+        except PolicyUndecidable as exc:
+            return _undecidable(exc, mission_id=plan.mission_id)
+        return {
+            "mission_id": plan.mission_id,
+            "events": len(plan.events),
+            "schema": "valid",
+            "policy_allowed": not violations,
+            "violations": violations,
+            "status": "validated" if not violations else "policy_denied",
+        }
 
     @server.tool
-    def compile_plan(path: str) -> dict[str, Any]:
+    def compile_plan(path: str, unsafe_skip_policy: bool = False) -> dict[str, Any]:
+        """Compile a plan to workflow intents. Fail-closed: a policy-denied plan
+        yields ``status: "denied"`` with its violations and no compilation, unless
+        ``unsafe_skip_policy=True`` (dev only)."""
         safe_path = _validate_plan_path(path)
         plan = load_mission_plan(safe_path)
+        if not _bypass_requested(unsafe_skip_policy):
+            try:
+                violations = _server_policy_violations(plan)
+            except PolicyUndecidable as exc:
+                return _undecidable(exc, mission_id=plan.mission_id)
+            if violations:
+                return {"status": "denied", "mission_id": plan.mission_id, "violations": violations}
         intents = compile_plan_to_intents(plan)
         return {
+            "status": "ok",
             "mission_id": plan.mission_id,
             "intent_count": len(intents),
             "services": [intent.service_id for intent in intents],
         }
 
     @server.tool
-    def render_argo(path: str) -> dict[str, Any]:
+    def render_argo(path: str, unsafe_skip_policy: bool = False) -> dict[str, Any]:
+        """Render Argo Workflow manifests. Fail-closed: no artifact is produced for
+        a policy-denied plan (``status: "denied"``) unless ``unsafe_skip_policy=True``."""
         safe_path = _validate_plan_path(path)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            files = write_individual_workflows(safe_path, tmpdir)
-            return {"files": [f.name for f in files], "count": len(files)}
+        # Read the file once. Judging the path and then handing the path to the
+        # writer reads it twice, so a file swapped in between would be rendered
+        # under a verdict reached on the content it replaced.
+        plan = load_mission_plan(safe_path)
+        if not _bypass_requested(unsafe_skip_policy):
+            # Same evaluator as validate_plan and compile_plan: passing the engine
+            # name into the writer instead meant an invalid value escaped from
+            # here as a raw exception while the other tools returned a structured
+            # result for it.
+            try:
+                violations = _server_policy_violations(plan)
+            except PolicyUndecidable as exc:
+                return _undecidable(exc)
+            if violations:
+                return {"status": "denied", "violations": violations}
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # The verdict above is the gate, on this exact object; the writer
+                # does not re-read the file and does not re-evaluate.
+                files = write_individual_workflows(plan, tmpdir, enforce_policy=False)
+                # Return the rendered YAML, not the paths: the temporary
+                # directory is removed on the way out of this block, so a caller
+                # given only the names would hold references to files that no
+                # longer exist.
+                return {
+                    "status": "ok",
+                    "count": len(files),
+                    "manifests": [
+                        {"name": f.name, "yaml": f.read_text(encoding="utf-8")} for f in files
+                    ],
+                }
+        except PolicyViolationError as exc:
+            return {"status": "denied", "violations": exc.violations}
+        except PolicyEngineUnavailableError as exc:
+            return _undecidable(PolicyUndecidable(str(exc)))
 
     @server.tool
     def explain_policy(
-        path: str, bundle: str = "configs/policies", decision: str = "data.orbitalmission"
+        path: str, bundle: str = DEFAULT_POLICY_BUNDLE, decision: str = DEFAULT_POLICY_DECISION
     ) -> dict[str, Any]:
+        """Run the Rego bundle and return what it said, verbatim and typed.
+
+        This tool always executes OPA, whatever ORBITAL_MCP_POLICY_ENGINE is set
+        to, because what it exists to hand back is the authoritative bundle's own
+        output -- the in-process mirror has none. So on a server configured for
+        the baseline engine this is the one tool that needs opa installed, and it
+        says so rather than failing opaquely. The gate the other tools enforce is
+        the configured engine; this is a window onto the Rego, not a second gate.
+        """
+        from ..policy import opa_available
+
         safe_path = _validate_plan_path(path)
         safe_bundle = _validate_bundle_path(bundle)
         plan = load_mission_plan(safe_path)
+        if not opa_available():
+            return _undecidable(
+                PolicyUndecidable(
+                    "explain_policy runs the Rego bundle directly and the opa CLI is not "
+                    "installed; the other tools are unaffected and use "
+                    f"ORBITAL_MCP_POLICY_ENGINE={MCP_POLICY_ENGINE!r}"
+                ),
+                tool="explain_policy",
+            )
         rc, out = eval_policy(str(safe_bundle), plan.model_dump(mode="json"), decision)
-        return {"exit_code": rc, "raw": out}
+        result: dict[str, Any] = {"exit_code": rc, "raw": out}
+        # Surface the typed violations so an agent can reason over the rule id,
+        # severity tier and provenance instead of parsing the raw OPA text.
+        # `raw` stays for debugging and for a custom decision that carries neither.
+        try:
+            value = json.loads(out)["result"][0]["expressions"][0]["value"]
+        except (ValueError, KeyError, IndexError, TypeError):
+            return result
+        try:
+            typed = typed_violations_from_decision(value)
+        except PolicyEngineUnavailableError as exc:
+            # A decision this gate cannot trust is reported as undecidable rather
+            # than as an empty violation list, which an agent would read as allowed.
+            result["denied"] = None
+            result["error"] = str(exc)
+            return result
+        result["violations"] = typed
+        result["denied"] = bool(typed)
+        return result
 
     @server.tool
     def diff_plans(path_a: str, path_b: str) -> dict[str, Any]:

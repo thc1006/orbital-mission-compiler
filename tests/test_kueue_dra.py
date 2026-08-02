@@ -7,8 +7,9 @@ Issue #46: Kueue DRA rendering for heterogeneous accelerators.
 Reference: ORCHIDE slide 14 (heterogeneous hardware), Kueue v0.17 DRA docs.
 """
 
-import pytest
 
+import pytest
+from pydantic import ValidationError
 from orbital_mission_compiler.compiler import (
     render_kueue_job,
     render_resource_claim_templates,
@@ -234,11 +235,31 @@ def _gpu_fpga_intent() -> WorkflowIntent:
 
 
 class TestMixedGpuFpga:
-    """Mixed GPU+FPGA is rejected — not schedulable on separate node pools."""
+    """A service mixing GPU and FPGA steps is legal, and the Job says which it ran.
 
-    def test_mixed_raises_value_error(self):
-        with pytest.raises(ValueError, match="both GPU and FPGA"):
-            render_kueue_job(_gpu_fpga_intent())
+    One Pod asking for both devices would be unschedulable, which is what this
+    used to reject. But the Kueue Job carries one container from one step, so it
+    only ever has one resource class: the mixture is a property of the service,
+    which Argo renders as separate Pods. Rejecting it here refused a valid plan
+    on the strength of steps that this artifact does not contain.
+    """
+
+    def test_mixed_service_renders_the_primary_step_only(self):
+        job = render_kueue_job(_gpu_fpga_intent())
+        containers = job["spec"]["template"]["spec"]["containers"]
+        assert len(containers) == 1
+        ann = job["metadata"]["annotations"]
+        assert ann["orbital/executed-step-resource-class"] == "gpu"
+        assert ann["orbital/requires-gpu"] == "true"
+        assert ann["orbital/requires-fpga"] == "false", (
+            "the Job does not run the FPGA step, so it must not claim to need one"
+        )
+
+    def test_the_service_wide_mixture_is_still_recorded(self):
+        ann = render_kueue_job(_gpu_fpga_intent())["metadata"]["annotations"]
+        assert ann["orbital/service-requires-gpu"] == "true"
+        assert ann["orbital/service-requires-fpga"] == "true"
+        assert "fpga" in ann["orbital/steps-not-in-this-job"]
 
 
 # ── CPU (unchanged) ──────────────────────────────────────────────────────
@@ -326,6 +347,79 @@ class TestJobTemplateLink:
         assert template_name in referenced_names, (
             f"Job must reference template {template_name!r}, got {referenced_names}"
         )
+
+    @pytest.mark.parametrize(
+        "primary,fallback",
+        [
+            (ResourceClass.GPU, ResourceClass.CPU),
+            (ResourceClass.GPU, None),
+            (ResourceClass.FPGA, ResourceClass.CPU),
+            (ResourceClass.FPGA, None),
+            (ResourceClass.CPU, None),
+        ],
+    )
+    def test_no_step_shape_can_produce_a_claim_nobody_emitted(self, primary, fallback):
+        """A Job may only name a template this intent also renders.
+
+        The two renderers used to read different sources: this one asked the
+        primary step, and render_resource_claim_templates asked
+        resource_hints["requires_gpu"]. Anything constructing an intent without
+        hints -- which the public API allowed, since they default to empty -- got a
+        GPU Job pointing at a template that was never written, and a pod the
+        scheduler could never place. The intent now derives the hints from the
+        steps, so the sources cannot disagree; this pins the property the fix is
+        for rather than the mechanism it used.
+        """
+        intent = WorkflowIntent(
+            mission_id="m",
+            service_id="s",
+            priority=50,
+            workflow_name="wf",
+            steps=[
+                WorkflowStep(
+                    name="only",
+                    image="example/image",
+                    resource_class=primary,
+                    fallback_resource_class=fallback,
+                )
+            ],
+        )
+        emitted = {t["metadata"]["name"] for t in render_resource_claim_templates(intent)}
+        claims = render_kueue_job(intent)["spec"]["template"]["spec"].get("resourceClaims", [])
+        dangling = [
+            c["resourceClaimTemplateName"]
+            for c in claims
+            if c.get("resourceClaimTemplateName") not in emitted
+        ]
+        assert not dangling, f"Job references templates that were never emitted: {dangling}"
+
+    def test_hints_that_contradict_the_steps_are_refused(self):
+        """The disagreement is rejected at construction, not rendered around.
+
+        Filling missing hints in would still leave a caller free to assert
+        requires_gpu=False over a GPU step, which is the same divergence with an
+        extra step.
+        """
+        with pytest.raises(ValidationError, match="the steps decide"):
+            WorkflowIntent(
+                mission_id="m",
+                service_id="s",
+                priority=50,
+                workflow_name="wf",
+                steps=[
+                    WorkflowStep(
+                        name="gpu", image="example/image", resource_class=ResourceClass.GPU
+                    )
+                ],
+                resource_hints={"requires_gpu": False},
+            )
+
+    def test_an_intent_with_no_steps_is_refused_rather_than_indexed(self):
+        """_primary_step indexes steps[0]; an empty list used to reach it."""
+        with pytest.raises(ValidationError):
+            WorkflowIntent(
+                mission_id="m", service_id="s", priority=50, workflow_name="wf", steps=[]
+            )
 
 
 # ── firstAvailable DRA fallback (opt-in) ─────────────────────────────────
@@ -428,3 +522,86 @@ class TestFirstAvailable:
             for c in job["spec"]["template"]["spec"]["containers"][0]["resources"]["claims"]
         ]
         assert set(container_claims) == {c["name"] for c in pod_claims}
+
+
+class TestInvariantsSurviveMutation:
+    """The renderers must agree about an intent that changed after it was built.
+
+    A pydantic model validates at construction. `resource_hints` is a plain dict
+    and `steps` a plain list, so both can be changed afterwards, and the renderers
+    are public and take whatever they are handed. An invariant that holds only at
+    construction is not an invariant the renderers can rely on.
+    """
+
+    def _gpu_intent(self):
+        return WorkflowIntent(
+            mission_id="m", service_id="s", priority=50, workflow_name="w",
+            steps=[WorkflowStep(name="g", image="i", resource_class=ResourceClass.GPU)],
+        )
+
+    def test_editing_the_hints_afterwards_cannot_strand_the_claim(self):
+        """The exact bug the schema validator was added for, reachable around it.
+
+        render_resource_claim_templates used to read resource_hints["requires_gpu"]
+        while render_kueue_job read the primary step, so setting the hint to False
+        after construction brought the dangling reference straight back. Both now
+        read the steps.
+        """
+        intent = self._gpu_intent()
+        intent.resource_hints["requires_gpu"] = False
+        emitted = {t["metadata"]["name"] for t in render_resource_claim_templates(intent)}
+        claims = render_kueue_job(intent)["spec"]["template"]["spec"].get("resourceClaims", [])
+        dangling = [
+            c["resourceClaimTemplateName"] for c in claims
+            if c["resourceClaimTemplateName"] not in emitted
+        ]
+        assert not dangling, dangling
+
+    def test_adding_a_gpu_step_afterwards_still_gets_a_template(self):
+        intent = WorkflowIntent(
+            mission_id="m", service_id="s", priority=50, workflow_name="w",
+            steps=[WorkflowStep(name="c", image="i")],
+        )
+        intent.steps.append(
+            WorkflowStep(name="g", image="i", resource_class=ResourceClass.GPU)
+        )
+        emitted = {t["metadata"]["name"] for t in render_resource_claim_templates(intent)}
+        claims = render_kueue_job(intent)["spec"]["template"]["spec"].get("resourceClaims", [])
+        assert emitted and all(
+            c["resourceClaimTemplateName"] in emitted for c in claims
+        ), (emitted, claims)
+
+    def test_emptying_the_steps_afterwards_names_the_intent(self):
+        """IndexError from inside a renderer sent readers to the wrong file."""
+        intent = self._gpu_intent()
+        intent.steps.clear()
+        with pytest.raises(ValueError, match="has no steps"):
+            render_kueue_job(intent)
+
+    @pytest.mark.parametrize("value", ["false", "true", 1, 0, [0], {}], ids=repr)
+    def test_a_hint_that_is_not_a_boolean_is_refused(self, value):
+        """Truthiness is not the question the hint answers.
+
+        `"false"` is truthy in Python, so a truth-value comparison called it
+        consistent with a GPU step -- and model_dump(mode="json") then handed the
+        policy engine the string, where a rule written `== true` reads something
+        else again.
+        """
+        with pytest.raises(ValidationError, match="must be true or false"):
+            WorkflowIntent(
+                mission_id="m", service_id="s", priority=50, workflow_name="w",
+                steps=[WorkflowStep(name="g", image="i", resource_class=ResourceClass.GPU)],
+                resource_hints={"requires_gpu": value},
+            )
+
+    def test_priority_uses_the_same_grammar_as_the_plan_it_came_from(self):
+        """Same range was not the same rule.
+
+        AIService rejects '1_0' because Python reads it as ten while a person reads
+        it as one-zero; the intent compiled from that plan accepted it.
+        """
+        with pytest.raises(ValidationError):
+            WorkflowIntent(
+                mission_id="m", service_id="s", priority="1_0", workflow_name="w",
+                steps=[WorkflowStep(name="c", image="i")],
+            )

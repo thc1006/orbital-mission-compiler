@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # kueue_integration_smoke.sh — End-to-end Kueue admission test.
 # Compiles a mission plan into a Kueue Job, submits it to the cluster,
-# waits for admission, and verifies the Job completes.
+# waits for admission, and reports whether the Job completes.
 set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -25,13 +25,36 @@ if [ -z "${JOB_FILE}" ]; then
 fi
 echo "[smoke] Job file: ${JOB_FILE}"
 
+# The rendered file is a bundle: a GPU intent also carries a fixed-name
+# ResourceClaimTemplate, so `kubectl create` over the whole thing fails on the
+# second run against the template the first run left behind. Apply the named
+# documents, which is idempotent, and create only the Job.
+RCT_FILE="${OUT_DIR}/claims.yaml"
+JOB_ONLY_FILE="${OUT_DIR}/job.yaml"
+${PYTHON_BIN} - "${JOB_FILE}" "${RCT_FILE}" "${JOB_ONLY_FILE}" <<'PYSPLIT'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1], encoding="utf-8")) if d]
+named = [d for d in docs if d.get("kind") != "Job"]
+jobs = [d for d in docs if d.get("kind") == "Job"]
+open(sys.argv[2], "w", encoding="utf-8").write(yaml.safe_dump_all(named, sort_keys=False) if named else "")
+open(sys.argv[3], "w", encoding="utf-8").write(yaml.safe_dump_all(jobs, sort_keys=False))
+PYSPLIT
+
+if [ -s "${RCT_FILE}" ]; then
+  echo "[smoke] Applying claim template(s) ..."
+  kubectl apply -f "${RCT_FILE}" -n "${NAMESPACE}"
+fi
+
 echo "[smoke] Submitting Job to cluster ..."
-JOB_NAME="$(kubectl create -f "${JOB_FILE}" -o jsonpath='{.metadata.name}')"
+JOB_NAME="$(kubectl create -f "${JOB_ONLY_FILE}" -o jsonpath='{.metadata.name}')"
 echo "[smoke] Created Job: ${JOB_NAME}"
 
 cleanup() {
   echo "[smoke] Cleaning up Job ${JOB_NAME} ..."
   kubectl delete job "${JOB_NAME}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+  if [ -s "${RCT_FILE}" ]; then
+    kubectl delete -f "${RCT_FILE}" -n "${NAMESPACE}" --ignore-not-found >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 

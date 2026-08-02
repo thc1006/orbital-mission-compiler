@@ -69,7 +69,7 @@ make eval                       # golden translation checks
 - [x] Argo templates annotated with step phase (slide 10)
 - [x] Argo + Kueue annotated with orbital/priority + resource hints
 - [x] `argo lint` passes on rendered output
-- [x] 6 rendering tests + 3 Kueue tests, all pass (60 total)
+- [x] rendering and Kueue rendering are covered by the unit suite; see the suite itself rather than a count recorded here, which goes stale
 
 ### Phase 5 — Extended contracts
 #### 5.1 Simulation contracts
@@ -100,7 +100,7 @@ make eval                       # golden translation checks
 - [x] Argo executor RBAC applied for `orbital-demo/orbital-workflow-runner` runtime SA
 - [x] OPA CLI installed and policy eval works
 - [x] Argo CLI installed and lint passes
-- [ ] GPU execution path tested on a real accelerator node
+- [x] GPU execution path tested on a real accelerator node — Quadro K2200 via a DRA claim; captured in `manifests/k8s/kueue/dra-unified/results-v0.18.3-20260716/`
 - [ ] MCP server runtime tested with a real MCP host
 - [ ] Cluster-level observability stack tested
 

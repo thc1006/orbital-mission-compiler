@@ -1,0 +1,56 @@
+name: Set up OPA
+description: >-
+  Install a pinned, checksum-verified OPA CLI and put it on PATH. The compiler is
+  fail-closed on the 'opa' engine by default, so any job that exercises the
+  policy path needs the real binary rather than a skip.
+
+inputs:
+  version:
+    description: OPA release tag, e.g. v1.15.1
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cache OPA binary
+      uses: actions/cache@v4
+      id: opa-cache
+      with:
+        path: ~/.local/bin/opa
+        key: opa-${{ inputs.version }}-linux-amd64
+
+    - name: Install OPA
+      if: steps.opa-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        TMP_DIR="$(mktemp -d)"
+        trap 'rm -rf "$TMP_DIR"' EXIT
+        mkdir -p "$HOME/.local/bin"
+        OPA_BASE_URL="https://openpolicyagent.org/downloads/${{ inputs.version }}"
+        curl -fSL -o "$TMP_DIR/opa_linux_amd64_static" \
+          "${OPA_BASE_URL}/opa_linux_amd64_static"
+        curl -fSL -o "$TMP_DIR/opa_linux_amd64_static.sha256" \
+          "${OPA_BASE_URL}/opa_linux_amd64_static.sha256"
+        (
+          cd "$TMP_DIR"
+          sha256sum -c "opa_linux_amd64_static.sha256"
+        )
+        install -m 0755 "$TMP_DIR/opa_linux_amd64_static" "$HOME/.local/bin/opa"
+
+    - name: Verify OPA checksum
+      shell: bash
+      run: |
+        set -euo pipefail
+        OPA_BASE_URL="https://openpolicyagent.org/downloads/${{ inputs.version }}"
+        EXPECTED_SHA="$(curl -fsSL "${OPA_BASE_URL}/opa_linux_amd64_static.sha256" | awk '{print $1}')"
+        ACTUAL_SHA="$(sha256sum "$HOME/.local/bin/opa" | awk '{print $1}')"
+        test -n "$EXPECTED_SHA"
+        test "$EXPECTED_SHA" = "$ACTUAL_SHA"
+
+    - name: Add OPA to PATH and verify
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        "$HOME/.local/bin/opa" version

@@ -48,3 +48,32 @@ Implications:
 
 Cluster left tidy (all demo Jobs/Pods deleted; Kueue healthy). Pre-upgrade backup at
 `scratchpad/live-2026-07-16/backup/` (kueue-manager-config, deployment, queues) for rollback.
+
+## What these captures can and cannot support
+
+Checked against the standard the other live experiments now meet, which is that a
+result is usable only if a reader can retrieve what produced it.
+
+**Checks §V-E, 1, 2 and 3 are reproducible from this repository.** They are driven
+by the committed manifests in the parent directory (`00`..`05`), against a cluster
+whose versions `00-env.txt` records. Nothing in them depends on compiler code, so
+the absence of a compiler commit does not cost them anything.
+
+**`05-phaseA-compiler-output-admitted.txt` is not.** It is the only capture whose
+subject is compiler output -- `render-kueue --dra-fallback` on
+`sample_gpu_cpu_fallback.yaml` -- and no capture in this directory records the
+commit that render came from, or whether the tree was clean when it ran. The
+observation stands as an observation; it cannot be rebuilt, so it should be cited
+as dated evidence rather than as something a reader can re-derive.
+
+**None of them was taken on the current stack.** They are Kueue v0.18.3 on K8s
+v1.36.1; the host now runs Kueue v0.19.0 on K8s v1.36.3. The README's central
+claim -- that Kueue rejects a `firstAvailable` claim rather than admitting and
+ignoring it -- was observed on v0.17.3 and v0.18.3, so it is already version-plural,
+but a v0.19.0 capture is not among these files.
+
+A re-run with provenance is harder here than for the other experiments and has not
+been done: these checks patch the cluster's Kueue Configuration (`deviceClassMappings`)
+and restart the controller, which is a cluster-wide change rather than a run-scoped
+one, so the isolation the other harnesses rely on -- run-specific names, an
+ownership label, teardown by that label -- does not cover it.

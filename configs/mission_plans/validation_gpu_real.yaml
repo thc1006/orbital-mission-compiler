@@ -1,7 +1,11 @@
 # Real GPU validation plan using CUDA containers.
 # Validates the compilation pipeline with real GPU hardware.
-# Note: Argo renderer uses soft-preference nodeAffinity for GPU steps;
-# DRA ResourceClaims are produced by the Kueue renderer, not Argo.
+# Note: by default the Argo renderer expresses the GPU preference as
+# soft-preference nodeAffinity + the runtime env-var switch. With
+# `render-argo --dra-fallback` it ALSO wires a DRA firstAvailable
+# ResourceClaim into the GPU step's Pod via podSpecPatch, so GPU->CPU
+# fallback becomes a scheduler-level decision (see test_argo_dra.py and
+# docs/04_architecture.md).
 mission_id: validation-gpu-real
 client_id: paper-camera-ready
 events:

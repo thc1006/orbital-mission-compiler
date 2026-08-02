@@ -201,3 +201,235 @@ def test_accept_valid_download():
         ground_visibility=True,
     )
     assert event.duration_seconds == 268.0
+
+# ── A slash in a node-selector key promises a prefix ────────────────────
+
+
+def test_node_selector_rejects_empty_prefix():
+    """"/foo" leaves an empty prefix behind, the same as "foo" does.
+
+    Only the second is a legal Kubernetes label key, so reading the separator
+    back is what tells them apart. Refusing it here is the point of the
+    compiler: the alternative is a plan that renders cleanly and is thrown out
+    by the API server.
+    """
+    with pytest.raises(ValidationError):
+        _step(preferred_node_selector={"/foo": "v"})
+
+
+def test_node_selector_still_accepts_a_bare_name_and_a_real_prefix():
+    assert _step(preferred_node_selector={"foo": "v"})
+    assert _step(preferred_node_selector={"example.com/foo": "v"})
+
+
+# ── The two flags that gate admission are real booleans ─────────────────
+
+
+@pytest.mark.parametrize("value", ["yes", "on", "true", 1, "1"])
+def test_needs_acceleration_rejects_non_booleans(value):
+    """Pydantic reads all of these as true when the field is a plain bool.
+
+    A quoted YAML string would then decide whether a step counts as
+    accelerated, which is a mission decision made by a typo.
+    """
+    with pytest.raises(ValidationError):
+        _step(needs_acceleration=value)
+
+
+@pytest.mark.parametrize("value", ["yes", "on", "true", 1])
+def test_ground_visibility_rejects_non_booleans(value):
+    with pytest.raises(ValidationError):
+        MissionEvent(
+            timestamp="2029-10-06T00:23:00Z",
+            event_type=MissionEventType.ACQUISITION,
+            orbit=1,
+            instrument="INST_1",
+            ground_visibility=value,
+        )
+
+
+# ── Metadata has to survive the trip to the policy engines ──────────────
+
+
+def test_metadata_rejects_binary_at_any_depth():
+    """Binary validates and then raises while the plan is serialised as JSON.
+
+    That happens after the schema stage and before a verdict, so the caller
+    gets a traceback where a structured admission result belongs.
+    """
+    for value in (
+        {"payload": b"\xff\xfe"},
+        {"outer": {"inner": b"\xff\xfe"}},
+        {"items": [b"\xff\xfe"]},
+    ):
+        with pytest.raises(ValidationError):
+            _step(metadata=value)
+
+
+def test_metadata_rejects_a_value_that_contains_itself():
+    """A YAML alias pointing back at its own container never terminates."""
+    loop: dict = {}
+    loop["self"] = loop
+    with pytest.raises(ValidationError):
+        _step(metadata=loop)
+
+
+def test_metadata_still_accepts_what_json_can_hold():
+    """Dates come out of YAML and serialise to a stable ISO string, so they stay."""
+    import datetime
+
+    assert _step(metadata={"when": datetime.date(2026, 1, 1)})
+    assert _step(metadata={"when": datetime.datetime(2026, 1, 1, 12, 0)})
+    assert _step(metadata={"k": "v", "n": 1, "f": 1.5, "b": True, "z": None})
+    assert _step(metadata={"nested": {"l": [1, 2, {"deep": "ok"}]}})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"regions": {"taiwan", "japan"}},
+        {"regions": frozenset({"taiwan", "japan"})},
+        {"outer": {"inner": {"a", "b"}}},
+        {"items": [{"a", "b"}]},
+    ],
+)
+def test_metadata_rejects_sets_because_their_json_order_is_not_stable(value):
+    """A set serialises to an array whose order is not the same twice.
+
+    An earlier revision allowed sets on the grounds that they round trip. They do,
+    but to a different array each run: one plan produced nine distinct orderings
+    across ten interpreter hash seeds. The policy engines are handed metadata as
+    JSON, so the input a decision is made on, and any digest taken of it, would
+    change between runs of the same plan.
+    """
+    # The message names the reason, since "not a JSON value" would send whoever
+    # hits it looking for the wrong thing: a set is rejected for its ordering, not
+    # for being unrepresentable.
+    with pytest.raises(ValidationError, match="no stable JSON order"):
+        _step(metadata=value)
+
+
+@pytest.mark.parametrize("literal", ["v: .nan", "v: .inf", "v: -.inf"])
+def test_metadata_rejects_non_finite_numbers(literal):
+    """These reach JSON as null, so the plan says one thing and the policy sees another.
+
+    YAML's safe loader produces them from a plain scalar, so a mission plan can
+    carry one without any special syntax.
+    """
+    import yaml
+
+    with pytest.raises(ValidationError, match="which JSON cannot hold"):
+        _step(metadata=yaml.safe_load(literal))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"v": __import__("decimal").Decimal("1.5")},
+        {"v": complex(1, 2)},
+        {"v": ("a", "b")},
+    ],
+)
+def test_metadata_rejects_values_that_reach_json_as_something_else(value):
+    """Decimal and complex arrive as strings, so a number stops being a number.
+
+    A tuple is ordered and would survive, but saying list is the way to mean list.
+    """
+    with pytest.raises(ValidationError):
+        _step(metadata=value)
+
+def _nested(levels: int) -> dict:
+    """Metadata nested to the given depth."""
+    top = cur = {}
+    for _ in range(levels):
+        cur["n"] = {}
+        cur = cur["n"]
+    return top
+
+
+def test_metadata_depth_is_bounded_by_the_compiler_not_the_interpreter():
+    """Deep metadata is refused with a reason instead of exhausting the stack.
+
+    Recursion made the ceiling depend on how deep the caller already was: the same
+    plan raised RecursionError from one entry point and survived from another, and
+    a RecursionError is a traceback where an admission result belongs.
+    """
+    assert _step(metadata=_nested(31))
+    with pytest.raises(ValidationError, match="nested deeper than"):
+        _step(metadata=_nested(33))
+    # Far past anything recursion would have survived.
+    with pytest.raises(ValidationError, match="nested deeper than"):
+        _step(metadata=_nested(200_000))
+
+
+def test_metadata_depth_verdict_does_not_move_with_the_caller_s_stack():
+    """The same input has to give the same answer wherever it is validated from."""
+
+    def at_depth(remaining: int):
+        if remaining:
+            return at_depth(remaining - 1)
+        with pytest.raises(ValidationError, match="nested deeper than"):
+            _step(metadata=_nested(40))
+        return True
+
+    for depth in (0, 100, 300):
+        assert at_depth(depth)
+
+
+def test_metadata_node_count_is_bounded():
+    """A wide document is bounded too, not only a deep one."""
+    assert _step(metadata={"l": list(range(9_000))})
+    with pytest.raises(ValidationError, match="more than"):
+        _step(metadata={"l": list(range(20_000))})
+
+
+def test_bounding_the_walk_did_not_lose_the_cycle_and_alias_rules():
+    """The iterative walk has to keep telling a shared anchor from a real cycle."""
+    shared = {"x": 1}
+    assert _step(metadata={"a": shared, "b": shared})
+
+    loop: dict = {}
+    loop["self"] = loop
+    with pytest.raises(ValidationError, match="contains itself"):
+        _step(metadata=loop)
+
+    through_list: dict = {"l": []}
+    through_list["l"].append(through_list)
+    with pytest.raises(ValidationError, match="contains itself"):
+        _step(metadata=through_list)
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        'nested:\n  1: numeric\n  "1": string\n',
+        'nested:\n  false: boolean\n  "false": string\n',
+        "nested:\n  2026-01-01: a-date\n",
+        "nested:\n  ~: a-null\n",
+        "a:\n  b:\n    c:\n      7: deep\n",
+        "l:\n  - 3: inside-a-list\n",
+    ],
+)
+def test_metadata_rejects_non_string_keys_at_every_depth(document):
+    """The field type constrains the outer mapping only; below it everything is Any.
+
+    A JSON object keys on strings, so YAML holding both 1 and "1" arrives as a single
+    entry and the other value is gone: {1: "numeric", "1": "string"} serialised to
+    {"1": "string"}. The policy engines would then decide on metadata the plan does
+    not contain, with nothing recording the loss.
+    """
+    import yaml
+
+    with pytest.raises(ValidationError, match="key on strings"):
+        _step(metadata=yaml.safe_load(document))
+
+
+def test_metadata_still_accepts_string_keys_that_look_like_other_types():
+    """Quoting is what makes them strings, and quoted is all this asks for."""
+    import yaml
+
+    step = _step(metadata=yaml.safe_load('nested:\n  "1": a\n  "false": b\n  "2026-01-01": c\n'))
+    assert step.model_dump(mode="json")["metadata"]["nested"] == {
+        "1": "a",
+        "false": "b",
+        "2026-01-01": "c",
+    }
