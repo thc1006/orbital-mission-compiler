@@ -290,3 +290,48 @@ def test_prune_does_not_reach_into_another_mission(tmp_path, capsys):
     remaining = sorted(p.name for p in out.glob("*.yaml"))
     for name in other:
         assert name in remaining, f"{name} was pruned by another mission's render"
+
+
+def test_the_render_says_which_kubectl_verb_each_file_takes(tmp_path, capsys):
+    """Every file is grouped by whether kubectl apply can accept it.
+
+    The Job carries generateName and no name, which is what lets one rendered file
+    be submitted repeatedly as separate Jobs. kubectl apply needs a name, so
+    `apply -f <dir>` fails on the Job -- but only after applying everything ahead
+    of it, including the cluster-scoped priority classes, which leaves a partial
+    deployment behind. Nothing said so; the --prune help even named `kubectl apply
+    -f <dir>` as the way this output is deployed.
+
+    The grouping is the checkable half of that: a file lands in `apply` only if
+    every document in it has metadata.name, and in `create` otherwise. Whether the
+    verbs then behave is a cluster question, and scripts/validate_live_cluster.sh
+    is where it gets answered.
+    """
+    args = build_parser().parse_args([
+        "render-kueue",
+        "--input", "configs/mission_plans/sample_gpu_cpu_fallback.yaml",
+        "--output-dir", str(tmp_path),
+        "--emit-priority-classes",
+        "--priority-class",
+    ])
+    cmd_render_kueue(args)
+    data = json.loads(capsys.readouterr().out)
+
+    assert sorted(data["apply"] + data["create"]) == sorted(data["files"]), (
+        "every rendered file must be classified"
+    )
+    assert data["create"], "the Job file uses generateName, so something must be create-only"
+
+    def _docs(path):
+        return [d for d in yaml.safe_load_all(Path(path).read_text()) if d]
+
+    for path in data["apply"]:
+        missing = [d["kind"] for d in _docs(path) if not (d.get("metadata") or {}).get("name")]
+        assert not missing, f"{path} is in the apply group but {missing} have no name"
+
+    for path in data["create"]:
+        assert any(not (d.get("metadata") or {}).get("name") for d in _docs(path)), (
+            f"{path} is in the create group but every document is named"
+        )
+
+    assert "generateName" in data["deploy"] and "kubectl create" in data["deploy"]

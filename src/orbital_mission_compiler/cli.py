@@ -50,9 +50,23 @@ _PRUNE_HELP = (
     "Delete artifacts in the output directory that an earlier render of this tool "
     "wrote and this one did not replace. Without it they are reported under "
     "'stale' and left in place: a render writes what the plan describes, it does "
-    "not empty the directory, so after a plan shrinks 'kubectl apply -f <dir>' "
+    "not empty the directory, so after a plan shrinks, deploying the directory "
     "would redeploy the workloads the plan no longer asks for. Only files carrying "
     "this tool's own labels are considered."
+)
+
+# The Kueue Job carries generateName and no name, which is what lets one rendered
+# file be submitted repeatedly as distinct Jobs. kubectl apply needs a name, so
+# `apply -f` over this output fails on the Job -- after having applied everything
+# ahead of it, including the cluster-scoped priority classes. `kubectl create -f`
+# takes the whole set. Repeat deployments are the awkward case, because create is
+# not idempotent for the named documents: apply those and create the Job, which is
+# what scripts/validate_live_cluster.sh does.
+_KUEUE_DEPLOY_NOTE = (
+    "Deploy this output with 'kubectl create -f <dir>': the Job uses generateName, "
+    "so 'kubectl apply' rejects it after applying the documents ahead of it. To "
+    "redeploy, apply the named documents (listed under 'apply') and create the Job "
+    "(listed under 'create'), since create is not idempotent."
 )
 
 
@@ -279,6 +293,17 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         atomic_write(out, text)
         written.append(out)
     result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
+    # Which verb each file takes, so a caller does not have to open them to find
+    # out. A file holding any document without metadata.name cannot be applied.
+    apply_files: list[str] = []
+    create_files: list[str] = []
+    for path, text in planned:
+        docs = [d for d in yaml.safe_load_all(text) if d]
+        named = all((d.get("metadata") or {}).get("name") for d in docs)
+        (apply_files if named else create_files).append(str(path))
+    result["apply"] = apply_files
+    result["create"] = create_files
+    result["deploy"] = _KUEUE_DEPLOY_NOTE
     if projections:
         # Not "ok". A caller keying on status would otherwise treat a one-step
         # admission probe as the whole service, apply it alongside the Argo
