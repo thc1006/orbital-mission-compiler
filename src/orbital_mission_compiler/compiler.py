@@ -964,6 +964,15 @@ def render_kueue_job(
         "containers": [container],
     }
 
+    # The same preference the Argo route expresses for this step. Without it the two
+    # routes say different things about where the step should land, and this Job is
+    # meant to stand for that step at admission time. A preference, not a
+    # requirement, so it never makes the Job unschedulable; the accelerator
+    # nodeSelector below is separate and still decides what the Pod requires.
+    preferred = _preferred_affinity(primary)
+    if preferred is not None:
+        pod_spec["affinity"] = preferred
+
     # ── GPU handling ──────────────────────────────────────────────────
     # Kueue admission rejects `firstAvailable` device selection as Inadmissible
     # ("FirstAvailable device selection is not supported", verified live on Kueue

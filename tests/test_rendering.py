@@ -171,3 +171,55 @@ def test_the_demo_plans_still_render_the_command_they_always_did():
         for container in containers:
             assert container["command"] == ["sh", "-c"]
             assert container["args"][0].startswith('echo "run ')
+
+# ── The two routes say the same thing about placement ──────────────────
+
+
+def _placement_intent(selector):
+    from orbital_mission_compiler.schemas import (
+        AIService,
+        MissionEvent,
+        MissionEventType,
+        MissionPlan,
+        WorkflowStep,
+    )
+
+    step = WorkflowStep(name="detect", image="img:1", preferred_node_selector=selector)
+    plan = MissionPlan(
+        mission_id="placement",
+        events=[
+            MissionEvent(
+                timestamp="2029-10-06T00:23:00Z",
+                event_type=MissionEventType.ACQUISITION,
+                orbit=1,
+                instrument="INST_1",
+                services=[AIService(service_id="svc", priority=90, steps=[step])],
+            )
+        ],
+    )
+    return compile_plan_to_intents(plan)[0]
+
+
+def test_the_kueue_projection_keeps_the_step_s_preferred_placement():
+    """The Job stands for that step at admission time, so it has to want the same node.
+
+    The Argo route turned preferred_node_selector into a preferred node affinity and
+    the projection dropped it, so one mission step expressed a preference on one route
+    and none on the other.
+    """
+    intent = _placement_intent({"topology.kubernetes.io/zone": "edge-a"})
+
+    argo = [t for t in render_argo_workflow(intent)["spec"]["templates"] if "container" in t][0]
+    kueue = render_kueue_job(intent)["spec"]["template"]["spec"]
+
+    assert argo["affinity"] == kueue["affinity"]
+    assert kueue["affinity"]["nodeAffinity"]["preferredDuringSchedulingIgnoredDuringExecution"]
+
+
+def test_no_preference_means_neither_route_states_one():
+    intent = _placement_intent({})
+    argo = [t for t in render_argo_workflow(intent)["spec"]["templates"] if "container" in t][0]
+    kueue = render_kueue_job(intent)["spec"]["template"]["spec"]
+
+    assert "affinity" not in argo
+    assert "affinity" not in kueue
