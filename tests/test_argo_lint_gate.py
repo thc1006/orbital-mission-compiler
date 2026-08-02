@@ -1507,3 +1507,70 @@ def test_prune_still_removes_this_renderers_own_previous_generation(tmp_path, ca
     report = json.loads(capsys.readouterr().out)
     assert [Path(p).name for p in report.get("pruned", [])] == [stale.name], report
     assert not stale.exists()
+
+
+@pytest.mark.parametrize("first,second", [("argo", "kueue"), ("kueue", "argo")], ids=str)
+def test_prune_does_not_reach_across_renderers_either_way(tmp_path, capsys, first, second):
+    """Both directions, because the first fix only closed one.
+
+    Scoping on "every kind in the file is one this renderer can write" looked
+    right and was not: both renderers emit ResourceClaimTemplate, so the
+    standalone `-scheduler-fallback.yaml` is a subset of both sets and whichever
+    command ran last deleted the other's. Measured: render-kueue kept the Argo
+    Workflow, and render-argo then deleted the Kueue scheduler-fallback file.
+
+    Attribution now rests on a kind only one renderer emits -- Workflow on one
+    side, Job and WorkloadPriorityClass on the other -- and a file carrying
+    neither is reported and never deleted.
+    """
+    from orbital_mission_compiler.cli import cmd_render_argo, cmd_render_kueue
+
+    run = {"argo": cmd_render_argo, "kueue": cmd_render_kueue}
+    out = tmp_path / "out"
+
+    def _args(which, *extra):
+        return build_parser().parse_args([
+            f"render-{which}", "--input", "configs/mission_plans/sample_gpu_cpu_fallback.yaml",
+            "--output-dir", str(out), "--dra-fallback", "--namespace", "default",
+            "--policy-engine", "baseline", *extra,
+        ])
+
+    run[first](_args(first))
+    capsys.readouterr()
+    before = {p.name for p in out.glob("*.yaml")}
+    assert before
+
+    run[second](_args(second, "--prune"))
+    capsys.readouterr()
+    after = {p.name for p in out.glob("*.yaml")}
+    assert before <= after, (
+        f"render-{second} --prune removed render-{first}'s output: {sorted(before - after)}"
+    )
+
+
+def test_an_artifact_neither_renderer_claims_is_reported_not_deleted(tmp_path, capsys):
+    """The standalone claim template carries no exclusive kind.
+
+    Silently leaving it would be the leftover the stale report exists to prevent,
+    and deleting it on a guess is how the cross-renderer loss happened. It is named
+    under its own key and left alone.
+    """
+    from orbital_mission_compiler.cli import cmd_render_argo, cmd_render_kueue
+
+    out = tmp_path / "out"
+    cmd_render_kueue(build_parser().parse_args([
+        "render-kueue", "--input", "configs/mission_plans/sample_gpu_cpu_fallback.yaml",
+        "--output-dir", str(out), "--dra-fallback", "--namespace", "default",
+        "--policy-engine", "baseline",
+    ]))
+    capsys.readouterr()
+    fallback = next(p for p in out.glob("*-scheduler-fallback.yaml"))
+
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", "configs/mission_plans/sample_gpu_cpu_fallback.yaml",
+        "--output-dir", str(out), "--namespace", "default",
+        "--policy-engine", "baseline", "--prune",
+    ]))
+    report = json.loads(capsys.readouterr().out)
+    assert fallback.exists(), "an unattributable artifact must not be deleted"
+    assert fallback.name in " ".join(report.get("stale_not_ours", [])), report

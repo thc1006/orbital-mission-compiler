@@ -36,6 +36,7 @@ from .compiler import (
     resolve_argo_bin,
     argo_lint_path,
     stale_rendered_artifacts,
+    attribute_stale,
     render_workload_priority_classes,
     typed_violations_from_decision,
     write_individual_workflows,
@@ -96,23 +97,38 @@ _KUEUE_DEPLOY_NOTE = (
 )
 
 
-# What each renderer can put in an output directory. Both may write a
-# ResourceClaimTemplate, so the discriminating kinds are Workflow on one side and
-# Job plus WorkloadPriorityClass on the other.
-ARGO_KINDS = {"Workflow", "ResourceClaimTemplate"}
-KUEUE_KINDS = {"Job", "ResourceClaimTemplate", "WorkloadPriorityClass"}
+# The kind only one renderer emits. Both write ResourceClaimTemplate, so it is not
+# a discriminator: attribution has to rest on a kind that is exclusively one
+# side's, or the RCT-only scheduler-fallback file is claimed by whichever command
+# ran last.
+ARGO_EXCLUSIVE_KINDS = {"Workflow"}
+KUEUE_EXCLUSIVE_KINDS = {"Job", "WorkloadPriorityClass"}
 
 
 def _report_stale(
     result: dict[str, object], output_dir: str, written: list[Path], prune: bool,
-    owned_kinds: set[str] | None = None,
+    exclusive_kinds: set[str],
 ) -> None:
-    stale = stale_rendered_artifacts(output_dir, written, owned_kinds)
+    stale = stale_rendered_artifacts(output_dir, written)
     if not stale:
+        return
+    mine, unattributable = attribute_stale(stale, exclusive_kinds)
+    if unattributable:
+        # Reported and never deleted. These hold no kind either renderer owns --
+        # the standalone scheduler-fallback template is the real case -- so this
+        # command cannot show they are its to remove.
+        result["stale_not_ours"] = [str(p) for p in unattributable]
+        print(
+            f"warning: {len(unattributable)} artifact(s) in {output_dir} are left over "
+            f"but carry no object kind this command emits, so they were not removed "
+            f"even with --prune. Remove them by hand if they are yours.",
+            file=sys.stderr,
+        )
+    if not mine:
         return
     if prune:
         removed: list[str] = []
-        for index, path in enumerate(stale):
+        for index, path in enumerate(mine):
             try:
                 path.unlink()
             except OSError as exc:
@@ -121,14 +137,14 @@ def _report_stale(
                 # what was not, rather than letting the caller read this as a
                 # failed publish.
                 raise PruneIncomplete(
-                    str(exc), removed, [str(p) for p in stale[index:]]
+                    str(exc), removed, [str(p) for p in mine[index:]]
                 ) from exc
             removed.append(str(path))
         result["pruned"] = removed
         return
-    result["stale"] = [str(p) for p in stale]
+    result["stale"] = [str(p) for p in mine]
     print(
-        f"warning: {len(stale)} artifact(s) in {output_dir} are left over from an "
+        f"warning: {len(mine)} artifact(s) in {output_dir} are left over from an "
         f"earlier render and were not replaced; applying the directory would "
         f"redeploy them. Re-run with --prune to remove them.",
         file=sys.stderr,
@@ -376,7 +392,7 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
         written = _render_argo(args, args.output_dir)
         result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
         try:
-            _report_stale(result, args.output_dir, written, args.prune, ARGO_KINDS)
+            _report_stale(result, args.output_dir, written, args.prune, ARGO_EXCLUSIVE_KINDS)
         except PruneIncomplete as exc:
             print(json.dumps(_prune_failure_report(exc, written), indent=2))
             raise SystemExit(2) from exc
@@ -899,7 +915,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                 [(out_dir / path.name, path.read_text(encoding="utf-8")) for path in written]
             )
             published = _publish(written, out_dir, leftover_backups)
-            _report_stale(result_stale, args.output_dir, published, args.prune, ARGO_KINDS)
+            _report_stale(result_stale, args.output_dir, published, args.prune, ARGO_EXCLUSIVE_KINDS)
         except ValueError as exc:
             print(json.dumps({
                 "status": "error", "lint": "passed", "reason": "not-owned",
@@ -1105,7 +1121,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         # afterwards, so a gated render could pass its lint, publish, and have its
         # files deleted by this one, while both reported success.
         try:
-            _report_stale(stale_result, args.output_dir, written, args.prune, KUEUE_KINDS)
+            _report_stale(stale_result, args.output_dir, written, args.prune, KUEUE_EXCLUSIVE_KINDS)
         except PruneIncomplete as exc:
             print(json.dumps(_prune_failure_report(exc, written), indent=2))
             raise SystemExit(2) from exc

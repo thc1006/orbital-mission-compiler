@@ -1510,9 +1510,7 @@ def _artifact_mission(path: Path) -> str | None:
     return missions.pop() if len(missions) == 1 else None
 
 
-def stale_rendered_artifacts(
-    output_dir: str | Path, written: list[Path], owned_kinds: set[str] | None = None
-) -> list[Path]:
+def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> list[Path]:
     """Artifacts from an earlier render that this one did not replace.
 
     A render writes the files the current plan produces; it does not empty the
@@ -1559,20 +1557,39 @@ def stale_rendered_artifacts(
     # A file the other renderer owns is not reported either, because it is not
     # stale: it is that renderer's current output, and calling it stale would send
     # an operator to delete a live artifact.
-    # `owned_kinds` is what this renderer CAN write, not what it wrote this time.
-    # Using what it wrote would exclude its own previous generation whenever the
-    # plan shrank -- a GPU-era file keeps a ResourceClaimTemplate a later CPU-only
-    # render does not produce -- and that file would then be neither pruned nor
-    # reported, which is the silent leftover the stale report exists to prevent.
-    kinds = owned_kinds if owned_kinds is not None else set()
     return sorted(
         p for p in sorted(out.iterdir())
         if p.suffix == ".yaml"
         and p.name not in current
         and _is_rendered_artifact(p)
         and _artifact_mission(p) in missions
-        and (not kinds or _artifact_kinds(p) <= kinds)
     )
+
+
+def attribute_stale(stale: list[Path], exclusive_kinds: set[str]) -> tuple[list[Path], list[Path]]:
+    """Split stale candidates into this renderer's, and everyone else's.
+
+    Ownership and mission are not enough to delete by. An Argo Workflow and a
+    Kueue Job for one mission carry the same managed-by label and the same
+    fingerprint, so `render-kueue --prune` deleted a Workflow an Argo render had
+    just published -- with the gate, one it had linted and reported as published.
+
+    Attribution is by a kind only one renderer emits: Workflow on one side, Job
+    and WorkloadPriorityClass on the other. A subset test over everything a
+    renderer *can* write does not work, because both write ResourceClaimTemplate:
+    the standalone `-scheduler-fallback.yaml` is RCT-only, so it is a subset of
+    both sets and whichever command ran last deleted the other's copy. Measured,
+    after a first fix that closed only one direction.
+
+    A file with no exclusive kind is attributed to neither and returned in the
+    second list: reported, never deleted. Erring toward a file that stays is the
+    right direction for a delete, and reporting it keeps that from being silent.
+    """
+    mine: list[Path] = []
+    unattributable: list[Path] = []
+    for path in stale:
+        (mine if _artifact_kinds(path) & exclusive_kinds else unattributable).append(path)
+    return mine, unattributable
 
 
 def preflight_writable(planned: list[tuple[Path, Any]]) -> None:
