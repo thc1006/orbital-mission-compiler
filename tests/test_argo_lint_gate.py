@@ -1939,3 +1939,31 @@ def test_a_cleanup_failure_does_not_erase_a_lint_rejection(tmp_path, capsys, mon
     assert exit_info.value.code == 1, report
     assert report["lint"] == "failed", report
     assert report.get("reason") == "staging-cleanup-failed", report
+
+
+@pytest.mark.skipif(not ARGO_AVAILABLE, reason="needs the real argo CLI")
+def test_the_gate_does_not_semantically_validate_a_non_argo_kind(tmp_path, capsys):
+    """What the gate does not check, written down where it cannot be forgotten.
+
+    `argo lint` covers the Argo kinds and ignores the rest, so a Job that kubectl
+    refuses outright passes beside a valid Workflow. This renderer's own output
+    shares a directory with Kueue Jobs, which makes that gap worth a test rather
+    than a sentence: if a later Argo release starts rejecting these, this fails
+    and the help text can stop hedging.
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "broken-job.yaml").write_text(
+        "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: broken\n"
+        "spec:\n  template:\n    spec:\n      containers: \"not a list\"\n",
+        encoding="utf-8",
+    )
+
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--argo-lint", "--policy-engine", "baseline",
+    ]))
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["lint"] == "passed", report
+    assert (out / "broken-job.yaml").exists()

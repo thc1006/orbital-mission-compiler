@@ -289,6 +289,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--argo-lint",
         action="store_true",
         help="After rendering, run the official 'argo lint' as a fail-closed gate. "
+        "It lints the Argo kinds; every other kind in the directory is checked "
+        "only for its apiVersion/kind/metadata envelope, so those specs still "
+        "need server-side validation. "
         "Manifests are staged and published only if lint passes, so a rejected "
         "render leaves the output directory unchanged. A lint failure exits 1; "
         "the gate being unable to run at all -- CLI absent, timeout, no manifest "
@@ -945,7 +948,18 @@ def _publish(
 
 
 def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
-    """Render, lint, and publish only if the linter accepts the whole set.
+    """Render, lint, and publish only if the linter accepts what it reads.
+
+    "Accepts" is narrower than it sounds, and the narrowness is the honest part.
+    Every document in the published set is parsed and checked for the envelope
+    kubectl requires -- apiVersion, kind, metadata -- against the parity tests.
+    Semantic linting is `argo lint`, which covers Workflow, WorkflowTemplate,
+    CronWorkflow and ClusterWorkflowTemplate and silently ignores everything
+    else. Measured on v4.0.8: a Job whose `containers` is a string, which kubectl
+    refuses outright, lints clean beside a valid Workflow. Kueue Jobs and
+    ResourceClaimTemplates in the same directory therefore get the envelope check
+    and nothing more, and a set that needs their specs validated needs
+    server-side validation as well as this.
 
     Order matters. Rendering comes first, so a schema or policy failure is
     reported as itself instead of being masked by a missing linter. The CLI is
