@@ -327,25 +327,62 @@ def print_provenance() -> None:
     than typed in: the host these numbers came from has moved once already.
     """
     here = Path(__file__).resolve().parent.parent
-    head = subprocess.run(
-        ["git", "-C", str(here), "rev-parse", "HEAD"], capture_output=True, text=True
-    ).stdout.strip() or "unknown"
-    dirty = subprocess.run(
-        ["git", "-C", str(here), "status", "--porcelain"], capture_output=True, text=True
-    ).stdout.strip()
+
+    def _git(*args: str) -> str | None:
+        """None when git could not answer. Not the same as an empty answer.
+
+        Reading `.stdout` and ignoring the exit status turned every git failure --
+        no .git, a stale worktree pointer, a checkout git considers unsafely owned,
+        an artifact tarball with .git stripped -- into the empty string. The commit
+        then printed as "unknown", which is loud, but the tree printed as "clean",
+        which is silent and indistinguishable from a real clean tree. A transcript
+        pasted into a paper carries that unverifiable "clean" with it.
+        """
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(here), *args], capture_output=True, text=True
+            )
+        except OSError:
+            return None
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
+    head = _git("rev-parse", "HEAD") or "unknown"
+    status = _git("status", "--porcelain")
+    if status is None:
+        tree = "unknown -- git could not answer, so this capture cannot be rebuilt"
+    elif status:
+        tree = "DIRTY -- this measurement cannot be rebuilt from a commit"
+    else:
+        tree = "clean"
+
     cpu = "unknown"
     try:
         for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
             if line.startswith("model name"):
                 cpu = line.split(":", 1)[1].strip()
                 break
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError covers UnicodeDecodeError, which is not an OSError and would
+        # otherwise end a benchmark run over a cosmetic line.
         pass
     print("=== provenance ===")
     print(f"  compiler commit: {head}")
-    print(f"  working tree   : {'DIRTY -- this measurement cannot be rebuilt from a commit' if dirty else 'clean'}")
+    print(f"  working tree   : {tree}")
     print(f"  harness sha256 : {hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}")
     print(f"  interpreter    : {sys.executable}")
+    # Which copy of the compiler these numbers are about. Both shell harnesses
+    # record this and this one did not -- and it is the experiment where it can
+    # most easily be wrong, because nothing here sets PYTHONPATH: the module
+    # resolves to whatever is installed, which on this machine is a different
+    # checkout at a different commit. The commit line above names the tree the
+    # script lives in; this names the tree that ran.
+    try:
+        import orbital_mission_compiler.compiler as _c
+
+        module_path = _c.__file__
+    except Exception as exc:  # noqa: BLE001 - reported, not raised
+        module_path = f"unresolved ({exc})"
+    print(f"  compiler module: {module_path}")
     print(f"  python         : {platform.python_version()}")
     print("=== environment ===")
     print(f"  cpu            : {cpu}")

@@ -63,7 +63,17 @@ kubectl() { command kubectl --request-timeout="${K8S_TIMEOUT}" "$@"; }
 HERE_REPO="$(cd "$(dirname "$0")/.." && pwd)"
 echo "=== provenance ==="
 echo "  compiler commit: $(git -C "${HERE_REPO}" rev-parse HEAD 2>/dev/null || echo unknown)"
-echo "  working tree   : $( [ -n "$(git -C "${HERE_REPO}" status --porcelain 2>/dev/null)" ] && echo 'DIRTY -- this capture cannot be rebuilt from a commit' || echo 'clean' )"
+# git failing and git reporting a clean tree printed identically here, and "clean"
+# is the reassuring one: a capture from a repository git cannot read carried an
+# unverifiable claim that it was rebuildable. The status is captured first so its
+# exit code can be read.
+if TREE_STATUS="$(git -C "${HERE_REPO}" status --porcelain 2>/dev/null)"; then
+  [ -n "${TREE_STATUS}" ] \
+    && echo "  working tree   : DIRTY -- this capture cannot be rebuilt from a commit" \
+    || echo "  working tree   : clean"
+else
+  echo "  working tree   : unknown -- git could not answer, so this capture cannot be rebuilt"
+fi
 echo "  harness sha256 : $(sha256sum "$0" 2>/dev/null | cut -d' ' -f1 || echo unknown)"
 echo "  interpreter    : $("${PYTHON_BIN}" -c 'import sys; print(sys.executable)' 2>/dev/null || echo unknown)"
 echo "  compiler module: $(PYTHONPATH="${HERE_REPO}/src" "${PYTHON_BIN}" -c 'import orbital_mission_compiler.compiler as m; print(m.__file__)' 2>/dev/null || echo unresolved)"

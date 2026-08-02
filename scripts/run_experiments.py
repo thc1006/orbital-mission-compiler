@@ -206,6 +206,15 @@ def citability_problems(
     if not re.search(exp.environment_marker, transcript, re.M):
         problems.append(f"does not record {exp.environment_description}")
 
+    module = _field(transcript, "compiler module")
+    if module is None:
+        problems.append("has no 'compiler module' line, so it does not say which copy ran")
+    elif not module.startswith(str(REPO) + os.sep):
+        problems.append(
+            f"ran a compiler from {module}, which is not in this repository -- the "
+            "commit it names describes a different tree"
+        )
+
     return problems
 
 
@@ -254,7 +263,12 @@ def run(exp: Experiment, results_dir: Path, filed: set[str] | None = None) -> tu
         return "not-citable", f"git returned an unusable commit: {head!r}"
 
     digest_before = _sha256(script)
-    env = {**os.environ, **exp.env}
+    # PYTHONPATH points at THIS repository, ahead of anything installed. Without
+    # it the scaling benchmark imported orbital_mission_compiler from whichever
+    # checkout happened to be on sys.path -- a different tree, at a different
+    # commit, with uncommitted changes -- while its transcript said "clean" and
+    # every citability check passed. The numbers were about another repository.
+    env = {**os.environ, "PYTHONPATH": f"{REPO / 'src'}:{REPO}", **exp.env}
     argv = (
         ["bash", str(script), *exp.args]
         if script.suffix == ".sh"
