@@ -46,11 +46,42 @@ _require_non_negative_integer "ARGO_TIMEOUT_SECONDS" "${ARGO_TIMEOUT_SECONDS}"
 _require_non_negative_integer "KUEUE_ADMISSION_TIMEOUT_SECONDS" "${KUEUE_ADMISSION_TIMEOUT_SECONDS}"
 _require_non_negative_integer "KUEUE_COMPLETION_TIMEOUT_SECONDS" "${KUEUE_COMPLETION_TIMEOUT_SECONDS}"
 
+# Every API call gets a bound. Without one a wedged apiserver or an admission
+# webhook that never answers leaves this waiting indefinitely, and it submits
+# workloads. `command` is what keeps the wrapper from recursing into itself.
+K8S_TIMEOUT="${K8S_TIMEOUT:-30s}"
+KUBECTL_BIN="$(command -v kubectl 2>/dev/null || true)"
+kubectl() { command kubectl --request-timeout="${K8S_TIMEOUT}" "$@"; }
+
+# ── Provenance ─────────────────────────────────────────────────────────
+#
+# What this run can be rebuilt from, and what it ran against. Both printed by the
+# run rather than written into a transcript afterwards: a version recorded by hand
+# is a claim about the cluster, not evidence from it, and docs/07 cites this
+# script's output as the record of what the repository has been exercised against.
+# A capture from a dirty tree cannot be rebuilt from any commit at all.
+HERE_REPO="$(cd "$(dirname "$0")/.." && pwd)"
+echo "=== provenance ==="
+echo "  compiler commit: $(git -C "${HERE_REPO}" rev-parse HEAD 2>/dev/null || echo unknown)"
+echo "  working tree   : $( [ -n "$(git -C "${HERE_REPO}" status --porcelain 2>/dev/null)" ] && echo 'DIRTY -- this capture cannot be rebuilt from a commit' || echo 'clean' )"
+echo "  harness sha256 : $(sha256sum "$0" 2>/dev/null | cut -d' ' -f1 || echo unknown)"
+echo "  interpreter    : $("${PYTHON_BIN}" -c 'import sys; print(sys.executable)' 2>/dev/null || echo unknown)"
+echo "  compiler module: $(PYTHONPATH="${HERE_REPO}/src" "${PYTHON_BIN}" -c 'import orbital_mission_compiler.compiler as m; print(m.__file__)' 2>/dev/null || echo unresolved)"
+echo "=== environment ==="
+echo "  kube-apiserver : $(kubectl version -o json 2>/dev/null | "${PYTHON_BIN}" -c 'import json,sys; print(json.load(sys.stdin)["serverVersion"]["gitVersion"])' 2>/dev/null || echo unknown)"
+echo "  nodes          : $(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}={.status.nodeInfo.kubeletVersion} {end}' 2>/dev/null || echo unknown)"
+echo "  argo CLI       : $(argo version --short 2>/dev/null | head -1 || echo unknown)"
+echo "  argo controller: $(kubectl get deployment -n argo -o jsonpath='{range .items[*]}{.metadata.name}={.spec.template.spec.containers[0].image} {end}' 2>/dev/null || echo unknown)"
+echo "  kueue image    : $(kubectl get deployment -n kueue-system kueue-controller-manager -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].image}' 2>/dev/null || echo unknown)"
+echo "  kueue imageID  : $(kubectl get pods -n kueue-system -l control-plane=controller-manager -o jsonpath='{.items[0].status.containerStatuses[?(@.name=="manager")].imageID}' 2>/dev/null || echo unknown)"
+
 # ── Step 1: Check prerequisites ────────────────────────────────────────
 
 echo "=== Checking prerequisites ==="
 
-if command -v kubectl >/dev/null 2>&1; then
+# The binary, resolved before the wrapper shadowed the name: `command -v kubectl`
+# now finds the function and would report a missing binary as present.
+if [ -n "${KUBECTL_BIN}" ]; then
   report PASS "kubectl available"
 else
   report FAIL "kubectl not found"
@@ -67,7 +98,7 @@ fi
 echo ""
 echo "=== Checking cluster controllers ==="
 
-if command -v kubectl >/dev/null 2>&1; then
+if [ -n "${KUBECTL_BIN}" ]; then
   # Match both install layouts: the release manifest names the deployment
   # "workflow-controller"; the Helm chart prefixes it ("argo-workflows-workflow-controller").
   ARGO_CTRL_DEPLOY="$(

@@ -52,9 +52,15 @@ The two dates move independently, and the column headings below say which is whi
 The "Version used in scaffold" column above is the **install pin** — what the
 bootstrap scripts and CI fetch. Separately, the **validated** record is what the
 host kubeadm cluster has actually been exercised against, which as of 2026-08-02
-is K8s **v1.36.3**, Kueue **v0.19.0** and Argo Workflows **v4.0.8** (controller and
-local CLI; CI still installs the pinned CLI v4.0.1). `scripts/validate_live_cluster.sh`
-was run end to end on that stack.
+is K8s **v1.36.3**, Kueue **v0.19.0**, and Argo Workflows controller **v4.0.8**
+linted by CLI **v4.0.1**. `scripts/validate_live_cluster.sh` was run end to end on
+that stack, and now prints its own provenance and the versions it read from the
+cluster, so this line is checkable against a transcript rather than taken on trust.
+
+The CLI version is worth stating separately: this host has two argo binaries, and
+the validation run resolves the v4.0.1 one -- the same pin CI installs. An earlier
+revision of this paragraph said the local CLI was v4.0.8, which is the other binary
+on the box and not the one the run used.
 
 Neither is bumped to the newest upstream tag on sight, because doing so would claim
 a validation that has not been run; the validated line moves when a run moves it.
