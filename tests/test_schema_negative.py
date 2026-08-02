@@ -397,3 +397,39 @@ def test_bounding_the_walk_did_not_lose_the_cycle_and_alias_rules():
     through_list["l"].append(through_list)
     with pytest.raises(ValidationError, match="contains itself"):
         _step(metadata=through_list)
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        'nested:\n  1: numeric\n  "1": string\n',
+        'nested:\n  false: boolean\n  "false": string\n',
+        "nested:\n  2026-01-01: a-date\n",
+        "nested:\n  ~: a-null\n",
+        "a:\n  b:\n    c:\n      7: deep\n",
+        "l:\n  - 3: inside-a-list\n",
+    ],
+)
+def test_metadata_rejects_non_string_keys_at_every_depth(document):
+    """The field type constrains the outer mapping only; below it everything is Any.
+
+    A JSON object keys on strings, so YAML holding both 1 and "1" arrives as a single
+    entry and the other value is gone: {1: "numeric", "1": "string"} serialised to
+    {"1": "string"}. The policy engines would then decide on metadata the plan does
+    not contain, with nothing recording the loss.
+    """
+    import yaml
+
+    with pytest.raises(ValidationError, match="key on strings"):
+        _step(metadata=yaml.safe_load(document))
+
+
+def test_metadata_still_accepts_string_keys_that_look_like_other_types():
+    """Quoting is what makes them strings, and quoted is all this asks for."""
+    import yaml
+
+    step = _step(metadata=yaml.safe_load('nested:\n  "1": a\n  "false": b\n  "2026-01-01": c\n'))
+    assert step.model_dump(mode="json")["metadata"]["nested"] == {
+        "1": "a",
+        "false": "b",
+        "2026-01-01": "c",
+    }

@@ -199,6 +199,18 @@ class WorkflowStep(StrictModel):
                     raise ValueError(f"metadata{where} contains itself")
                 on_path.add(id(node))
                 stack.append((node, where, depth, True))
+                if isinstance(node, dict):
+                    for key in node:
+                        # The field's own type only constrains the outer mapping;
+                        # everything below it sits inside Any. A JSON object keys on
+                        # strings, so YAML holding both 1 and "1" arrives as one entry
+                        # and the other value is gone -- the policy engines would then
+                        # decide on metadata the plan does not contain.
+                        if not isinstance(key, str):
+                            raise ValueError(
+                                f"metadata{where} is keyed by {key!r}, and JSON objects "
+                                "key on strings"
+                            )
                 pairs = node.items() if isinstance(node, dict) else enumerate(node)
                 for key, item in pairs:
                     stack.append((item, f"{where}[{key!r}]", depth + 1, False))
