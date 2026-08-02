@@ -20,9 +20,11 @@ So `render-kueue --priority-class` sets that label (mission priority -> ORCHIDE 
 | 26-50  | 3 | `orbital-mission-normal`   | 200 |
 | 1-25   | 4 | `orbital-mission-low`      | 100 |
 
-A `WorkloadPriorityClass` is cluster-scoped, so the project stays in the default name:
-`mission-critical` is one another installation or an operator can reasonably have
-created already. `--priority-class-prefix` sets a different one.
+A `WorkloadPriorityClass` is cluster-scoped, which is why the default names carry an
+`orbital-` prefix rather than being plain: `mission-critical` is a name another
+installation, or an operator, can reasonably have created already, and applying ours
+over it would rewrite theirs. `--priority-class-prefix` sets a different prefix, and
+this experiment uses it to give each run its own.
 
 ## What the original case study did and did not show
 
