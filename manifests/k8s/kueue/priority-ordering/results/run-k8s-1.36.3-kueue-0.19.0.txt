@@ -1,0 +1,388 @@
+=== run r17856586653405078 ===
+  namespace=prio-r17856586653405078 clusterQueue=prio-cq-r17856586653405078 classes=orbital-r17856586653405078-mission-critical,orbital-r17856586653405078-mission-normal
+  compiler commit: f3107700eeabc679cbd581e3ba1af70af32c59c3
+  working tree   : clean
+  harness sha256 : 00091acd1dc075a4ff9f27f7e4e6c4fc98878327dd1b04e7af1c338ec0e90cc6
+  inputs sha256  : 718c2350e92c0bb287e16dde78fc19f99b0ef9c65dda4843a52756a137829084
+  harness inputs : 00-namespace-and-queue.yaml 01-blocker-job.yaml plan-high.yaml plan-low.yaml 
+  interpreter    : /mnt/fast/work/satellite-mission-compiler/.venv-verify/bin/python3
+  compiler module: /tmp/claude-1000/-mnt-fast-work-satellite-mission-compiler/6c6b6570-cadb-4cdf-918a-4970f553d84a/scratchpad/pr79/src/orbital_mission_compiler/compiler.py
+=== environment ===
+  kubectl client : v1.36.3
+  kube-apiserver : v1.36.3
+  nodes          : thc1006-d630mt=v1.36.3 
+  kueue image    : registry.k8s.io/kueue/kueue:v0.19.0
+  kueue imageID  : registry.k8s.io/kueue/kueue@sha256:6fe2cbe4c7799eed1a8d49898c38b8bd73f1572df1825d7cf266ec9e2af70bec
+  kueue gates    : (args present, none is --feature-gates; gates may still be set in the config inlined below)
+  kueue config   : inlined below
+    | apiVersion: v1
+    | data:
+    |   controller_manager_config.yaml: |
+    |     apiVersion: config.kueue.x-k8s.io/v1beta2
+    |     kind: Configuration
+    |     health:
+    |       healthProbeBindAddress: :8081
+    |     metrics:
+    |       bindAddress: :8443
+    |     webhook:
+    |       port: 9443
+    |     leaderElection:
+    |       leaderElect: true
+    |       resourceName: c1f6bfd2.kueue.x-k8s.io
+    |     controller:
+    |       groupKindConcurrency:
+    |         Job.batch: 5
+    |         Pod: 5
+    |         Workload.kueue.x-k8s.io: 5
+    |         LocalQueue.kueue.x-k8s.io: 1
+    |         Cohort.kueue.x-k8s.io: 1
+    |         ClusterQueue.kueue.x-k8s.io: 1
+    |         ResourceFlavor.kueue.x-k8s.io: 1
+    |     clientConnection:
+    |       qps: 50
+    |       burst: 100
+    |     integrations:
+    |       frameworks:
+    |       - "batch/job"
+    |       - "kubeflow.org/mpijob"
+    |       - "ray.io/rayjob"
+    |       - "ray.io/raycluster"
+    |       - "ray.io/rayservice"
+    |       - "jobset.x-k8s.io/jobset"
+    |       - "kubeflow.org/paddlejob"
+    |       - "kubeflow.org/pytorchjob"
+    |       - "kubeflow.org/tfjob"
+    |       - "kubeflow.org/xgboostjob"
+    |       - "kubeflow.org/jaxjob"
+    |       - "workload.codeflare.dev/appwrapper"
+    |       - "trainer.kubeflow.org/trainjob"
+    |       - "pod"
+    |       - "deployment"
+    |       - "statefulset"
+    |       - "leaderworkerset.x-k8s.io/leaderworkerset"
+    |     resources:
+    |       deviceClassMappings:
+    |       - name: dra.gpu.nvidia.com
+    |         deviceClassNames:
+    |         - gpu.nvidia.com
+    |       - name: dra.cpu
+    |         deviceClassNames:
+    |         - dra.cpu
+    | kind: ConfigMap
+    | metadata:
+    |   annotations:
+    |     kubectl.kubernetes.io/last-applied-configuration: |
+    |       {"apiVersion":"v1","data":{"controller_manager_config.yaml":"apiVersion: config.kueue.x-k8s.io/v1beta2\nkind: Configuration\nhealth:\n  healthProbeBindAddress: :8081\nmetrics:\n  bindAddress: :8443\nwebhook:\n  port: 9443\nleaderElection:\n  leaderElect: true\n  resourceName: c1f6bfd2.kueue.x-k8s.io\ncontroller:\n  groupKindConcurrency:\n    Job.batch: 5\n    Pod: 5\n    Workload.kueue.x-k8s.io: 5\n    LocalQueue.kueue.x-k8s.io: 1\n    Cohort.kueue.x-k8s.io: 1\n    ClusterQueue.kueue.x-k8s.io: 1\n    ResourceFlavor.kueue.x-k8s.io: 1\nclientConnection:\n  qps: 50\n  burst: 100\nintegrations:\n  frameworks:\n  - \"batch/job\"\n  - \"kubeflow.org/mpijob\"\n  - \"ray.io/rayjob\"\n  - \"ray.io/raycluster\"\n  - \"ray.io/rayservice\"\n  - \"jobset.x-k8s.io/jobset\"\n  - \"kubeflow.org/paddlejob\"\n  - \"kubeflow.org/pytorchjob\"\n  - \"kubeflow.org/tfjob\"\n  - \"kubeflow.org/xgboostjob\"\n  - \"kubeflow.org/jaxjob\"\n  - \"workload.codeflare.dev/appwrapper\"\n  - \"trainer.kubeflow.org/trainjob\"\n  - \"pod\"\n  - \"deployment\"\n  - \"statefulset\"\n  - \"leaderworkerset.x-k8s.io/leaderworkerset\"\nresources:\n  deviceClassMappings:\n  - name: dra.gpu.nvidia.com\n    deviceClassNames:\n    - gpu.nvidia.com\n  - name: dra.cpu\n    deviceClassNames:\n    - dra.cpu\n"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"kueue-manager-config","namespace":"kueue-system"}}
+    |   creationTimestamp: "2026-05-06T19:10:24Z"
+    |   name: kueue-manager-config
+    |   namespace: kueue-system
+    |   resourceVersion: "18926344"
+    |   uid: 5e456097-5e19-4dfc-bb87-0b1e7b578234
+=== 0. prerequisites ===
+[PASS] kubectl available (/usr/bin/kubectl)
+[PASS] Kueue controller present
+[PASS] the cluster-scoped verbs this run needs are permitted
+=== 0b. nothing this run is about to create already exists ===
+[PASS] no pre-existing object carries this run's names
+=== 1. apply namespace + ClusterQueue (cpu=1) + LocalQueue ===
+[PASS] queue applied
+=== 2. emit + apply the WorkloadPriorityClasses from the compiler ===
+[PASS] WorkloadPriorityClasses applied
+[PASS] orbital-r17856586653405078-mission-critical + orbital-r17856586653405078-mission-normal exist
+[PASS] all four emitted classes carry the mapped values (400/300/200/100)
+[PASS] all four classes are labelled with the mapping this tree emits (v2)
+=== 3. render HIGH (priority 90) and LOW (priority 50) Jobs ===
+[PASS] both arms rendered by the compiler (priority-class and control)
+[PASS] the control arm's Jobs carry no priority class
+=== 4. blocker holds the cpu=1 quota ===
+[PASS] blocker admitted (holds quota)
+=== 5. submit LOW first, then HIGH (reverse of priority) ===
+  LOW  job=prio-low-low-2026-04-15t10-00-00z-8xkgq workload=job-prio-low-low-2026-04-15t10-00-00z-8xkgq-7af52 priority=200 class=orbital-r17856586653405078-mission-normal
+  HIGH job=prio-high-high-2026-04-15t10-00-00z-f5vnd workload=job-prio-high-high-2026-04-15t10-00-00z-f5vnd-d8712 priority=400 class=orbital-r17856586653405078-mission-critical
+=== 5b. the chain the claim rests on ===
+[PASS] workload priorities resolved (HIGH=400 LOW=200)
+[PASS] workloads reference the emitted classes
+[PASS] each Job carries the mapping its own class carries (v2)
+[PASS] both references are WorkloadPriorityClasses, not Pod PriorityClasses
+[PASS] LOW was created before HIGH (2026-08-02T08:17:50Z < 2026-08-02T08:17:56Z)
+=== 6. both PENDING while blocker holds quota ===
+[PASS] LOW and HIGH both waiting on quota (QuotaReserved=False; LOW Pending, HIGH Pending)
+=== 7. free quota (delete blocker); the higher-priority pending workload wins ===
+  first admitted after quota freed: HIGH
+[PASS] HIGH (orbital-r17856586653405078-mission-critical, submitted LAST) admitted before LOW -> priority drove ordering
+=== 7b. LOW was queued behind HIGH, not unable to run at all ===
+[PASS] LOW admitted once HIGH released the quota -> it was queued, not inadmissible
+  admitted at: HIGH=2026-08-02T08:18:03Z LOW=2026-08-02T08:19:07Z
+  --- workloads ---
+    | apiVersion: v1
+    | items:
+    | - apiVersion: kueue.x-k8s.io/v1beta2
+    |   kind: Workload
+    |   metadata:
+    |     creationTimestamp: "2026-08-02T08:17:56Z"
+    |     generation: 1
+    |     labels:
+    |       kueue.x-k8s.io/job-uid: 7e060ae6-40ec-4cd1-a759-5decc1c2a93f
+    |     name: job-prio-high-high-2026-04-15t10-00-00z-f5vnd-d8712
+    |     namespace: prio-r17856586653405078
+    |     ownerReferences:
+    |     - apiVersion: batch/v1
+    |       blockOwnerDeletion: true
+    |       controller: true
+    |       kind: Job
+    |       name: prio-high-high-2026-04-15t10-00-00z-f5vnd
+    |       uid: 7e060ae6-40ec-4cd1-a759-5decc1c2a93f
+    |     resourceVersion: "19822860"
+    |     uid: f9734f70-a459-45cc-8ff2-1dfef35e25dd
+    |   spec:
+    |     active: true
+    |     podSets:
+    |     - count: 1
+    |       name: main
+    |       template:
+    |         metadata:
+    |           labels:
+    |             batch.kubernetes.io/job-name: prio-high-high-2026-04-15t10-00-00z-f5vnd
+    |         spec:
+    |           containers:
+    |           - args:
+    |             - echo high-priority running; sleep 30
+    |             command:
+    |             - sh
+    |             - -c
+    |             image: busybox:1.36
+    |             imagePullPolicy: IfNotPresent
+    |             name: work
+    |             resources:
+    |               requests:
+    |                 cpu: "1"
+    |                 memory: 256Mi
+    |             terminationMessagePath: /dev/termination-log
+    |             terminationMessagePolicy: File
+    |           dnsPolicy: ClusterFirst
+    |           restartPolicy: Never
+    |           schedulerName: default-scheduler
+    |           securityContext: {}
+    |           terminationGracePeriodSeconds: 30
+    |       topologyRequest:
+    |         podIndexLabel: batch.kubernetes.io/job-completion-index
+    |     priority: 400
+    |     priorityClassRef:
+    |       group: kueue.x-k8s.io
+    |       kind: WorkloadPriorityClass
+    |       name: orbital-r17856586653405078-mission-critical
+    |     queueName: prio-lq-r17856586653405078
+    |   status:
+    |     admission:
+    |       clusterQueue: prio-cq-r17856586653405078
+    |       podSetAssignments:
+    |       - count: 1
+    |         flavors:
+    |           cpu: prio-flavor-r17856586653405078
+    |           memory: prio-flavor-r17856586653405078
+    |         name: main
+    |         resourceUsage:
+    |           cpu: "1"
+    |           memory: 256Mi
+    |     conditions:
+    |     - lastTransitionTime: "2026-08-02T08:18:03Z"
+    |       message: Quota reserved in ClusterQueue prio-cq-r17856586653405078
+    |       observedGeneration: 1
+    |       reason: QuotaReserved
+    |       status: "True"
+    |       type: QuotaReserved
+    |     - lastTransitionTime: "2026-08-02T08:18:03Z"
+    |       message: The workload is admitted
+    |       observedGeneration: 1
+    |       reason: Admitted
+    |       status: "True"
+    |       type: Admitted
+    |     - lastTransitionTime: "2026-08-02T08:19:06Z"
+    |       message: Reached expected number of succeeded pods
+    |       observedGeneration: 1
+    |       reason: Succeeded
+    |       status: "True"
+    |       type: Finished
+    |     - lastTransitionTime: "2026-08-02T08:19:06Z"
+    |       message: All pods reached readiness and the workload is running
+    |       observedGeneration: 1
+    |       reason: Recovered
+    |       status: "True"
+    |       type: PodsReady
+    | - apiVersion: kueue.x-k8s.io/v1beta2
+    |   kind: Workload
+    |   metadata:
+    |     creationTimestamp: "2026-08-02T08:17:50Z"
+    |     finalizers:
+    |     - kueue.x-k8s.io/resource-in-use
+    |     generation: 1
+    |     labels:
+    |       kueue.x-k8s.io/job-uid: 17bc8f29-1cae-42ac-9404-bd51c85245f5
+    |     name: job-prio-low-low-2026-04-15t10-00-00z-8xkgq-7af52
+    |     namespace: prio-r17856586653405078
+    |     ownerReferences:
+    |     - apiVersion: batch/v1
+    |       blockOwnerDeletion: true
+    |       controller: true
+    |       kind: Job
+    |       name: prio-low-low-2026-04-15t10-00-00z-8xkgq
+    |       uid: 17bc8f29-1cae-42ac-9404-bd51c85245f5
+    |     resourceVersion: "19822891"
+    |     uid: c445214c-bfde-4e9f-b60f-0d1f54bfdad0
+    |   spec:
+    |     active: true
+    |     podSets:
+    |     - count: 1
+    |       name: main
+    |       template:
+    |         metadata:
+    |           labels:
+    |             batch.kubernetes.io/job-name: prio-low-low-2026-04-15t10-00-00z-8xkgq
+    |         spec:
+    |           containers:
+    |           - args:
+    |             - echo low-priority running; sleep 30
+    |             command:
+    |             - sh
+    |             - -c
+    |             image: busybox:1.36
+    |             imagePullPolicy: IfNotPresent
+    |             name: work
+    |             resources:
+    |               requests:
+    |                 cpu: "1"
+    |                 memory: 256Mi
+    |             terminationMessagePath: /dev/termination-log
+    |             terminationMessagePolicy: File
+    |           dnsPolicy: ClusterFirst
+    |           restartPolicy: Never
+    |           schedulerName: default-scheduler
+    |           securityContext: {}
+    |           terminationGracePeriodSeconds: 30
+    |       topologyRequest:
+    |         podIndexLabel: batch.kubernetes.io/job-completion-index
+    |     priority: 200
+    |     priorityClassRef:
+    |       group: kueue.x-k8s.io
+    |       kind: WorkloadPriorityClass
+    |       name: orbital-r17856586653405078-mission-normal
+    |     queueName: prio-lq-r17856586653405078
+    |   status:
+    |     admission:
+    |       clusterQueue: prio-cq-r17856586653405078
+    |       podSetAssignments:
+    |       - count: 1
+    |         flavors:
+    |           cpu: prio-flavor-r17856586653405078
+    |           memory: prio-flavor-r17856586653405078
+    |         name: main
+    |         resourceUsage:
+    |           cpu: "1"
+    |           memory: 256Mi
+    |     conditions:
+    |     - lastTransitionTime: "2026-08-02T08:19:07Z"
+    |       message: Quota reserved in ClusterQueue prio-cq-r17856586653405078
+    |       observedGeneration: 1
+    |       reason: QuotaReserved
+    |       status: "True"
+    |       type: QuotaReserved
+    |     - lastTransitionTime: "2026-08-02T08:19:07Z"
+    |       message: The workload is admitted
+    |       observedGeneration: 1
+    |       reason: Admitted
+    |       status: "True"
+    |       type: Admitted
+    |     - lastTransitionTime: "2026-08-02T08:19:08Z"
+    |       message: All pods reached readiness and the workload is running
+    |       observedGeneration: 1
+    |       reason: Started
+    |       status: "True"
+    |       type: PodsReady
+    | kind: List
+    | metadata:
+    |   resourceVersion: ""
+  --- ClusterQueue as defaulted ---
+    | apiVersion: kueue.x-k8s.io/v1beta2
+    | kind: ClusterQueue
+    | metadata:
+    |   creationTimestamp: "2026-08-02T08:17:47Z"
+    |   finalizers:
+    |   - kueue.x-k8s.io/resource-in-use
+    |   generation: 1
+    |   labels:
+    |     orbital.test/run-id: r17856586653405078
+    |   name: prio-cq-r17856586653405078
+    |   resourceVersion: "19822889"
+    |   uid: a23e26ae-0528-4586-b739-0cca5dcadc71
+    | spec:
+    |   flavorFungibility:
+    |     whenCanBorrow: MayStopSearch
+    |     whenCanPreempt: TryNextFlavor
+    |   namespaceSelector: {}
+    |   preemption:
+    |     borrowWithinCohort:
+    |       policy: Never
+    |     reclaimWithinCohort: Never
+    |     withinClusterQueue: Never
+    |   queueingStrategy: BestEffortFIFO
+    |   resourceGroups:
+    |   - coveredResources:
+    |     - cpu
+    |     - memory
+    |     flavors:
+    |     - name: prio-flavor-r17856586653405078
+    |       resources:
+    |       - name: cpu
+    |         nominalQuota: "1"
+    |       - name: memory
+    |         nominalQuota: 2Gi
+    |   stopPolicy: None
+    | status:
+    |   admittedWorkloads: 1
+    |   conditions:
+    |   - lastTransitionTime: "2026-08-02T08:17:47Z"
+    |     message: Can admit new workloads
+    |     observedGeneration: 1
+    |     reason: Ready
+    |     status: "True"
+    |     type: Active
+    |   flavorsReservation:
+    |   - name: prio-flavor-r17856586653405078
+    |     resources:
+    |     - borrowed: "0"
+    |       name: cpu
+    |       total: "1"
+    |     - borrowed: "0"
+    |       name: memory
+    |       total: 256Mi
+    |   flavorsUsage:
+    |   - name: prio-flavor-r17856586653405078
+    |     resources:
+    |     - borrowed: "0"
+    |       name: cpu
+    |       total: "1"
+    |     - borrowed: "0"
+    |       name: memory
+    |       total: 256Mi
+    |   pendingWorkloads: 0
+    |   reservingWorkloads: 1
+=== 8. the same race, repeated ===
+  priority arm race 2/5: HIGH
+  priority arm race 3/5: HIGH
+  priority arm race 4/5: HIGH
+  priority arm race 5/5: HIGH
+  priority arm outcomes: HIGH HIGH HIGH HIGH HIGH
+[PASS] HIGH admitted first in 5/5 races despite being submitted last
+=== 9. control arm: the same plans and order, no priority class ===
+  control arm race 1/5: LOW
+  control arm race 2/5: LOW
+  control arm race 3/5: LOW
+  control arm race 4/5: LOW
+  control arm race 5/5: LOW
+  control arm outcomes: LOW LOW LOW LOW LOW
+[PASS] without a priority class the FIRST submitted won 5/5 races -> the apparatus does observe arrival order, and the treatment arm inverted it
+
+=== Summary ===
+PASS: 22  FAIL: 0
+=== cleanup (run r17856586653405078) ===
+RESULT: PASS

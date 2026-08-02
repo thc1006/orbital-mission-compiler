@@ -1,0 +1,18 @@
+# Mission priority 50 -> ORCHIDE tier 3 -> WorkloadPriorityClass ...mission-normal (orbital- prefixed; this harness prefixes per run).
+mission_id: prio-low
+events:
+  - timestamp: "2026-04-15T10:00:00Z"
+    event_type: acquisition
+    orbit: 1
+    instrument: MSI
+    ground_visibility: false
+    services:
+      - service_id: low
+        priority: 50
+        execution_mode: sequential
+        steps:
+          - name: work
+            image: busybox:1.36
+            resource_class: cpu
+            command: ["sh", "-c"]
+            args: ["echo low-priority running; sleep 30"]

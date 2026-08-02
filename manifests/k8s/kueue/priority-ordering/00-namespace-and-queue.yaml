@@ -1,0 +1,51 @@
+# Isolated queue for the priority-ordering experiment. The ClusterQueue's CPU
+# nominalQuota is 1, so exactly one cpu=1 Job is admissible at a time -- CPU is the
+# binding constraint. No preemption is configured, so the proof is pure queue
+# sorting: when quota frees, Kueue admits the highest-priority PENDING workload,
+# independent of submission order.
+#
+# A template, not a manifest to apply directly: validate_kueue_priority.sh fills the
+# placeholders with names carrying that run's identifier, so two runs cannot collide and
+# neither can adopt an object that was already on the cluster. The run-id label is what
+# teardown selects on, so it only ever removes what the same run created.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __NS__
+  labels:
+    orbital.test/run-id: __RUN_ID__
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: __FLAVOR__
+  labels:
+    orbital.test/run-id: __RUN_ID__
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: __CQ__
+  labels:
+    orbital.test/run-id: __RUN_ID__
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: __FLAVOR__
+          resources:
+            - name: cpu
+              nominalQuota: "1"
+            - name: memory
+              nominalQuota: 2Gi
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: __LQ__
+  namespace: __NS__
+  labels:
+    orbital.test/run-id: __RUN_ID__
+spec:
+  clusterQueue: __CQ__
