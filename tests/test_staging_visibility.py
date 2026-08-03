@@ -238,3 +238,77 @@ def test_an_output_on_its_own_filesystem_refuses_rather_than_staging_inside(
     assert report["reason"] == "staging_unavailable", report
     assert "--staging-dir" in report["hint"], report
     assert not [p.name for p in out.iterdir()], "nothing may be staged or published"
+
+
+def test_an_unwritable_parent_refuses_instead_of_raising(tmp_path, monkeypatch, capsys):
+    """A precondition this change introduced, so it has to answer for it.
+
+    Staging used to go inside the output, which the operator can write by
+    definition. Beside it needs the parent writable, which is a new requirement
+    and not always met: a directory handed to a team inside a root-owned parent
+    is ordinary. It has to be the documented could-not-run answer naming
+    --staging-dir, not a PermissionError traceback.
+    """
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root writes regardless of the mode bits")
+    parent = tmp_path / "locked"
+    parent.mkdir()
+    out = parent / "out"
+    out.mkdir()
+    os.chmod(parent, 0o555)
+    monkeypatch.setattr("sys.argv", [
+        "orbital-mission-compiler", "render-kueue", "--input", PLAN,
+        "--output-dir", str(out), "--policy-engine", "baseline",
+    ])
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            cli.main()
+    finally:
+        os.chmod(parent, 0o755)
+
+    assert excinfo.value.code == 2
+    report = json.loads(capsys.readouterr().err)
+    assert report["reason"] == "staging_unavailable", report
+    assert "--staging-dir" in report["hint"], report
+    assert not list(out.iterdir()), "nothing may be written"
+
+
+def test_a_staging_dir_on_another_filesystem_is_refused_up_front(
+    tmp_path, monkeypatch, capsys
+):
+    """The explicit case has to be checked like the default one.
+
+    A rename cannot cross a filesystem, so this fails either way. Refusing when
+    the flag is read costs a message; discovering it at publish time costs a
+    render, and in the gated path a lint as well.
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setattr(cli, "_same_filesystem", lambda a, b: False)
+    monkeypatch.setattr("sys.argv", [
+        "orbital-mission-compiler", "render-kueue", "--input", PLAN,
+        "--output-dir", str(out), "--policy-engine", "baseline",
+        "--staging-dir", str(elsewhere),
+    ])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+
+    assert excinfo.value.code == 2
+    report = json.loads(capsys.readouterr().err)
+    assert report["reason"] == "staging_unavailable", report
+    assert not list(out.iterdir()), "nothing may be written"
+
+
+def test_an_output_that_is_its_own_root_has_nowhere_beside_it(tmp_path, monkeypatch):
+    """`/` is its own parent, so beside it is inside it.
+
+    Absurd as an output directory and still worth refusing: the whole point of
+    the move is that staging is not somewhere a consumer reads.
+    """
+    monkeypatch.setattr(cli.Path, "is_dir", lambda self: True)
+
+    with pytest.raises(cli.StagingUnavailable):
+        cli._staging_root(Path("/"))

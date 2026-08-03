@@ -690,18 +690,38 @@ def _staging_root(out_dir: Path, staging_dir: str | None = None) -> Path:
     on that filesystem to write, so this refuses and says so rather than falling
     back inside and quietly exposing the staged set.
     """
+    # Whatever the output will be renamed into is what staging has to share a
+    # filesystem with: the directory itself once it exists, and the nearest
+    # existing ancestor before that, since publishing creates the rest.
+    anchor = out_dir if out_dir.is_dir() else _nearest_existing_ancestor(out_dir)
     if staging_dir is not None:
-        return Path(staging_dir)
+        chosen = Path(staging_dir)
+        if not _same_filesystem(chosen, anchor):
+            raise StagingUnavailable(
+                f"--staging-dir {chosen} is on a different filesystem from {anchor}, "
+                "and publishing is a rename, which cannot cross one"
+            )
+        return chosen
     if not out_dir.is_dir():
-        return _nearest_existing_ancestor(out_dir)
+        # Nothing to shadow yet, and the ancestor is already outside the output
+        # that a rejected render must leave absent.
+        return anchor
     beside = out_dir.absolute().parent
-    if beside.is_dir() and _same_filesystem(beside, out_dir):
-        return beside
-    raise StagingUnavailable(
-        f"{out_dir} is on a different filesystem from {beside}, so a render cannot "
-        "be staged beside it and published by rename; give --staging-dir a "
-        "directory on the same filesystem that consumers of the output do not read"
-    )
+    if beside == out_dir.absolute():
+        raise StagingUnavailable(
+            f"{out_dir} is its own parent, so there is nowhere beside it to stage "
+            "a render that a consumer of the output would not read"
+        )
+    if not beside.is_dir() or not _same_filesystem(beside, out_dir):
+        raise StagingUnavailable(
+            f"{out_dir} is on a different filesystem from {beside}, so a render cannot "
+            "be staged beside it and published by rename"
+        )
+    # Whether it can actually be written is left to the attempt in
+    # _make_staging. os.access answers about the mode bits and not about ACLs or
+    # a read-only mount, and a pre-check that is right less often than the
+    # operation it guards only hides which one is doing the work.
+    return beside
 
 
 class PublishLockUnavailable(Exception):
@@ -951,6 +971,28 @@ def publish_lock_path(
     return Path(lock_dir or _default_lock_dir()) / f"orbital-publish-{digest}.lock"
 
 
+def _make_staging(out_dir: Path, staging_dir: str | None, prefix: str) -> Path:
+    """A directory to assemble in, or a refusal that says how to get one.
+
+    The creation is here rather than at each call site because every way it can
+    fail means the same thing to the caller: there is nowhere to stage this
+    render. Left to escape, a parent this process cannot write reached the
+    command line as a PermissionError traceback.
+    """
+    root = _staging_root(out_dir, staging_dir)
+    try:
+        return Path(tempfile.mkdtemp(prefix=prefix, dir=root))
+    except OSError as exc:
+        # Where an unwritable parent lands. Staging used to go inside the output,
+        # which the operator can write by definition; beside it needs the parent,
+        # and a directory handed to a team inside a parent someone else owns is
+        # ordinary. It has to be the documented could-not-run answer rather than
+        # a PermissionError traceback.
+        raise StagingUnavailable(
+            f"a staging directory could not be created in {root}: {exc}"
+        ) from exc
+
+
 @contextlib.contextmanager
 def _publish_lock(
     out_dir: Path, lock_timeout: float = _DEFAULT_LOCK_TIMEOUT,
@@ -1169,9 +1211,7 @@ def _publish(
     # Beside the output, not inside it. What a rename displaces is the whole of
     # the previous generation, and a cleanup that fails leaves it where a
     # recursive apply collects it alongside the new set.
-    backup_dir = Path(tempfile.mkdtemp(
-        prefix=".orbital-publish-backup-", dir=_staging_root(out_dir, staging_dir)
-    ))
+    backup_dir = _make_staging(out_dir, staging_dir, ".orbital-publish-backup-")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     displaced: dict[Path, Path] = {}
@@ -1287,9 +1327,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
     plan = load_mission_plan(args.input)
     scope, owners = _scope_of(plan), _owner_of(plan)
     out_dir = Path(args.output_dir)
-    staging = Path(tempfile.mkdtemp(
-        prefix=".argo-lint-staging-", dir=_staging_root(out_dir, args.staging_dir)
-    ))
+    staging = _make_staging(out_dir, args.staging_dir, ".argo-lint-staging-")
     carried: list[Path] = []
     result_stale: dict[str, object] = {}
     lock_stack = contextlib.ExitStack()
@@ -1689,9 +1727,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         # some from the last, with nothing saying so. The Job and the classes it
         # references are exactly such a set -- a Job from the new render beside
         # priority classes from the old one names values that have moved.
-        staging = Path(tempfile.mkdtemp(
-            prefix=".kueue-render-staging-", dir=_staging_root(out_dir, args.staging_dir)
-        ))
+        staging = _make_staging(out_dir, args.staging_dir, ".kueue-render-staging-")
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
             staged: list[Path] = []
