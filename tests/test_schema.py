@@ -386,9 +386,8 @@ def test_a_duplicate_hidden_in_a_merge_source_cannot_downgrade_a_gpu_step(tmp_pa
     turns an accelerated step into a CPU one while the file still reads as GPU.
     """
     import pytest as _pytest
-    import yaml as _yaml
 
-    from orbital_mission_compiler.compiler import load_mission_plan
+    from orbital_mission_compiler.compiler import MissionPlanInvalid, load_mission_plan
 
     plan = tmp_path / "plan.yaml"
     plan.write_text(
@@ -407,7 +406,11 @@ def test_a_duplicate_hidden_in_a_merge_source_cannot_downgrade_a_gpu_step(tmp_pa
         "            fallback_resource_class: cpu\n",
         encoding="utf-8",
     )
-    with _pytest.raises(_yaml.constructor.ConstructorError, match="duplicate key"):
+    # The refusal is the guarantee, and it is now this package's to make: the
+    # loader's own ConstructorError is wrapped so the CLI can answer with a
+    # report instead of a traceback. The message is still asserted, since naming
+    # the duplicated key is what makes the refusal actionable.
+    with _pytest.raises(MissionPlanInvalid, match="duplicate key"):
         load_mission_plan(plan)
 
 

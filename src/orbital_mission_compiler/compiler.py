@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import yaml
+from pydantic import ValidationError
 
 from .schemas import MissionPlan, WorkflowIntent, ResourceClass, WorkflowStep
 
@@ -289,9 +290,52 @@ class _StrictLoader(yaml.SafeLoader):
         return [n for n in candidates if isinstance(n, yaml.MappingNode)]
 
 
+class MissionPlanError(ValueError):
+    """An input the compiler cannot take as a mission plan.
+
+    A ValueError, because that is what a schema rejection has always been here
+    and callers catching it should keep catching it. The two subclasses split
+    where the compiler's own answer splits, and the CLI maps that split onto its
+    exit codes.
+    """
+
+
+class MissionPlanUnreadable(MissionPlanError):
+    """The bytes never arrived: absent, a directory, a broken link, no rights."""
+
+
+class MissionPlanInvalid(MissionPlanError):
+    """The bytes arrived and are not a mission plan."""
+
+
 def load_mission_plan(path: str | Path) -> MissionPlan:
-    raw = yaml.load(Path(path).read_text(encoding="utf-8"), Loader=_StrictLoader)  # noqa: S506
-    return MissionPlan.model_validate(raw)
+    """The one place a plan is read, and so the one place to type the failures.
+
+    Every command reaches a plan through here, directly or through
+    `_load_or_accept_plan`, and each of the three steps below fails in its own
+    library's vocabulary: OSError, yaml.YAMLError, pydantic.ValidationError.
+    Left as they are those reach the CLI as a traceback and exit 1 -- which in
+    the gated render is the code that means the linter rejected something, so a
+    missing file read as a rejected manifest. Named here instead, keeping the
+    original message, which is where the strict loader says which key was
+    duplicated.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise MissionPlanUnreadable(f"{path} could not be read: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        # Not an OSError: the file opened and its bytes are not text. Grouped
+        # with the invalid ones, since reading it is what found that out.
+        raise MissionPlanInvalid(f"{path} is not UTF-8 text: {exc}") from exc
+    try:
+        raw = yaml.load(text, Loader=_StrictLoader)  # noqa: S506
+    except yaml.YAMLError as exc:
+        raise MissionPlanInvalid(f"{path} is not valid YAML: {exc}") from exc
+    try:
+        return MissionPlan.model_validate(raw)
+    except ValidationError as exc:
+        raise MissionPlanInvalid(f"{path} is not a valid mission plan: {exc}") from exc
 
 
 def analyze_timeline_conflicts(plan: MissionPlan) -> dict[str, Any]:
