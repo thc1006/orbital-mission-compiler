@@ -1887,6 +1887,111 @@ def test_prune_retires_the_priority_class_bundle_once_emission_stops(tmp_path, c
     assert not bundle.exists(), sorted(out.iterdir())
 
 
+
+def test_an_empty_prune_only_run_needs_no_linter(tmp_path, capsys):
+    """It runs no linter, so it must not depend on one.
+
+    The verdict for this branch is not-applicable: nothing was linted because
+    there was nothing to lint. Resolving the Argo binary first made retiring a
+    previous generation fail on a tool that would never have been invoked.
+    """
+    from orbital_mission_compiler import cli
+
+    out = tmp_path / "out"
+    cmd_render_argo(_render_argo_args(VALID_PLAN, out))
+    capsys.readouterr()
+    assert list(out.glob("*.yaml"))
+
+    empty = _plan_that_renders_nothing(tmp_path)
+    args = build_parser().parse_args([
+        "render-argo", "--input", str(empty), "--output-dir", str(out),
+        "--policy-engine", "baseline", "--prune", "--argo-lint",
+        "--argo-bin", str(tmp_path / "no-such-argo"),
+    ])
+    cli.cmd_render_argo(args)
+    report = json.loads(capsys.readouterr().out)
+
+    assert report["status"] == "ok" and report["lint"] == "not-applicable", report
+    assert list(out.glob("*.yaml")) == [], "the previous generation should be retired"
+
+
+def test_an_empty_run_without_prune_still_needs_the_linter(tmp_path, capsys):
+    """The control for the reordering.
+
+    Without --prune the command publishes nothing and verifies nothing, and
+    reporting a lint that never ran is what the CLI check is there to prevent.
+    """
+    from orbital_mission_compiler import cli
+
+    out = tmp_path / "out"
+    empty = _plan_that_renders_nothing(tmp_path)
+    args = build_parser().parse_args([
+        "render-argo", "--input", str(empty), "--output-dir", str(out),
+        "--policy-engine", "baseline", "--argo-lint",
+        "--argo-bin", str(tmp_path / "no-such-argo"),
+    ])
+    with pytest.raises(SystemExit) as excinfo:
+        cli.cmd_render_argo(args)
+
+    assert excinfo.value.code == 2
+    assert json.loads(capsys.readouterr().out)["lint"] == "unavailable"
+
+
+@pytest.mark.parametrize(
+    "command,extra",
+    [("render-argo", []), ("render-argo", ["--argo-lint"]), ("render-kueue", [])],
+    ids=["ungated", "gated", "kueue"],
+)
+def test_a_scan_that_fails_after_publishing_says_the_output_changed(
+    command, extra, tmp_path, monkeypatch, capsys
+):
+    """The third outcome, which used to be a traceback or a false rollback.
+
+    The manifests are live by the time the directory is read back. Escaping as
+    an OSError tells the caller nothing; reporting it through the publish
+    handler tells them the directory was restored, which it was not.
+    """
+    from orbital_mission_compiler import cli
+
+    out = tmp_path / "out"
+    exe = _fake_argo(tmp_path, 0)
+    argv = [
+        command, "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline", *extra,
+    ]
+    if "--argo-lint" in extra:
+        argv += ["--argo-bin", str(exe)]
+    runner = cli.cmd_render_kueue if command == "render-kueue" else cmd_render_argo
+    runner(build_parser().parse_args(argv))
+    capsys.readouterr()
+
+    # The gated path scans twice: once before the lint, to know which files are
+    # leaving, and once after publishing. Only the second is the phase under
+    # test -- failing the first is a snapshot failure, which this path already
+    # reports as its own thing, and letting it through is what proves the two
+    # are told apart.
+    real_scan = cli.stale_rendered_artifacts
+    survives = 1 if "--argo-lint" in extra else 0
+    seen = {"n": 0}
+
+    def unreadable(*a, **k):
+        seen["n"] += 1
+        if seen["n"] <= survives:
+            return real_scan(*a, **k)
+        raise PermissionError(13, "Permission denied", str(out))
+
+    monkeypatch.setattr(cli, "stale_rendered_artifacts", unreadable)
+    with pytest.raises(SystemExit) as excinfo:
+        runner(build_parser().parse_args([*argv, "--prune"]))
+
+    assert excinfo.value.code == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "stale-scan-failed", report
+    assert report["output_modified"] is True, report
+    assert "rolled back" not in report["message"], report
+    assert report["files"], "the caller has to learn what did get published"
+    assert seen["n"] == survives + 1, "the post-publish scan is the one under test"
+
 def test_retiring_the_shared_bundle_is_announced(tmp_path, capsys):
     """Two missions in one directory get a message, and the message is all they get.
 

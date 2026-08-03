@@ -38,6 +38,7 @@ from .compiler import (
     resolve_argo_bin,
     argo_lint_path,
     stale_rendered_artifacts,
+    ArtifactOwner,
     _artifact_mission,
     attribute_stale,
     render_workload_priority_classes,
@@ -169,7 +170,10 @@ def _report_stale(
         # its own desired set while leaving the first mission's Jobs pointing at
         # classes that are no longer there. Correct and silent is the wrong half
         # of that, so it is said out loud.
-        shared = [p for p in mine if _artifact_mission(p) is None]
+        shared = [
+            p for p in mine
+            if _artifact_mission(p).owner is ArtifactOwner.UNMISSIONED
+        ]
         if shared:
             print(
                 f"warning: removing {len(shared)} cluster-scoped artifact(s) that carry no "
@@ -200,6 +204,30 @@ def _report_stale(
         f"redeploy them. Re-run with --prune to remove them.",
         file=sys.stderr,
     )
+
+
+def _scan_failure_report(exc: OSError, published: list[Path], lint: str | None = None) -> dict:
+    """A stale scan that could not run, after the output has already changed.
+
+    Its own reason, because the alternatives both lie. Reported as a publish
+    failure it claims a rollback that did not happen -- the manifests are live.
+    Left to escape it is a traceback, and the caller learns neither what was
+    published nor whether anything was removed.
+    """
+    report: dict = {
+        "status": "error",
+        "reason": "stale-scan-failed",
+        "output_modified": True,
+        "files": [str(p) for p in published],
+        "pruned": [],
+        "message": (
+            "the manifests were published, but the directory could not be read "
+            f"back to find artifacts this render replaced: {exc}"
+        ),
+    }
+    if lint is not None:
+        report["lint"] = lint
+    return report
 
 
 def _finite_seconds(raw: str) -> float:
@@ -484,6 +512,9 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
             )
         except PruneIncomplete as exc:
             print(json.dumps(_prune_failure_report(exc, written), indent=2))
+            raise SystemExit(2) from exc
+        except OSError as exc:
+            print(json.dumps(_scan_failure_report(exc, written), indent=2))
             raise SystemExit(2) from exc
     print(json.dumps(result, indent=2))
 
@@ -975,6 +1006,39 @@ def _publish(
     return published
 
 
+def _reconcile_empty_render(
+    args: argparse.Namespace, out_dir: Path, lock_stack: contextlib.ExitStack
+) -> None:
+    """A plan that renders nothing, asked to make the directory match it.
+
+    An empty desired set is a state to reconcile, not a reason to leave the
+    previous generation on disk for the next apply to redeploy. No linter runs,
+    so the verdict is not-applicable and never passed -- and, for the same
+    reason, the Argo binary is not needed to get here.
+    """
+    try:
+        lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout, args.lock_dir))
+    except PublishLockUnavailable as exc:
+        print(json.dumps({
+            "status": "error", "lint": "not-run", "reason": "publish-lock-unavailable",
+            "message": str(exc),
+        }, indent=2))
+        raise SystemExit(2) from exc
+    empty_result: dict[str, object] = {"status": "ok", "lint": "not-applicable", "files": []}
+    try:
+        _report_stale(
+            empty_result, args.output_dir, [], args.prune, ARGO_EXCLUSIVE_KINDS,
+            mission_ids=_render_scope(args.input),
+        )
+    except PruneIncomplete as exc:
+        print(json.dumps(_prune_failure_report(exc, []), indent=2))
+        raise SystemExit(2) from exc
+    except OSError as exc:
+        print(json.dumps(_scan_failure_report(exc, []), indent=2))
+        raise SystemExit(2) from exc
+    print(json.dumps(empty_result, indent=2))
+
+
 def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
     """Render, lint, and publish only if the linter accepts what it reads.
 
@@ -1005,6 +1069,15 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
     try:
         written = _render_argo(args, staging)
 
+        # Resolved after the prune-only case below and before every other one.
+        # A plan is allowed to render nothing, and an empty render must not be
+        # able to report a lint that never ran -- but reconciling an empty
+        # desired set runs no linter at all, so requiring the binary there made
+        # cleanup depend on a tool it never invokes.
+        if not written and args.prune:
+            _reconcile_empty_render(args, out_dir, lock_stack)
+            return
+
         try:
             resolved = resolve_argo_bin(args.argo_bin)
         except ArgoLintUnavailable as exc:
@@ -1012,42 +1085,15 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             raise SystemExit(2) from exc
 
         if not written:
-            # A plan may legitimately render nothing, and what that means here
-            # depends on what this command was asked to do. Without --prune there
-            # is nothing to publish and nothing was verified, which is what exit 2
-            # has always said. With --prune the command was asked to make the
-            # directory match the plan, and an empty desired set is a state to
-            # reconcile rather than a reason to leave the previous generation on
-            # disk for the next apply to redeploy. The verdict stays honest either
-            # way: a set that was never linted is reported as not-applicable, and
-            # never as passed.
-            if not args.prune:
-                print(json.dumps({
-                    "status": "error", "lint": "not-run", "reason": "no-manifests",
-                    "message": "the plan rendered no Argo Workflow, so nothing was linted",
-                }, indent=2))
-                raise SystemExit(2)
-            try:
-                lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout, args.lock_dir))
-            except PublishLockUnavailable as exc:
-                print(json.dumps({
-                    "status": "error", "lint": "not-run", "reason": "publish-lock-unavailable",
-                    "message": str(exc),
-                }, indent=2))
-                raise SystemExit(2) from exc
-            empty_result: dict[str, object] = {
-                "status": "ok", "lint": "not-applicable", "files": [],
-            }
-            try:
-                _report_stale(
-                    empty_result, args.output_dir, [], args.prune, ARGO_EXCLUSIVE_KINDS,
-                    mission_ids=_render_scope(args.input),
-                )
-            except PruneIncomplete as exc:
-                print(json.dumps(_prune_failure_report(exc, []), indent=2))
-                raise SystemExit(2) from exc
-            print(json.dumps(empty_result, indent=2))
-            return
+            # A plan may legitimately render nothing, and without --prune that
+            # means there is nothing to publish and nothing was verified, which
+            # is what exit 2 has always said here. The --prune case was taken
+            # above, before the linter was resolved.
+            print(json.dumps({
+                "status": "error", "lint": "not-run", "reason": "no-manifests",
+                "message": "the plan rendered no Argo Workflow, so nothing was linted",
+            }, indent=2))
+            raise SystemExit(2)
 
         # Taken before the destination is read, not just before it is written.
         # The verdict is about a directory state, and a state read outside the
@@ -1218,10 +1264,23 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                 [(out_dir / path.name, path.read_text(encoding="utf-8")) for path in written]
             )
             published = _publish(written, out_dir, leftover_backups)
-            _report_stale(
-                result_stale, args.output_dir, published, args.prune,
-                ARGO_EXCLUSIVE_KINDS, mission_ids=_render_scope(args.input),
-            )
+            # Outside the publish try below. _publish has returned, so the
+            # manifests are live; an OSError from the scan reported by that
+            # handler asserts a rollback that did not happen.
+            try:
+                _report_stale(
+                    result_stale, args.output_dir, published, args.prune,
+                    ARGO_EXCLUSIVE_KINDS, mission_ids=_render_scope(args.input),
+                )
+            except PruneIncomplete:
+                # An OSError subclass, and a different phase: the scan finished
+                # and the removals did not. Left to the handler that says so.
+                raise
+            except OSError as exc:
+                print(json.dumps(
+                    _scan_failure_report(exc, published, lint="passed"), indent=2
+                ))
+                raise SystemExit(2) from exc
         except ValueError as exc:
             print(json.dumps({
                 "status": "error", "lint": "passed", "reason": "not-owned",
@@ -1459,6 +1518,9 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
             )
         except PruneIncomplete as exc:
             print(json.dumps(_prune_failure_report(exc, written), indent=2))
+            raise SystemExit(2) from exc
+        except OSError as exc:
+            print(json.dumps(_scan_failure_report(exc, written), indent=2))
             raise SystemExit(2) from exc
     result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
     result.update(stale_result)
