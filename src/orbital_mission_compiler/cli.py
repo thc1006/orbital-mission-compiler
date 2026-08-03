@@ -127,6 +127,11 @@ _KUEUE_DEPLOY_NOTE = (
 
 
 
+def _owner_of(plan: MissionPlan) -> frozenset[str]:
+    """The raw mission id, which the fingerprint label is a digest of."""
+    return frozenset({plan.mission_id})
+
+
 def _scope_of(plan: MissionPlan) -> frozenset[str]:
     """The missions a render of this plan reconciles.
 
@@ -137,21 +142,27 @@ def _scope_of(plan: MissionPlan) -> frozenset[str]:
     return frozenset({mission_fingerprint(plan.mission_id)})
 
 
-def _render_scope(source: str | Path) -> frozenset[str]:
-    """The same, for a command that has not loaded the plan yet."""
-    return _scope_of(load_mission_plan(source))
+def _render_scope(source: str | Path) -> tuple[frozenset[str], frozenset[str]]:
+    """The same, for a command that has not loaded the plan yet.
+
+    Both halves together: the fingerprints the artifacts carry, and the raw ids
+    they are digests of.
+    """
+    plan = load_mission_plan(source)
+    return _scope_of(plan), _owner_of(plan)
 
 
 def _report_stale(
     result: dict[str, object], output_dir: str, written: list[Path], prune: bool,
     renderer: str, *, mission_ids: Collection[str] | None = None,
+    owner_ids: Collection[str] | None = None,
     include_unmissioned: bool = False, installation: str | None = None,
     prune_global: bool = False,
 ) -> None:
     stale = stale_rendered_artifacts(
         output_dir, written,
-        mission_ids=mission_ids, include_unmissioned=include_unmissioned,
-        installation=installation,
+        mission_ids=mission_ids, owner_ids=owner_ids,
+        include_unmissioned=include_unmissioned, installation=installation,
     )
     if not stale:
         return
@@ -304,6 +315,21 @@ def _finite_seconds(raw: str) -> float:
     return value
 
 
+def _nonempty_key(raw: str) -> str:
+    """A lock key that names something.
+
+    An empty one would collapse every output directory sharing a lock directory
+    onto one file, which serialises renders that have nothing to do with each
+    other and is not what anyone asked for.
+    """
+    if not raw.strip():
+        raise argparse.ArgumentTypeError(
+            "the lock key is empty, so it names no destination; leave it out to use "
+            "the output path"
+        )
+    return raw
+
+
 def _absolute_directory(raw: str) -> str:
     """A lock directory both writers can name identically.
 
@@ -332,6 +358,16 @@ def _add_lock_args(p: argparse.ArgumentParser) -> None:
         "publish. Waiting without a bound would let a hung holder stall this command "
         "indefinitely, so a timeout exits 2 -- the gate could not run -- rather than "
         "reporting a lint failure the linter never gave.",
+    )
+    p.add_argument(
+        "--lock-key",
+        type=_nonempty_key,
+        default=None,
+        help="Name for the thing being published into, replacing the output path "
+        "the lock file is otherwise named after. That path is container-local: one "
+        "volume mounted at /data/out in one container and /mnt/out in another is "
+        "two paths and so two locks, even with --lock-dir pointed at the volume. "
+        "Whatever orchestrates the run knows it is one destination and can say so.",
     )
     p.add_argument(
         "--lock-dir",
@@ -538,7 +574,7 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
     # it is printed: read after the render instead, the same failure arrives with
     # manifests already on disk and the report denies it. Once, because three
     # reads of one file are three chances for it to answer differently.
-    scope = _render_scope(args.input)
+    scope, owners = _render_scope(args.input)
     # The same lock the gate takes. Without it an ungated render can replace files
     # in the directory a gated run has just snapshotted and linted and is about to
     # publish into, and the gate's verdict would then describe a directory that no
@@ -550,7 +586,7 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
     # exclusivity of its own.
     lock_stack = contextlib.ExitStack()
     try:
-        lock_stack.enter_context(_publish_lock(Path(args.output_dir), args.lock_timeout, args.lock_dir))
+        lock_stack.enter_context(_publish_lock(Path(args.output_dir), args.lock_timeout, args.lock_dir, args.lock_key))
     except PublishLockUnsupported:
         # Nothing on this platform can lock, so nothing is holding the directory.
         pass
@@ -578,7 +614,7 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
         try:
             _report_stale(
                 result, args.output_dir, written, args.prune, RENDERER_ARGO,
-                mission_ids=scope,
+                mission_ids=scope, owner_ids=owners,
             )
         except PruneIncomplete as exc:
             print(json.dumps(_prune_failure_report(exc, written), indent=2))
@@ -773,18 +809,58 @@ def _unreadable_documents(directory: Path) -> list[str]:
     return problems
 
 
+# Shared by design; see the O_NOFOLLOW and the sticky-bit check below.
+_FIXED_LOCK_DIR = Path("/tmp")  # noqa: S108
+
+
 def _default_lock_dir() -> str:
     """Where the publish lock lives when the caller does not say.
 
     A fixed path rather than tempfile.gettempdir(), which honours TMPDIR and so
-    hands two renders of one output directory two different lock files. Falls
-    back to the temp directory only where the fixed one is unusable, which is
-    also where there is no shared location to be had.
+    hands two renders of one output directory two different lock files.
+
+    Refused rather than fallen back on when the fixed path is unusable. The
+    fallback was that same temp directory, so in a container with a read-only
+    /tmp two writers with different TMPDIR values took two lock files of the
+    same name in two places and both published -- the split namespace this fixed
+    path exists to close, reintroduced exactly where nobody would look for it.
+    Saying which flag settles it is more use than proceeding unlocked.
     """
-    fixed = Path("/tmp")  # noqa: S108 - shared by design; see the caller's O_NOFOLLOW
-    if fixed.is_dir() and os.access(fixed, os.W_OK):
-        return str(fixed)
-    return tempfile.gettempdir()
+    if _FIXED_LOCK_DIR.is_dir() and os.access(_FIXED_LOCK_DIR, os.W_OK):
+        return str(_FIXED_LOCK_DIR)
+    raise PublishLockUnavailable(
+        f"{_FIXED_LOCK_DIR} is not a writable directory, so there is no shared "
+        "default for the publish lock; give --lock-dir a directory every writer "
+        "of this output can reach"
+    )
+
+
+def _require_safe_lock_dir(directory: Path) -> None:
+    """Refuse a lock directory another user could swap the file out of.
+
+    O_NOFOLLOW stops a symlink planted at the path. It does not stop another uid
+    unlinking the pathname between two writers' opens and creating its own file
+    there: each then holds a different inode, flock excludes neither, and both
+    enter publication. On the default it is /tmp's sticky bit that prevents
+    that, so a directory the operator names has to offer the same.
+
+    Only when the directory is writable by someone else. A private one is the
+    ordinary case and needs nothing.
+    """
+    try:
+        info = directory.stat()
+    except OSError as exc:
+        raise PublishLockUnavailable(
+            f"the lock directory {directory} could not be read: {exc}"
+        ) from exc
+    shared_write = info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    if shared_write and not info.st_mode & stat.S_ISVTX:
+        raise PublishLockUnavailable(
+            f"the lock directory {directory} is writable by other users and has no "
+            "sticky bit, so another user can replace the lock file between two "
+            "writers and neither would exclude the other; set the sticky bit "
+            "(chmod +t) or point --lock-dir at a directory only this user writes"
+        )
 
 
 class _SymlinkedManifest(Exception):
@@ -795,7 +871,9 @@ class _SymlinkedManifest(Exception):
         self.path = path
 
 
-def publish_lock_path(out_dir: Path | str, lock_dir: str | None = None) -> Path:
+def publish_lock_path(
+    out_dir: Path | str, lock_dir: str | None = None, lock_key: str | None = None
+) -> Path:
     """Where two renders of this output directory agree the lock is.
 
     Derived in one place so a caller asking the question and the code taking the
@@ -803,14 +881,20 @@ def publish_lock_path(out_dir: Path | str, lock_dir: str | None = None) -> Path:
     is how a change of location left four of them passing only because the
     environment happened to agree.
     """
-    digest = hashlib.sha256(os.path.realpath(out_dir).encode("utf-8")).hexdigest()[:16]
+    # The key names the thing being published into. By default that is the
+    # output path, which is right on one host and container-local everywhere
+    # else: one volume mounted at /data/out and at /mnt/out is two paths and so
+    # two locks. Whatever orchestrates the run knows it is one volume and can
+    # say so with --lock-key.
+    identity = lock_key if lock_key else os.path.realpath(out_dir)
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     return Path(lock_dir or _default_lock_dir()) / f"orbital-publish-{digest}.lock"
 
 
 @contextlib.contextmanager
 def _publish_lock(
     out_dir: Path, lock_timeout: float = _DEFAULT_LOCK_TIMEOUT,
-    lock_dir: str | None = None,
+    lock_dir: str | None = None, lock_key: str | None = None,
 ) -> Iterator[None]:
     """Serialise publishing into one output directory.
 
@@ -851,7 +935,8 @@ def _publish_lock(
     # resolve symlinks, so /data/out and /data/tmp/../out would take different
     # locks on the same directory -- the case the lock exists for.
     canonical = os.path.realpath(out_dir)
-    lock_path = publish_lock_path(out_dir, lock_dir)
+    lock_path = publish_lock_path(out_dir, lock_dir, lock_key)
+    _require_safe_lock_dir(lock_path.parent)
     # Openable by whoever can write the output, because that is who has to take it.
     # An earlier revision created it 0600 and never removed it, so once one user had
     # rendered, every other user was refused for good -- flock is released when the
@@ -1078,7 +1163,7 @@ def _publish(
 
 def _reconcile_empty_render(
     args: argparse.Namespace, out_dir: Path, lock_stack: contextlib.ExitStack,
-    scope: Collection[str],
+    scope: Collection[str], owners: Collection[str],
 ) -> None:
     """A plan that renders nothing, asked to make the directory match it.
 
@@ -1088,7 +1173,7 @@ def _reconcile_empty_render(
     reason, the Argo binary is not needed to get here.
     """
     try:
-        lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout, args.lock_dir))
+        lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout, args.lock_dir, args.lock_key))
     except PublishLockUnavailable as exc:
         print(json.dumps({
             "status": "error", "lint": "not-run", "reason": "publish-lock-unavailable",
@@ -1099,7 +1184,7 @@ def _reconcile_empty_render(
     try:
         _report_stale(
             empty_result, args.output_dir, [], args.prune, RENDERER_ARGO,
-            mission_ids=scope,
+            mission_ids=scope, owner_ids=owners,
         )
     except PruneIncomplete as exc:
         print(json.dumps(_prune_failure_report(exc, []), indent=2))
@@ -1133,7 +1218,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
     # Before the staging directory exists, for the same reason the ungated path
     # reads it before rendering: an input this command cannot use has to be
     # refused while there is still nothing to explain away.
-    scope = _render_scope(args.input)
+    scope, owners = _render_scope(args.input)
     out_dir = Path(args.output_dir)
     staging = Path(tempfile.mkdtemp(
         prefix=".argo-lint-staging-", dir=_nearest_existing_ancestor(out_dir)
@@ -1150,7 +1235,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         # desired set runs no linter at all, so requiring the binary there made
         # cleanup depend on a tool it never invokes.
         if not written and args.prune:
-            _reconcile_empty_render(args, out_dir, lock_stack, scope)
+            _reconcile_empty_render(args, out_dir, lock_stack, scope, owners)
             return
 
         try:
@@ -1177,7 +1262,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         # against a set the linter never saw. Held across the lint so that the
         # state the verdict describes is the state that gets published.
         try:
-            lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout, args.lock_dir))
+            lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout, args.lock_dir, args.lock_key))
         except PublishLockUnavailable as exc:
             print(json.dumps({
                 "status": "error", "lint": "not-run", "reason": "publish-lock-unavailable",
@@ -1222,7 +1307,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                         p.name
                         for p in attribute_stale(
                             stale_rendered_artifacts(
-                                out_dir, written, mission_ids=scope,
+                                out_dir, written, mission_ids=scope, owner_ids=owners,
                             ),
                             RENDERER_ARGO,
                         )[0]
@@ -1345,7 +1430,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             try:
                 _report_stale(
                     result_stale, args.output_dir, published, args.prune,
-                    RENDERER_ARGO, mission_ids=scope,
+                    RENDERER_ARGO, mission_ids=scope, owner_ids=owners,
                 )
             except PruneIncomplete:
                 # An OSError subclass, and a different phase: the scan finished
@@ -1439,7 +1524,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
     plan = load_mission_plan(args.input)
     # From the plan in hand. Reading the file again to answer a question this
     # object already answers is how the two come to disagree.
-    scope = _scope_of(plan)
+    scope, owners = _scope_of(plan), _owner_of(plan)
     if not args.unsafe_skip_policy:
         enforce_policy_or_raise(
             plan, engine=args.policy_engine, bundle=args.bundle, decision=args.decision
@@ -1505,7 +1590,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
     # of a directory's writers is not a lock on the directory.
     lock_stack = contextlib.ExitStack()
     try:
-        lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout, args.lock_dir))
+        lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout, args.lock_dir, args.lock_key))
     except PublishLockUnsupported:
         # No fcntl at all. render-kueue has no lint verdict to protect, so it keeps
         # working here rather than refusing on a platform that cannot serialise --
@@ -1591,7 +1676,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         try:
             _report_stale(
                 stale_result, args.output_dir, written, args.prune,
-                RENDERER_KUEUE, mission_ids=scope,
+                RENDERER_KUEUE, mission_ids=scope, owner_ids=owners,
                 # The global opt-in and the identity it applies to. Without the
                 # flag a cluster-scoped artifact is reported and left; with it,
                 # only this installation's own is retired.

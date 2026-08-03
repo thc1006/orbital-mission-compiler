@@ -170,6 +170,49 @@ def test_a_file_that_disagrees_is_never_pruned(tmp_path):
     assert stale_rendered_artifacts(out, [], mission_ids={"aaaa"}) == []
 
 
+def test_a_fingerprint_collision_cannot_decide_a_delete_on_its_own(tmp_path):
+    """The label is 64 bits of a digest; the raw owner sits beside it.
+
+    Two mission ids colliding is unlikely and the consequence is a delete, so
+    the cheap half of the check is worth making: the scope carries the raw id it
+    was built from, and an artifact whose digest matches while its owner does
+    not is left alone.
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "theirs.yaml").write_text(
+        _doc("Job", "j", "aaaa", owner="mission-beta"), encoding="utf-8"
+    )
+
+    collided = stale_rendered_artifacts(
+        out, [], mission_ids={"aaaa"}, owner_ids={"mission-alpha"}
+    )
+    matching = stale_rendered_artifacts(
+        out, [], mission_ids={"aaaa"}, owner_ids={"mission-beta"}
+    )
+
+    assert collided == []
+    assert [p.name for p in matching] == ["theirs.yaml"]
+
+
+def test_an_owner_set_that_was_not_given_does_not_narrow_anything(tmp_path):
+    """The control, and the compatibility path.
+
+    A caller that holds no raw ids -- an older artifact, or a caller working
+    from what was written -- still reconciles by fingerprint alone rather than
+    silently matching nothing.
+    """
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "mine.yaml").write_text(
+        _doc("Job", "j", "aaaa", owner="mission-alpha"), encoding="utf-8"
+    )
+
+    assert [p.name for p in stale_rendered_artifacts(out, [], mission_ids={"aaaa"})] == [
+        "mine.yaml"
+    ]
+
+
 def test_a_symlink_is_never_this_compiler_s_artifact(tmp_path):
     """Classified from the target's bytes, then unlinked as the link.
 

@@ -1337,7 +1337,7 @@ def test_render_kueue_honours_the_lock_dir_too(tmp_path, monkeypatch, capsys):
     seen: list[str | None] = []
 
     @contextlib.contextmanager
-    def _record(out_dir, lock_timeout, lock_dir=None):
+    def _record(out_dir, lock_timeout, lock_dir=None, lock_key=None):
         seen.append(lock_dir)
         yield
 
