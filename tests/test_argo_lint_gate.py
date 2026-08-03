@@ -26,6 +26,7 @@ from orbital_mission_compiler.compiler import (
     ArgoLintUnavailable,
     PolicyViolationError,
     argo_lint_path,
+    stale_rendered_artifacts,
 )
 
 VALID_PLAN = "configs/mission_plans/sample_maritime_surveillance.yaml"
@@ -1884,6 +1885,122 @@ def test_prune_retires_the_priority_class_bundle_once_emission_stops(tmp_path, c
 
     assert bundle.name in [Path(p).name for p in report.get("pruned", [])], report
     assert not bundle.exists(), sorted(out.iterdir())
+
+
+def test_retiring_the_shared_bundle_is_announced(tmp_path, capsys):
+    """Two missions in one directory get a message, and the message is all they get.
+
+    Nothing stops the second render removing classes the first mission's Jobs
+    still name: the bundle carries no fingerprint, so the filter that keeps one
+    mission's --prune away from another's files cannot reach it. Saying so on
+    stderr is the whole of what is on offer, which is what makes it worth pinning
+    -- deleting the message leaves behaviour that is correct for the render doing
+    it and invisible to everyone else.
+    """
+    from orbital_mission_compiler.cli import cmd_render_kueue
+
+    out = tmp_path / "shared"
+    cmd_render_kueue(build_parser().parse_args([
+        "render-kueue", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline", "--emit-priority-classes",
+    ]))
+    capsys.readouterr()
+    assert (out / "workload-priority-classes.yaml").exists()
+
+    cmd_render_kueue(build_parser().parse_args([
+        "render-kueue", "--input", OTHER_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline", "--prune",
+    ]))
+    warning = capsys.readouterr().err
+
+    assert "workload-priority-classes.yaml" in warning, warning
+    assert "--emit-priority-classes" in warning, "the message has to say how to put them back"
+    assert not (out / "workload-priority-classes.yaml").exists()
+
+
+def test_retiring_only_this_mission_s_own_files_is_not_announced(tmp_path, capsys):
+    """The control, so the warning is attributable to what it claims to be about.
+
+    A prune that removes a mission's own stale artifact touches nothing another
+    mission could be relying on, and a message on every prune would be one
+    operators learn to scroll past.
+    """
+    from orbital_mission_compiler.cli import cmd_render_kueue
+
+    out = tmp_path / "out"
+    argv = [
+        "render-kueue", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline", "--emit-priority-classes",
+    ]
+    cmd_render_kueue(build_parser().parse_args(argv))
+    capsys.readouterr()
+    # A stale artifact of this same mission: the render's own output under a name
+    # the next render will not write, so it carries the fingerprint and is in scope.
+    job = next(p for p in out.glob("*-kueue.yaml"))
+    (out / "left-over-kueue.yaml").write_text(job.read_text(encoding="utf-8"), encoding="utf-8")
+
+    cmd_render_kueue(build_parser().parse_args(argv + ["--prune"]))
+    captured = capsys.readouterr()
+
+    assert "left-over-kueue.yaml" in json.dumps(json.loads(captured.out).get("pruned", [])), \
+        "the control has to actually prune something, or it proves nothing"
+    assert "cluster-scoped" not in captured.err, captured.err
+    assert (out / "workload-priority-classes.yaml").exists()
+
+
+def test_render_argo_prune_leaves_the_priority_class_bundle_alone(tmp_path, capsys):
+    """The Argo renderer never retires the cluster-scoped bundle.
+
+    Two things keep it off and either is sufficient: it does not claim
+    unmissioned artifacts, so the bundle never enters its stale set, and the
+    bundle's kinds are not its to attribute even if it did. Measured: removing
+    one leaves this passing and removing both fails it, which is the same
+    boundary as the bundle surviving. Pinned at the outcome deliberately, since
+    that is what the other renderer depends on and either mechanism may be the
+    one that changes.
+    """
+    from orbital_mission_compiler.cli import cmd_render_kueue
+
+    out = tmp_path / "shared"
+    cmd_render_kueue(build_parser().parse_args([
+        "render-kueue", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline", "--emit-priority-classes",
+    ]))
+    bundle = out / "workload-priority-classes.yaml"
+    assert bundle.exists()
+
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline", "--prune",
+    ]))
+    capsys.readouterr()
+
+    assert bundle.exists(), "render-argo pruned an artifact only render-kueue emits"
+
+
+def test_unmissioned_artifacts_stay_in_scope_with_no_missions_declared(tmp_path, capsys):
+    """`include_unmissioned` is not a modifier on a non-empty mission list.
+
+    The early return exists to stop a render with no scope sweeping the
+    directory. A caller reconciling only the cluster-scoped artifacts declares no
+    missions on purpose, and that return would otherwise read it as nothing to do.
+    """
+    from orbital_mission_compiler.cli import cmd_render_kueue
+
+    out = tmp_path / "out"
+    cmd_render_kueue(build_parser().parse_args([
+        "render-kueue", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline", "--emit-priority-classes",
+    ]))
+    capsys.readouterr()
+
+    with_unmissioned = stale_rendered_artifacts(
+        out, [], mission_ids=set(), include_unmissioned=True
+    )
+    without = stale_rendered_artifacts(out, [], mission_ids=set())
+
+    assert [p.name for p in with_unmissioned] == ["workload-priority-classes.yaml"]
+    assert without == []
 
 
 OTHER_PLAN = "configs/mission_plans/sample_gpu_cpu_fallback.yaml"
