@@ -228,6 +228,22 @@ def _finite_seconds(raw: str) -> float:
     return value
 
 
+def _absolute_directory(raw: str) -> str:
+    """A lock directory both writers can name identically.
+
+    A relative path is resolved against the working directory, and two writers
+    that could not agree on a temp directory have no more reason to agree on
+    that. It would fail the same silent way the default does: two lock files,
+    both writers publishing, nothing recording it.
+    """
+    if not os.path.isabs(raw):
+        raise argparse.ArgumentTypeError(
+            f"{raw!r} is relative, so it names a different directory to a writer "
+            "started elsewhere; give the shared path in full"
+        )
+    return raw
+
+
 def _add_lock_args(p: argparse.ArgumentParser) -> None:
     """Add the output-root lock flag to a subcommand that writes artifacts."""
     p.add_argument(
@@ -240,6 +256,18 @@ def _add_lock_args(p: argparse.ArgumentParser) -> None:
         "publish. Waiting without a bound would let a hung holder stall this command "
         "indefinitely, so a timeout exits 2 -- the gate could not run -- rather than "
         "reporting a lint failure the linter never gave.",
+    )
+    p.add_argument(
+        "--lock-dir",
+        type=_absolute_directory,
+        default=None,
+        help="Absolute directory holding the publish lock. The default is a fixed "
+        "path, which is one directory on a host and two inside two containers that "
+        "share only the output volume; pointing both at that volume gives them one "
+        "lock file again. Two things it cannot check for you: the writers have to "
+        "reach the output directory by the same path, since the lock is named after "
+        "that path, and no other user may be able to replace the file -- on the "
+        "default that is what the sticky bit is doing.",
     )
 
 
@@ -424,7 +452,7 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
     # exclusivity of its own.
     lock_stack = contextlib.ExitStack()
     try:
-        lock_stack.enter_context(_publish_lock(Path(args.output_dir), args.lock_timeout))
+        lock_stack.enter_context(_publish_lock(Path(args.output_dir), args.lock_timeout, args.lock_dir))
     except PublishLockUnsupported:
         # Nothing on this platform can lock, so nothing is holding the directory.
         pass
@@ -1000,7 +1028,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                 }, indent=2))
                 raise SystemExit(2)
             try:
-                lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout))
+                lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout, args.lock_dir))
             except PublishLockUnavailable as exc:
                 print(json.dumps({
                     "status": "error", "lint": "not-run", "reason": "publish-lock-unavailable",
@@ -1028,7 +1056,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         # against a set the linter never saw. Held across the lint so that the
         # state the verdict describes is the state that gets published.
         try:
-            lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout))
+            lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout, args.lock_dir))
         except PublishLockUnavailable as exc:
             print(json.dumps({
                 "status": "error", "lint": "not-run", "reason": "publish-lock-unavailable",
@@ -1340,7 +1368,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
     # of a directory's writers is not a lock on the directory.
     lock_stack = contextlib.ExitStack()
     try:
-        lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout))
+        lock_stack.enter_context(_publish_lock(out_dir, args.lock_timeout, args.lock_dir))
     except PublishLockUnsupported:
         # No fcntl at all. render-kueue has no lint verdict to protect, so it keeps
         # working here rather than refusing on a platform that cannot serialise --

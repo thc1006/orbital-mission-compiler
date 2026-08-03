@@ -1206,6 +1206,181 @@ def test_a_held_lock_times_out_instead_of_waiting_forever(tmp_path, capsys):
     assert not list(out.glob("*.yaml")), "nothing may be published without the lock"
 
 
+def test_an_explicit_lock_dir_excludes_where_the_default_would_not(tmp_path, monkeypatch):
+    """Two writers sharing the output volume and no other filesystem.
+
+    The default is a fixed path, which is one directory on a host and two inside
+    two containers, and nothing in the process can tell those apart. Making the
+    default answer differently per caller is what unshared means here. The control
+    is the same scenario with no flag: both writers enter, which is the failure,
+    and is also what says the flag is doing the excluding rather than the threads
+    being serialised by something else.
+    """
+    import itertools
+    import threading
+
+    from orbital_mission_compiler import cli
+
+    counter = itertools.count()
+
+    def unshared_default() -> str:
+        private = tmp_path / f"private{next(counter)}"
+        private.mkdir()
+        return str(private)
+
+    monkeypatch.setattr(cli, "_default_lock_dir", unshared_default)
+    out = tmp_path / "out"
+    out.mkdir()
+    shared = tmp_path / "shared"
+    shared.mkdir()
+
+    def second_holder_blocks(lock_dir: str | None) -> bool:
+        entered = threading.Event()
+        release = threading.Event()
+
+        def second() -> None:
+            with cli._publish_lock(out, 10.0, lock_dir):
+                entered.set()
+                release.wait(timeout=10)
+
+        with cli._publish_lock(out, 10.0, lock_dir):
+            worker = threading.Thread(target=second)
+            worker.start()
+            blocked = not entered.wait(timeout=1.0)
+        assert entered.wait(timeout=10), "the second holder never took the lock"
+        release.set()
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        return blocked
+
+    assert not second_holder_blocks(None), (
+        "the control is meant to reproduce the split namespace; if it excludes, "
+        "the two writers are sharing something this test did not intend"
+    )
+    assert second_holder_blocks(str(shared)), "an explicit lock dir did not exclude"
+
+
+def test_render_argo_locks_where_lock_dir_points(tmp_path, capsys):
+    """Parsing the flag is not the same as the lock moving.
+
+    Held at the directory the flag names, the render gives up. Held at the default
+    while the flag names somewhere else, the same render goes through -- which is
+    what says the flag relocated the lock, rather than the two happening to be
+    serialised anyway.
+    """
+    from orbital_mission_compiler import cli
+
+    out = tmp_path / "out"
+    out.mkdir()
+    shared = tmp_path / "shared"
+    shared.mkdir()
+
+    def render_args(*extra: str):
+        return build_parser().parse_args([
+            "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+            "--policy-engine", "baseline", "--lock-timeout", "0.3", *extra,
+        ])
+
+    pointed_at_shared = render_args("--lock-dir", str(shared))
+    pointed_at_default = render_args()
+
+    with cli._publish_lock(out, 10.0, str(shared)):
+        with pytest.raises(SystemExit) as excinfo:
+            cmd_render_argo(pointed_at_shared)
+        assert excinfo.value.code == 2
+        refused = json.loads(capsys.readouterr().out)
+        assert refused["reason"] == "publish-lock-unavailable", refused
+        assert not list(out.glob("*.yaml")), "nothing may be published without the lock"
+
+        cmd_render_argo(pointed_at_default)
+        published = json.loads(capsys.readouterr().out)
+
+    assert published["status"] == "ok", published
+    assert list(out.glob("*.yaml"))
+
+
+@pytest.mark.parametrize("value", ["locks", "./locks", "../locks"], ids=["bare", "dot", "parent"])
+def test_a_relative_lock_dir_is_refused(value, capsys):
+    """A path resolved against the working directory cannot be the shared name.
+
+    The flag exists because two writers could not agree on a temp directory.
+    Letting them disagree about a working directory instead moves that failure
+    rather than removing it, and it fails the same silent way: two lock files,
+    both writers publishing. Refused where it is written, not resolved against
+    whichever directory this process happens to be in.
+
+    The message is read, not just the exit: argparse exits 2 for a flag it does
+    not recognise as readily as for one it rejects, so the status alone would
+    pass with no flag at all.
+    """
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([
+            "render-argo", "--input", VALID_PLAN, "--output-dir", "out",
+            "--lock-dir", value,
+        ])
+    assert "is relative" in capsys.readouterr().err
+
+
+def test_render_kueue_honours_the_lock_dir_too(tmp_path, monkeypatch, capsys):
+    """A flag only half the writers read leaves the namespace split.
+
+    Both commands write the output root and both take the lock, so pointing one
+    of them at the shared directory and leaving the other on the default puts
+    them back on two files -- which is the state this flag exists to leave.
+    """
+    import contextlib
+
+    from orbital_mission_compiler import cli
+    from orbital_mission_compiler.cli import cmd_render_kueue
+
+    seen: list[str | None] = []
+
+    @contextlib.contextmanager
+    def _record(out_dir, lock_timeout, lock_dir=None):
+        seen.append(lock_dir)
+        yield
+
+    monkeypatch.setattr(cli, "_publish_lock", _record)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+
+    cmd_render_kueue(build_parser().parse_args([
+        "render-kueue", "--input", VALID_PLAN, "--output-dir", str(tmp_path / "kueue"),
+        "--policy-engine", "baseline", "--lock-dir", str(shared),
+    ]))
+    cmd_render_argo(build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(tmp_path / "argo"),
+        "--policy-engine", "baseline", "--lock-dir", str(shared),
+    ]))
+    capsys.readouterr()
+
+    assert seen == [str(shared), str(shared)]
+
+
+def test_a_lock_dir_that_cannot_hold_the_file_publishes_nothing(tmp_path, capsys):
+    """Failing closed matters more here than for the default.
+
+    The flag is set precisely when the operator knows the default is not shared,
+    so carrying on unlocked would drop the guarantee in the one case it was turned
+    on for.
+    """
+    out = tmp_path / "out"
+    not_a_directory = tmp_path / "occupied"
+    not_a_directory.write_text("")
+    args = build_parser().parse_args([
+        "render-argo", "--input", VALID_PLAN, "--output-dir", str(out),
+        "--policy-engine", "baseline", "--lock-dir", str(not_a_directory),
+    ])
+
+    with pytest.raises(SystemExit) as excinfo:
+        cmd_render_argo(args)
+
+    assert excinfo.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reason"] == "publish-lock-unavailable", payload
+    assert not out.exists() or not list(out.glob("*.yaml"))
+
+
 def test_render_kueue_takes_the_same_lock_as_render_argo(tmp_path, monkeypatch, capsys):
     """Every writer of the output root, not only the Argo ones.
 
