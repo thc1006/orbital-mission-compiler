@@ -39,6 +39,9 @@ from .compiler import (
     preflight_writable,
     resolve_argo_bin,
     argo_lint_path,
+    RENDERER_ARGO,
+    RENDERER_KUEUE,
+    SCOPE_INSTALLATION,
     stale_rendered_artifacts,
     ArtifactOwner,
     _artifact_mission,
@@ -122,12 +125,6 @@ _KUEUE_DEPLOY_NOTE = (
 )
 
 
-# The kind only one renderer emits. Both write ResourceClaimTemplate, so it is not
-# a discriminator: attribution has to rest on a kind that is exclusively one
-# side's, or the RCT-only scheduler-fallback file is claimed by whichever command
-# ran last.
-ARGO_EXCLUSIVE_KINDS = {"Workflow"}
-KUEUE_EXCLUSIVE_KINDS = {"Job", "WorkloadPriorityClass"}
 
 
 def _scope_of(plan: MissionPlan) -> frozenset[str]:
@@ -147,16 +144,18 @@ def _render_scope(source: str | Path) -> frozenset[str]:
 
 def _report_stale(
     result: dict[str, object], output_dir: str, written: list[Path], prune: bool,
-    exclusive_kinds: set[str], *, mission_ids: Collection[str] | None = None,
-    include_unmissioned: bool = False,
+    renderer: str, *, mission_ids: Collection[str] | None = None,
+    include_unmissioned: bool = False, installation: str | None = None,
+    prune_global: bool = False,
 ) -> None:
     stale = stale_rendered_artifacts(
         output_dir, written,
         mission_ids=mission_ids, include_unmissioned=include_unmissioned,
+        installation=installation,
     )
     if not stale:
         return
-    mine, unattributable = attribute_stale(stale, exclusive_kinds)
+    mine, unattributable = attribute_stale(stale, renderer)
     if unattributable:
         # Reported and never deleted. These hold no kind either renderer owns --
         # the standalone scheduler-fallback template is the real case -- so this
@@ -170,6 +169,47 @@ def _report_stale(
         )
     if not mine:
         return
+    # Cluster-scoped artifacts are separated out before anything is removed.
+    # They are this installation's, but a mission-scoped run does not know
+    # whether another mission's Jobs still name the classes in them, so removing
+    # one takes the explicit opt-in. Without it they are reported and left,
+    # because leaving them silently is how an operator finds out by having a
+    # workload fail admission.
+    theirs: list[Path] = []
+    held_back: list[Path] = []
+    for path in list(mine):
+        found = _artifact_mission(path)
+        if found.scope != SCOPE_INSTALLATION:
+            continue
+        if found.owner_id != installation:
+            theirs.append(path)
+        elif not prune_global:
+            held_back.append(path)
+    if theirs:
+        result["stale_other_installation"] = [str(p) for p in theirs]
+        print(
+            f"note: {len(theirs)} cluster-scoped artifact(s) in {output_dir} belong to "
+            f"another installation: {', '.join(p.name for p in theirs)}. They are left "
+            "alone whatever this run was asked to do; only the installation that wrote "
+            "them, named by --priority-class-prefix, can retire them.",
+            file=sys.stderr,
+        )
+    if held_back:
+        result["stale_cluster_scoped"] = [str(p) for p in held_back]
+        if prune:
+            print(
+                f"note: leaving {len(held_back)} cluster-scoped artifact(s) in "
+                f"{output_dir}: {', '.join(p.name for p in held_back)}. They belong to "
+                "this installation rather than to one mission, so another mission's "
+                "Jobs may still reference them. Re-run with --prune-global to retire "
+                "them.",
+                file=sys.stderr,
+            )
+    skip = set(theirs) | set(held_back)
+    if skip:
+        mine = [p for p in mine if p not in skip]
+        if not mine:
+            return
     if prune:
         # A cluster-scoped artifact belongs to no mission, so the mission filter
         # that keeps one mission's --prune away from another's files does not
@@ -307,6 +347,21 @@ def _add_lock_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_global_prune_args(p: argparse.ArgumentParser) -> None:
+    """Add the opt-in for retiring cluster-scoped artifacts."""
+    p.add_argument(
+        "--prune-global",
+        action="store_true",
+        help="With --prune, also retire cluster-scoped artifacts this installation "
+        "owns -- the WorkloadPriorityClass bundle. Separate from --prune because a "
+        "mission-scoped run does not hold the installation's desired set: it cannot "
+        "tell a class nobody needs any more from one another mission's Jobs still "
+        "reference, and removing it leaves those Jobs naming classes that are gone. "
+        "Only the installation that wrote them, identified by "
+        "--priority-class-prefix, may retire them.",
+    )
+
+
 def _add_policy_args(p: argparse.ArgumentParser) -> None:
     """Add the shared policy-gate flags to an artifact-producing subcommand."""
     p.add_argument("--unsafe-skip-policy", action="store_true", help=_UNSAFE_SKIP_POLICY_HELP)
@@ -422,6 +477,7 @@ def build_parser() -> argparse.ArgumentParser:
         "collisions on the cluster-scoped names.",
     )
     _add_lock_args(kueue_p)
+    _add_global_prune_args(kueue_p)
     _add_policy_args(kueue_p)
     kueue_p.set_defaults(func=cmd_render_kueue)
 
@@ -521,7 +577,7 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
         result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
         try:
             _report_stale(
-                result, args.output_dir, written, args.prune, ARGO_EXCLUSIVE_KINDS,
+                result, args.output_dir, written, args.prune, RENDERER_ARGO,
                 mission_ids=scope,
             )
         except PruneIncomplete as exc:
@@ -1042,7 +1098,7 @@ def _reconcile_empty_render(
     empty_result: dict[str, object] = {"status": "ok", "lint": "not-applicable", "files": []}
     try:
         _report_stale(
-            empty_result, args.output_dir, [], args.prune, ARGO_EXCLUSIVE_KINDS,
+            empty_result, args.output_dir, [], args.prune, RENDERER_ARGO,
             mission_ids=scope,
         )
     except PruneIncomplete as exc:
@@ -1168,7 +1224,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                             stale_rendered_artifacts(
                                 out_dir, written, mission_ids=scope,
                             ),
-                            ARGO_EXCLUSIVE_KINDS,
+                            RENDERER_ARGO,
                         )[0]
                     }
                     if args.prune else set()
@@ -1289,7 +1345,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             try:
                 _report_stale(
                     result_stale, args.output_dir, published, args.prune,
-                    ARGO_EXCLUSIVE_KINDS, mission_ids=scope,
+                    RENDERER_ARGO, mission_ids=scope,
                 )
             except PruneIncomplete:
                 # An OSError subclass, and a different phase: the scan finished
@@ -1535,8 +1591,15 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         try:
             _report_stale(
                 stale_result, args.output_dir, written, args.prune,
-                KUEUE_EXCLUSIVE_KINDS, mission_ids=scope,
+                RENDERER_KUEUE, mission_ids=scope,
+                # The global opt-in and the identity it applies to. Without the
+                # flag a cluster-scoped artifact is reported and left; with it,
+                # only this installation's own is retired.
+                # This renderer writes the cluster-scoped bundle, so it always
+                # looks for it; whether it may remove one is the opt-in below.
                 include_unmissioned=True,
+                installation=args.priority_class_prefix,
+                prune_global=args.prune_global,
             )
         except PruneIncomplete as exc:
             print(json.dumps(_prune_failure_report(exc, written), indent=2))

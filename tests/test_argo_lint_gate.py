@@ -1873,7 +1873,7 @@ def test_prune_retires_the_priority_class_bundle_once_emission_stops(tmp_path, c
     out = tmp_path / "out"
     base = [
         "render-kueue", "--input", VALID_PLAN, "--output-dir", str(out),
-        "--priority-class", "--prune", "--policy-engine", "baseline",
+        "--priority-class", "--prune", "--prune-global", "--policy-engine", "baseline",
     ]
     cmd_render_kueue(build_parser().parse_args(base + ["--emit-priority-classes"]))
     capsys.readouterr()
@@ -1992,15 +1992,14 @@ def test_a_scan_that_fails_after_publishing_says_the_output_changed(
     assert report["files"], "the caller has to learn what did get published"
     assert seen["n"] == survives + 1, "the post-publish scan is the one under test"
 
-def test_retiring_the_shared_bundle_is_announced(tmp_path, capsys):
-    """Two missions in one directory get a message, and the message is all they get.
+def test_an_ordinary_prune_leaves_the_shared_bundle_and_says_so(tmp_path, capsys):
+    """What used to be a warning after the fact is now a refusal with a note.
 
-    Nothing stops the second render removing classes the first mission's Jobs
-    still name: the bundle carries no fingerprint, so the filter that keeps one
-    mission's --prune away from another's files cannot reach it. Saying so on
-    stderr is the whole of what is on offer, which is what makes it worth pinning
-    -- deleting the message leaves behaviour that is correct for the render doing
-    it and invisible to everyone else.
+    Two missions rendering into one directory used to mean the second could
+    remove classes the first's Jobs still named, announced on stderr. The
+    artifact carries its installation now, so an ordinary --prune leaves it --
+    and still says it is there, because leaving it silently is how an operator
+    finds out by having a workload fail admission.
     """
     from orbital_mission_compiler.cli import cmd_render_kueue
 
@@ -2010,17 +2009,18 @@ def test_retiring_the_shared_bundle_is_announced(tmp_path, capsys):
         "--policy-engine", "baseline", "--emit-priority-classes",
     ]))
     capsys.readouterr()
-    assert (out / "workload-priority-classes.yaml").exists()
+    bundle = out / "workload-priority-classes.yaml"
+    assert bundle.exists()
 
     cmd_render_kueue(build_parser().parse_args([
         "render-kueue", "--input", OTHER_PLAN, "--output-dir", str(out),
         "--policy-engine", "baseline", "--prune",
     ]))
-    warning = capsys.readouterr().err
+    captured = capsys.readouterr()
 
-    assert "workload-priority-classes.yaml" in warning, warning
-    assert "--emit-priority-classes" in warning, "the message has to say how to put them back"
-    assert not (out / "workload-priority-classes.yaml").exists()
+    assert bundle.exists(), "an ordinary --prune must not retire a cluster-scoped artifact"
+    assert "--prune-global" in captured.err, captured.err
+    assert bundle.name in json.dumps(json.loads(captured.out).get("stale_cluster_scoped", []))
 
 
 def test_retiring_only_this_mission_s_own_files_is_not_announced(tmp_path, capsys):

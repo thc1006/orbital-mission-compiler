@@ -634,11 +634,15 @@ def render_argo_workflow(
                 "mission-id": sanitize_k8s_name(intent.mission_id),
                 "service-id": sanitize_k8s_name(intent.service_id),
                 "priority": str(intent.priority),
-                MANAGED_BY_LABEL: MANAGED_BY_VALUE,
                 MISSION_FINGERPRINT_LABEL: mission_fingerprint(intent.mission_id),
+                **_ownership_labels(RENDERER_ARGO, ROLE_WORKFLOW),
             },
             "annotations": _require_annotations_fit(
-                {**wf_annotations, RAW_MISSION_ID_ANNOTATION: intent.mission_id},
+                {
+                    **wf_annotations,
+                    RAW_MISSION_ID_ANNOTATION: intent.mission_id,
+                    OWNER_ID_ANNOTATION: intent.mission_id,
+                },
                 f"Workflow {intent.workflow_name}",
             ),
         },
@@ -704,7 +708,9 @@ def _dra_fallback_steps(intent: WorkflowIntent) -> list[WorkflowStep]:
     ]
 
 
-def _first_available_rct(intent: WorkflowIntent, namespace: str | None) -> dict[str, Any] | None:
+def _first_available_rct(
+    intent: WorkflowIntent, namespace: str | None, renderer: str
+) -> dict[str, Any] | None:
     """The scheduler-route ``firstAvailable`` ResourceClaimTemplate for the intent's
     driver-backed accelerator-with-fallback step, or ``None`` if no step qualifies.
 
@@ -739,11 +745,14 @@ def _first_available_rct(intent: WorkflowIntent, namespace: str | None) -> dict[
             # from -- can tell that this claim is not what the Job was admitted on.
             "labels": {
                 DRA_ROUTE_LABEL: "scheduler",
-                MANAGED_BY_LABEL: MANAGED_BY_VALUE,
                 MISSION_FINGERPRINT_LABEL: mission_fingerprint(intent.mission_id),
+                **_ownership_labels(renderer, ROLE_SCHEDULER_FALLBACK),
             },
             "annotations": _require_annotations_fit(
-                {RAW_MISSION_ID_ANNOTATION: intent.mission_id},
+                {
+                    RAW_MISSION_ID_ANNOTATION: intent.mission_id,
+                    OWNER_ID_ANNOTATION: intent.mission_id,
+                },
                 f"ResourceClaimTemplate {_rct_name_for_intent(intent, 'accel')}",
             ),
         },
@@ -818,7 +827,7 @@ def render_resource_claim_templates(
     _require_k8s_label(namespace, "namespace")
     templates: list[dict[str, Any]] = []
     if dra_fallback:
-        rct = _first_available_rct(intent, namespace)
+        rct = _first_available_rct(intent, namespace, RENDERER_KUEUE)
         if rct is not None:
             templates.append(rct)
             # Fall through: also emit the exactly GPU RCT below (Kueue route).
@@ -839,11 +848,14 @@ def render_resource_claim_templates(
                 "namespace": namespace,
                 "labels": {
                     DRA_ROUTE_LABEL: "kueue",
-                    MANAGED_BY_LABEL: MANAGED_BY_VALUE,
                     MISSION_FINGERPRINT_LABEL: mission_fingerprint(intent.mission_id),
+                    **_ownership_labels(RENDERER_KUEUE, ROLE_KUEUE_JOB),
                 },
                 "annotations": _require_annotations_fit(
-                {RAW_MISSION_ID_ANNOTATION: intent.mission_id},
+                {
+                    RAW_MISSION_ID_ANNOTATION: intent.mission_id,
+                    OWNER_ID_ANNOTATION: intent.mission_id,
+                },
                 f"ResourceClaimTemplate {_rct_name_for_intent(intent, 'gpu')}",
             ),
             },
@@ -938,9 +950,17 @@ def render_workload_priority_classes(
             "metadata": {
                 "name": _priority_class_name(tier, prefix),
                 "labels": {
-                    "app.kubernetes.io/managed-by": "orbital-mission-compiler",
                     "orbital/priority-mapping-version": PRIORITY_CLASS_MAPPING_VERSION,
+                    **_ownership_labels(
+                        RENDERER_KUEUE, ROLE_PRIORITY_CLASSES, SCOPE_INSTALLATION
+                    ),
                 },
+                # The prefix is the installation. It is what keeps two
+                # installations' classes from colliding on cluster-scoped names,
+                # so it is the identity these belong to -- and naming it is what
+                # stops a second installation replacing the first's set while
+                # the first's Jobs go on referencing it.
+                "annotations": {OWNER_ID_ANNOTATION: prefix},
             },
             "value": _PRIORITY_CLASS_TIERS[tier][1],
             "description": (
@@ -1117,6 +1137,7 @@ def render_kueue_job(
         "orbital/priority": str(intent.priority),
         "orbital/orchide-priority": str(scale_priority_orchide(intent.priority)),
         RAW_MISSION_ID_ANNOTATION: intent.mission_id,
+        OWNER_ID_ANNOTATION: intent.mission_id,
         "orbital/executed-step": primary.name,
         # Named explicitly so an operator reading the applied Job can see that it
         # does not run the whole service, without having to diff it against the plan.
@@ -1140,8 +1161,8 @@ def render_kueue_job(
             "namespace": namespace,
             "labels": {
                 "kueue.x-k8s.io/queue-name": queue_name,
-                MANAGED_BY_LABEL: MANAGED_BY_VALUE,
                 MISSION_FINGERPRINT_LABEL: mission_fingerprint(intent.mission_id),
+                **_ownership_labels(RENDERER_KUEUE, ROLE_KUEUE_JOB),
                 "mission-id": sanitize_k8s_name(intent.mission_id),
                 "service-id": sanitize_k8s_name(intent.service_id),
                 "priority": str(intent.priority),
@@ -1456,7 +1477,7 @@ def render_workflows_for_file(
     intents = compile_plan_to_intents(plan)
     objects: list[dict[str, Any]] = []
     for intent in intents:
-        rct = _first_available_rct(intent, namespace) if dra_fallback else None
+        rct = _first_available_rct(intent, namespace, RENDERER_ARGO) if dra_fallback else None
         if rct is not None:
             objects.append(rct)
         objects.append(
@@ -1522,6 +1543,46 @@ def _require_annotations_fit(annotations: dict[str, str], what: str) -> dict[str
 
 MISSION_FINGERPRINT_LABEL = "orbital/mission-fingerprint"
 RAW_MISSION_ID_ANNOTATION = "orbital/raw-mission-id"
+
+# Who wrote an artifact, for whom, and as what. Said by the document rather than
+# guessed from the kinds it holds. Guessing failed on both sides: a
+# ResourceClaimTemplate is written by either renderer, so the RCT-only scheduler
+# fallback belonged to neither and the renderer that wrote it could not take it
+# back; and the priority-class bundle carries no mission, so a second
+# installation's render replaced the first's classes with nothing raised.
+RENDERER_LABEL = "orbital/renderer"
+OWNER_SCOPE_LABEL = "orbital/owner-scope"
+ARTIFACT_ROLE_LABEL = "orbital/artifact-role"
+OWNERSHIP_SCHEMA_LABEL = "orbital/ownership-schema"
+# Versioned because a later shape has to be able to tell itself from this one.
+# An artifact carrying no schema at all predates the label and is reported
+# rather than acted on: adopting it would mean guessing again.
+OWNERSHIP_SCHEMA_VERSION = "v1"
+# The owner's own name, in an annotation because it is not a selector and does
+# not have to survive label syntax. For a mission that is the raw id, which the
+# fingerprint label is a 64-bit digest of; checking both means a digest
+# collision cannot decide a delete on its own.
+OWNER_ID_ANNOTATION = "orbital/owner-id"
+
+RENDERER_ARGO = "argo"
+RENDERER_KUEUE = "kueue"
+SCOPE_MISSION = "mission"
+SCOPE_INSTALLATION = "installation"
+ROLE_WORKFLOW = "workflow"
+ROLE_KUEUE_JOB = "kueue-job"
+ROLE_SCHEDULER_FALLBACK = "scheduler-fallback"
+ROLE_PRIORITY_CLASSES = "workload-priority-classes"
+
+
+def _ownership_labels(renderer: str, role: str, scope: str = SCOPE_MISSION) -> dict[str, str]:
+    """The labels every document this compiler writes carries."""
+    return {
+        MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+        RENDERER_LABEL: renderer,
+        OWNER_SCOPE_LABEL: scope,
+        ARTIFACT_ROLE_LABEL: role,
+        OWNERSHIP_SCHEMA_LABEL: OWNERSHIP_SCHEMA_VERSION,
+    }
 
 
 def mission_fingerprint(mission_id: str) -> str:
@@ -1590,7 +1651,10 @@ def _is_rendered_artifact(path: Path) -> bool:
 
 
 def _in_scope(
-    found: ArtifactMission, missions: set[str], include_unmissioned: bool
+    found: ArtifactMission,
+    missions: set[str],
+    include_unmissioned: bool,
+    installation: str | None = None,
 ) -> bool:
     """Whether a stale candidate is this render's to reconcile.
 
@@ -1607,8 +1671,22 @@ def _in_scope(
     """
     if found.owner is ArtifactOwner.MISSION:
         return found.mission in missions
-    if found.owner is ArtifactOwner.UNMISSIONED:
+    if found.owner is not ArtifactOwner.UNMISSIONED:
+        return False
+    if found.scope == SCOPE_INSTALLATION:
+        # In scope to be *seen* by the installation that wrote them, so a run
+        # that leaves them still says they are there. Whether they may be
+        # removed is decided one level up, by the explicit opt-in: a
+        # mission-scoped run does not hold the installation's desired set and
+        # cannot tell a class nobody needs from one another mission's Jobs still
+        # reference.
+        # Visible to any renderer that manages cluster-scoped artifacts, whoever
+        # owns them. Whose they are decides what may happen to them, not whether
+        # they are mentioned: a bundle another installation owns that goes
+        # unmentioned is one an operator never learns is in their directory.
         return include_unmissioned
+    # No scope label at all: rendered before the schema existed. Reported, not
+    # removed -- there is nothing on it to decide by.
     return False
 
 
@@ -1639,10 +1717,18 @@ class ArtifactOwner(Enum):
 
 @dataclass(frozen=True)
 class ArtifactMission:
-    """The ownership answer, and the mission when there is exactly one."""
+    """The ownership answer, and who it names when there is exactly one.
+
+    `scope`, `owner_id` and `renderer` come from the labels the writer stamps.
+    They are absent on an artifact rendered before the schema existed, which is
+    reported rather than acted on: adopting it would mean guessing again.
+    """
 
     owner: ArtifactOwner
     mission: str | None = None
+    scope: str | None = None
+    owner_id: str | None = None
+    renderer: str | None = None
 
 
 def _artifact_mission(path: Path) -> ArtifactMission:
@@ -1682,11 +1768,39 @@ def _artifact_mission(path: Path) -> ArtifactMission:
         if not isinstance(value, str) or not value.strip():
             return ArtifactMission(ArtifactOwner.MALFORMED)
         marks.append(value)
+    # The provenance tuple, which every document in one file has to agree on.
+    # A file whose documents name different writers, scopes or owners is not one
+    # artifact and is not anyone's to remove.
+    stamps = {
+        (
+            labels.get(RENDERER_LABEL),
+            labels.get(OWNER_SCOPE_LABEL),
+            labels.get(OWNERSHIP_SCHEMA_LABEL),
+        )
+        for labels in labelsets
+        if isinstance(labels, dict)
+    }
+    owner_ids = {
+        ((d.get("metadata") or {}).get("annotations") or {}).get(OWNER_ID_ANNOTATION)
+        for d in docs
+        if isinstance(d, dict)
+    }
+    if len(stamps) > 1 or len(owner_ids) > 1:
+        return ArtifactMission(ArtifactOwner.MIXED)
+    renderer, scope, schema = stamps.pop() if stamps else (None, None, None)
+    owner_id = owner_ids.pop() if owner_ids else None
+    if schema is not None and schema != OWNERSHIP_SCHEMA_VERSION:
+        return ArtifactMission(ArtifactOwner.MALFORMED)
+
     named = {m for m in marks if m is not None}
     if not named:
-        return ArtifactMission(ArtifactOwner.UNMISSIONED)
+        return ArtifactMission(
+            ArtifactOwner.UNMISSIONED, None, scope, owner_id, renderer
+        )
     if len(named) == 1 and len(named) == len(set(marks)):
-        return ArtifactMission(ArtifactOwner.MISSION, named.pop())
+        return ArtifactMission(
+            ArtifactOwner.MISSION, named.pop(), scope, owner_id, renderer
+        )
     return ArtifactMission(ArtifactOwner.MIXED)
 
 
@@ -1696,6 +1810,7 @@ def stale_rendered_artifacts(
     *,
     mission_ids: Collection[str] | None = None,
     include_unmissioned: bool = False,
+    installation: str | None = None,
 ) -> list[Path]:
     """Artifacts from an earlier render that this one did not replace.
 
@@ -1771,7 +1886,7 @@ def stale_rendered_artifacts(
         # --emit-priority-classes off left the classes on disk for the next apply
         # to reinstate. A caller that writes such artifacts says so, and
         # `attribute_stale` still holds each renderer to the kinds only it emits.
-        and _in_scope(_artifact_mission(p), missions, include_unmissioned)
+        and _in_scope(_artifact_mission(p), missions, include_unmissioned, installation)
     )
 
 
@@ -1780,46 +1895,55 @@ def stale_rendered_artifacts(
 _ALL_EXCLUSIVE_KINDS = frozenset({"Workflow", "Job", "WorkloadPriorityClass"})
 
 
-def attribute_stale(stale: list[Path], exclusive_kinds: set[str]) -> tuple[list[Path], list[Path]]:
+def attribute_stale(
+    stale: list[Path], renderer: str, exclusive_kinds: set[str] | None = None
+) -> tuple[list[Path], list[Path]]:
     """Split stale candidates into this renderer's, and everyone else's.
 
-    Ownership and mission are not enough to delete by. An Argo Workflow and a
-    Kueue Job for one mission carry the same managed-by label and the same
-    fingerprint, so `render-kueue --prune` deleted a Workflow an Argo render had
-    just published -- with the gate, one it had linted and reported as published.
+    Read from the label the writer stamped, not guessed from the kinds the file
+    holds. Guessing could not answer for a ResourceClaimTemplate, which both
+    renderers emit: the standalone `-scheduler-fallback.yaml` holds nothing else,
+    so it was a subset of both sets and belonged to neither -- the renderer that
+    wrote it could not take it back when --dra-fallback was turned off, and it
+    was not reported either.
 
-    Attribution is by a kind only one renderer emits: Workflow on one side, Job
-    and WorkloadPriorityClass on the other. A subset test over everything a
-    renderer *can* write does not work, because both write ResourceClaimTemplate:
-    the standalone `-scheduler-fallback.yaml` is RCT-only, so it is a subset of
-    both sets and whichever command ran last deleted the other's copy. Measured,
-    after a first fix that closed only one direction.
+    A file with no renderer label was written before this schema and is returned
+    in the second list: reported, never deleted. Erring toward a file that stays
+    is the right direction for a delete, and reporting it is what keeps that from
+    being silent. Re-rendering adopts it.
 
-    A file with no exclusive kind is attributed to neither and returned in the
-    second list: reported, never deleted. Erring toward a file that stays is the
-    right direction for a delete, and reporting it keeps that from being silent.
+    `exclusive_kinds` is accepted and ignored, so callers that still pass the old
+    argument keep working while they are updated.
     """
-    everyone_elses = _ALL_EXCLUSIVE_KINDS - exclusive_kinds
+    del exclusive_kinds
     mine: list[Path] = []
     unattributable: list[Path] = []
     for path in stale:
-        kinds = _artifact_kinds(path)
-        # Mine AND not also theirs. "Intersects mine" alone let a file holding both
-        # a Workflow and a Job -- what an operator gets by concatenating the two
-        # renders into one bundle for `kubectl apply -f` -- be deleted by whichever
-        # command ran, which is the cross-renderer loss this function exists to
-        # stop, needing only the two kinds in one file.
-        if kinds & exclusive_kinds and not kinds & everyone_elses:
+        found = _artifact_mission(path)
+        if found.renderer == renderer and found.owner in (
+            ArtifactOwner.MISSION,
+            ArtifactOwner.UNMISSIONED,
+        ):
             mine.append(path)
-        elif kinds & everyone_elses and not kinds & exclusive_kinds:
-            # Unambiguously the other renderer's. Not stale and not this command's
-            # business, so it is neither deleted nor reported: warning about it on
-            # every run of a directory that holds both renders would be noise, and
-            # noise about a live artifact invites someone to delete it.
-            continue
         else:
             unattributable.append(path)
     return mine, unattributable
+
+def _rendered_owner_id(rendered: str | list[Any]) -> str | None:
+    """The owner a pending document set names, if they all name one."""
+    if isinstance(rendered, str):
+        try:
+            docs: list[Any] = list(yaml.safe_load_all(rendered))
+        except yaml.YAMLError:
+            return None
+    else:
+        docs = list(rendered)
+    owners = {
+        ((d.get("metadata") or {}).get("annotations") or {}).get(OWNER_ID_ANNOTATION)
+        for d in docs
+        if isinstance(d, dict)
+    }
+    return owners.pop() if len(owners) == 1 else None
 
 
 def preflight_writable(planned: list[tuple[Path, Any]]) -> None:
@@ -1856,7 +1980,11 @@ def preflight_writable(planned: list[tuple[Path, Any]]) -> None:
         if theirs.owner is ArtifactOwner.MISSION:
             same_owner = theirs.mission == ours
         elif theirs.owner is ArtifactOwner.UNMISSIONED:
-            same_owner = ours is None
+            # Unmissioned is not ownerless. The priority-class bundle belongs to
+            # an installation, and both bundles being unmissioned is how a second
+            # installation's render replaced the first's class set with nothing
+            # raised -- the Jobs naming those classes stayed where they were.
+            same_owner = ours is None and theirs.owner_id == _rendered_owner_id(rendered)
         else:
             same_owner = False
         if not same_owner:
@@ -1986,7 +2114,7 @@ def write_individual_workflows(
     written: list[Path] = []
     planned: list[tuple[Path, list[dict[str, Any]]]] = []
     for intent in intents:
-        rct = _first_available_rct(intent, namespace) if dra_fallback else None
+        rct = _first_available_rct(intent, namespace, RENDERER_ARGO) if dra_fallback else None
         # Stamp the namespace only when the template ships with the Workflow:
         # the two must agree for the Pod to resolve it. A plain render keeps its
         # previous namespace-less output, so a caller that selects the namespace
