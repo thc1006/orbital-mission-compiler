@@ -27,15 +27,26 @@ from orbital_mission_compiler.compiler import (
 MANAGED = "app.kubernetes.io/managed-by: orbital-mission-compiler"
 
 
-def _doc(kind: str, name: str, mission: str | None, raw_label: str | None = None) -> str:
+def _doc(
+    kind: str, name: str, mission: str | None, raw_label: str | None = None,
+    scope: str = "mission", owner: str = "aaaa",
+) -> str:
+    """A document as the renderers write them, provenance and all.
+
+    Hand-written without the ownership labels it would be an artifact from
+    before the schema, which is a separate state and is never reconciled.
+    """
     label = ""
     if raw_label is not None:
         label = f"    orbital/mission-fingerprint:\n{raw_label}\n"
     elif mission is not None:
         label = f"    orbital/mission-fingerprint: {mission}\n"
     return (
-        f"apiVersion: v1\nkind: {kind}\nmetadata:\n  name: {name}\n  labels:\n"
-        f"    {MANAGED}\n{label}"
+        f"apiVersion: v1\nkind: {kind}\nmetadata:\n  name: {name}\n"
+        f"  annotations:\n    orbital/owner-id: {owner}\n  labels:\n"
+        f"    {MANAGED}\n    orbital/renderer: kueue\n"
+        f"    orbital/owner-scope: {scope}\n    orbital/artifact-role: test\n"
+        f"    orbital/ownership-schema: v1\n{label}"
     )
 
 
@@ -97,13 +108,66 @@ def test_only_the_unmissioned_state_joins_global_reconciliation(tmp_path):
 
     Erring toward a file that survives is the right direction for a delete.
     """
-    _write(tmp_path, "global.yaml", _doc("WorkloadPriorityClass", "w", None))
+    _write(tmp_path, "global.yaml",
+           _doc("WorkloadPriorityClass", "w", None, scope="installation", owner="orbital-"))
     _write(tmp_path, "mixed.yaml", _doc("Job", "j", "aaaa"), _doc("Job", "w", None))
     _write(tmp_path, "malformed.yaml", _doc("Job", "j", None, raw_label="      - a list"))
 
-    stale = stale_rendered_artifacts(tmp_path, [], mission_ids=set(), include_unmissioned=True)
+    stale = stale_rendered_artifacts(
+        tmp_path, [], mission_ids=set(), include_unmissioned=True, installation="orbital-"
+    )
 
     assert [p.name for p in stale] == ["global.yaml"]
+
+
+def test_documents_that_disagree_about_their_writer_are_not_one_artifact(tmp_path):
+    """A file is prunable as a whole or not at all.
+
+    An operator concatenating two renders into one bundle for `kubectl apply -f`
+    produces a file with two writers in it. Deleting that on either one's say-so
+    removes the other's work, so the file answers for nobody.
+    """
+    path = tmp_path / "concatenated.yaml"
+    path.write_text(
+        _doc("Job", "j", "aaaa").replace("orbital/renderer: kueue", "orbital/renderer: argo")
+        + "---\n"
+        + _doc("Job", "k", "aaaa"),
+        encoding="utf-8",
+    )
+
+    assert _artifact_mission(path).owner is ArtifactOwner.MIXED
+
+
+def test_documents_that_disagree_about_their_owner_are_not_one_artifact(tmp_path):
+    """Same file, same writer, two owners named in the annotations.
+
+    The fingerprint label is 64 bits of a digest and the raw owner sits beside
+    it, so checking both is what keeps a digest collision from deciding a delete
+    on its own.
+    """
+    path = tmp_path / "two-owners.yaml"
+    path.write_text(
+        _doc("Job", "j", "aaaa", owner="mission-alpha")
+        + "---\n"
+        + _doc("Job", "k", "aaaa", owner="mission-beta"),
+        encoding="utf-8",
+    )
+
+    assert _artifact_mission(path).owner is ArtifactOwner.MIXED
+
+
+def test_a_file_that_disagrees_is_never_pruned(tmp_path):
+    """The end of that story, at the level that deletes."""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "concatenated.yaml").write_text(
+        _doc("Job", "j", "aaaa", owner="mission-alpha")
+        + "---\n"
+        + _doc("Job", "k", "aaaa", owner="mission-beta"),
+        encoding="utf-8",
+    )
+
+    assert stale_rendered_artifacts(out, [], mission_ids={"aaaa"}) == []
 
 
 def test_a_symlink_is_never_this_compiler_s_artifact(tmp_path):
