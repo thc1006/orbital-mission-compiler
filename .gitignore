@@ -31,3 +31,7 @@ paper/
 # Claude Code local-only state
 .claude/worktrees/
 .claude/settings.local.json
+
+# Local scratch. Untracked and unignored, ruff walked into it and reported
+# findings from files no pull request contains.
+scratchpad/
