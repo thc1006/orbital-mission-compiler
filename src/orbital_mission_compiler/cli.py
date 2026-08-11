@@ -21,6 +21,8 @@ from .compiler import (
     ARGO_LINT_TIMEOUT_SECONDS,
     DEFAULT_POLICY_BUNDLE,
     DEFAULT_POLICY_DECISION,
+    MissionPlanInvalid,
+    MissionPlanUnreadable,
     PolicyEngineUnavailableError,
     PolicyViolationError,
     compile_file,
@@ -47,6 +49,7 @@ from .compiler import (
     sanitize_k8s_name,
     ORCHIDE_PRIORITY_CLASS_PREFIX,
 )
+from .schemas import MissionPlan
 from .policy import eval_policy
 
 _UNSAFE_SKIP_POLICY_HELP = (
@@ -127,14 +130,19 @@ ARGO_EXCLUSIVE_KINDS = {"Workflow"}
 KUEUE_EXCLUSIVE_KINDS = {"Job", "WorkloadPriorityClass"}
 
 
-def _render_scope(source: str | Path) -> frozenset[str]:
-    """The missions this render reconciles, taken from the plan.
+def _scope_of(plan: MissionPlan) -> frozenset[str]:
+    """The missions a render of this plan reconciles.
 
-    Read from the input rather than from what was written, so a revision that
+    Taken from the plan rather than from what was written, so a revision that
     legitimately renders nothing still has a scope to reconcile against. The
     fingerprint is what the artifacts carry, so that is what the scope holds.
     """
-    return frozenset({mission_fingerprint(load_mission_plan(source).mission_id)})
+    return frozenset({mission_fingerprint(plan.mission_id)})
+
+
+def _render_scope(source: str | Path) -> frozenset[str]:
+    """The same, for a command that has not loaded the plan yet."""
+    return _scope_of(load_mission_plan(source))
 
 
 def _report_stale(
@@ -469,6 +477,12 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
     if args.argo_lint:
         _render_argo_with_lint_gate(args)
         return
+    # Read before anything is written, and once. The report for an input this
+    # command cannot use says the run never started, and that has to be true when
+    # it is printed: read after the render instead, the same failure arrives with
+    # manifests already on disk and the report denies it. Once, because three
+    # reads of one file are three chances for it to answer differently.
+    scope = _render_scope(args.input)
     # The same lock the gate takes. Without it an ungated render can replace files
     # in the directory a gated run has just snapshotted and linted and is about to
     # publish into, and the gate's verdict would then describe a directory that no
@@ -508,7 +522,7 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
         try:
             _report_stale(
                 result, args.output_dir, written, args.prune, ARGO_EXCLUSIVE_KINDS,
-                mission_ids=_render_scope(args.input),
+                mission_ids=scope,
             )
         except PruneIncomplete as exc:
             print(json.dumps(_prune_failure_report(exc, written), indent=2))
@@ -1007,7 +1021,8 @@ def _publish(
 
 
 def _reconcile_empty_render(
-    args: argparse.Namespace, out_dir: Path, lock_stack: contextlib.ExitStack
+    args: argparse.Namespace, out_dir: Path, lock_stack: contextlib.ExitStack,
+    scope: Collection[str],
 ) -> None:
     """A plan that renders nothing, asked to make the directory match it.
 
@@ -1028,7 +1043,7 @@ def _reconcile_empty_render(
     try:
         _report_stale(
             empty_result, args.output_dir, [], args.prune, ARGO_EXCLUSIVE_KINDS,
-            mission_ids=_render_scope(args.input),
+            mission_ids=scope,
         )
     except PruneIncomplete as exc:
         print(json.dumps(_prune_failure_report(exc, []), indent=2))
@@ -1059,6 +1074,10 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
     nothing -- a download-only plan is schema-valid and passes the policy layer --
     and an empty render must not be able to report a lint that never ran.
     """
+    # Before the staging directory exists, for the same reason the ungated path
+    # reads it before rendering: an input this command cannot use has to be
+    # refused while there is still nothing to explain away.
+    scope = _render_scope(args.input)
     out_dir = Path(args.output_dir)
     staging = Path(tempfile.mkdtemp(
         prefix=".argo-lint-staging-", dir=_nearest_existing_ancestor(out_dir)
@@ -1075,7 +1094,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
         # desired set runs no linter at all, so requiring the binary there made
         # cleanup depend on a tool it never invokes.
         if not written and args.prune:
-            _reconcile_empty_render(args, out_dir, lock_stack)
+            _reconcile_empty_render(args, out_dir, lock_stack, scope)
             return
 
         try:
@@ -1147,7 +1166,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
                         p.name
                         for p in attribute_stale(
                             stale_rendered_artifacts(
-                                out_dir, written, mission_ids=_render_scope(args.input),
+                                out_dir, written, mission_ids=scope,
                             ),
                             ARGO_EXCLUSIVE_KINDS,
                         )[0]
@@ -1270,7 +1289,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             try:
                 _report_stale(
                     result_stale, args.output_dir, published, args.prune,
-                    ARGO_EXCLUSIVE_KINDS, mission_ids=_render_scope(args.input),
+                    ARGO_EXCLUSIVE_KINDS, mission_ids=scope,
                 )
             except PruneIncomplete:
                 # An OSError subclass, and a different phase: the scan finished
@@ -1362,6 +1381,9 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 
 def cmd_render_kueue(args: argparse.Namespace) -> None:
     plan = load_mission_plan(args.input)
+    # From the plan in hand. Reading the file again to answer a question this
+    # object already answers is how the two come to disagree.
+    scope = _scope_of(plan)
     if not args.unsafe_skip_policy:
         enforce_policy_or_raise(
             plan, engine=args.policy_engine, bundle=args.bundle, decision=args.decision
@@ -1513,7 +1535,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         try:
             _report_stale(
                 stale_result, args.output_dir, written, args.prune,
-                KUEUE_EXCLUSIVE_KINDS, mission_ids=_render_scope(args.input),
+                KUEUE_EXCLUSIVE_KINDS, mission_ids=scope,
                 include_unmissioned=True,
             )
         except PruneIncomplete as exc:
@@ -1627,6 +1649,39 @@ def main() -> None:
     args = parser.parse_args()
     try:
         args.func(args)
+    except MissionPlanUnreadable as exc:
+        # The run never started, which is the family policy_engine_unavailable is
+        # in. Exit 2 rather than 1 because 1 is a verdict everywhere else on this
+        # path -- a policy denial, a lint rejection -- and a caller branching on
+        # the contract read a missing file as one.
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "reason": "input_unreadable",
+                    "error": str(exc),
+                    "hint": "check the --input path exists, is a file, and is readable",
+                }
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
+    except MissionPlanInvalid as exc:
+        # Read and refused, which is a verdict: the same kind of answer as the
+        # policy layer refusing a plan it understood, and the same exit code.
+        # Reported before any artifact exists, so there is nothing to roll back.
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "reason": "input_invalid",
+                    "error": str(exc),
+                    "hint": "validate the plan against docs/ and configs/mission_plans/",
+                }
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
     except PolicyViolationError as exc:
         # Fail closed: a denied plan produces no artifact and a non-zero exit.
         # Emit the TYPED violations (rule/severity/provenance/path/message) so a
