@@ -6,8 +6,12 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
+from collections.abc import Collection
+from dataclasses import dataclass
+from enum import Enum
 from importlib import resources
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1502,12 +1506,22 @@ def _is_rendered_artifact(path: Path) -> bool:
     render that has already written its output would strand the caller with
     artifacts on disk and no result.
     """
-    if not path.is_file():
-        # Asked before the read, because a read is not guaranteed to return.
-        # A fifo named `something.yaml` in the output directory blocks `open`
-        # until someone writes to the other end, and this runs while the
-        # publish lock is held -- so one directory entry would stall every
-        # render into that directory, not just this one.
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode):
+        # A regular file, asked for by lstat, which answers about the entry
+        # rather than what it points at. `is_file()` followed the link, so an
+        # operator's symlink to a managed file was classified from the target's
+        # bytes and then unlinked as the link -- destroying the link and leaving
+        # the file it named. What a link points at says nothing about who owns
+        # the entry --prune would remove.
+        #
+        # Asked before the read for a second reason: a read is not guaranteed to
+        # return. A fifo named `something.yaml` blocks `open` until someone
+        # writes to the other end, and this runs while the publish lock is held,
+        # so one directory entry would stall every render into that directory.
         return False
     try:
         docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8"))]
@@ -1531,6 +1545,29 @@ def _is_rendered_artifact(path: Path) -> bool:
     return True
 
 
+def _in_scope(
+    found: ArtifactMission, missions: set[str], include_unmissioned: bool
+) -> bool:
+    """Whether a stale candidate is this render's to reconcile.
+
+    An artifact with no mission is not an unowned one. The
+    WorkloadPriorityClass bundle is cluster-scoped, so it carries no fingerprint
+    and mission scoping alone can never retire it: turning
+    --emit-priority-classes off left the classes on disk for the next apply to
+    reinstate. A caller that writes such artifacts says so.
+
+    Only the two states that answer the question take part. MIXED and MALFORMED
+    are the states that used to answer `None` alongside the genuinely
+    unmissioned, which is how a file holding another mission's Job came to be
+    deleted as though it were the bundle.
+    """
+    if found.owner is ArtifactOwner.MISSION:
+        return found.mission in missions
+    if found.owner is ArtifactOwner.UNMISSIONED:
+        return include_unmissioned
+    return False
+
+
 def _artifact_kinds(path: Path) -> set[str]:
     """The kinds a rendered file holds, for deciding whose artifact it is."""
     try:
@@ -1540,21 +1577,82 @@ def _artifact_kinds(path: Path) -> set[str]:
     return {d["kind"] for d in docs if isinstance(d, dict) and isinstance(d.get("kind"), str)}
 
 
-def _artifact_mission(path: Path) -> str | None:
-    """The mission fingerprint every document in this file carries, if they agree."""
+class ArtifactOwner(Enum):
+    """What a rendered file says about whose it is.
+
+    Four states, because the previous answer -- a fingerprint or `None` -- could
+    not tell them apart, and the caller that reconciles cluster-scoped artifacts
+    admits everything that answered `None`. A file holding one mission's Job
+    beside an unmissioned document answered the same as the priority-class
+    bundle, so an unrelated mission's --prune deleted it.
+    """
+
+    MISSION = "mission"
+    UNMISSIONED = "unmissioned"
+    MIXED = "mixed"
+    MALFORMED = "malformed"
+
+
+@dataclass(frozen=True)
+class ArtifactMission:
+    """The ownership answer, and the mission when there is exactly one."""
+
+    owner: ArtifactOwner
+    mission: str | None = None
+
+
+def _artifact_mission(path: Path) -> ArtifactMission:
+    """Which mission every document in this file agrees it belongs to.
+
+    Only MISSION and UNMISSIONED are answers a delete may act on. MIXED covers
+    both a file whose documents disagree and one where some name a mission and
+    some do not; MALFORMED covers a fingerprint that is not a name at all, which
+    used to reach `set()` and raise `TypeError: unhashable type: 'list'` from a
+    command that had already published.
+    """
     try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            # Same reason as _is_rendered_artifact, restated here because this
+            # function answers on its own for any caller: what a link points at
+            # says nothing about the entry a delete would remove.
+            return ArtifactMission(ArtifactOwner.MALFORMED)
         docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8"))]
     except Exception:  # noqa: BLE001 - unreadable is not ours; see _is_rendered_artifact
-        return None
-    missions = {
-        (d.get("metadata") or {}).get("labels", {}).get(MISSION_FINGERPRINT_LABEL)
+        return ArtifactMission(ArtifactOwner.MALFORMED)
+    labelsets = [
+        (d.get("metadata") or {}).get("labels") or {}
         for d in docs
         if isinstance(d, dict)
-    }
-    return missions.pop() if len(missions) == 1 else None
+    ]
+    # Presence is asked separately from value, because `.get` answers `None` both
+    # for a label that is absent and one written with no value. A present label
+    # has to be a name: anything else is refused rather than coerced, since the
+    # value is what a delete is keyed on. A list here used to reach `set()` and
+    # raise `TypeError: unhashable type`.
+    marks: list[Any] = []
+    for labels in labelsets:
+        if not isinstance(labels, dict) or MISSION_FINGERPRINT_LABEL not in labels:
+            marks.append(None)
+            continue
+        value = labels[MISSION_FINGERPRINT_LABEL]
+        if not isinstance(value, str) or not value.strip():
+            return ArtifactMission(ArtifactOwner.MALFORMED)
+        marks.append(value)
+    named = {m for m in marks if m is not None}
+    if not named:
+        return ArtifactMission(ArtifactOwner.UNMISSIONED)
+    if len(named) == 1 and len(named) == len(set(marks)):
+        return ArtifactMission(ArtifactOwner.MISSION, named.pop())
+    return ArtifactMission(ArtifactOwner.MIXED)
 
 
-def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> list[Path]:
+def stale_rendered_artifacts(
+    output_dir: str | Path,
+    written: list[Path],
+    *,
+    mission_ids: Collection[str] | None = None,
+    include_unmissioned: bool = False,
+) -> list[Path]:
     """Artifacts from an earlier render that this one did not replace.
 
     A render writes the files the current plan produces; it does not empty the
@@ -1577,13 +1675,27 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
     # in staging -- against resolved paths every one of them would compare as
     # unrelated and the whole previous generation would read as stale.
     current = {p.name for p in written}
-    # Scoped to the missions this render just wrote. Ownership alone is not
-    # enough to delete by: another mission's manifests in the same directory
-    # carry the same managed-by label and are equally ours, but they are not
-    # this render's to remove. Objects without a mission -- the cluster-scoped
-    # WorkloadPriorityClasses the other renderer emits -- are never in scope.
-    missions = {m for m in (_artifact_mission(p) for p in written) if m}
-    if not missions:
+    # Scoped to the missions this render reconciles. Ownership alone is not enough
+    # to delete by: another mission's manifests in the same directory carry the
+    # same managed-by label and are equally ours, but they are not this render's
+    # to remove.
+    #
+    # Declared by the caller, not read back from `written`. A plan whose next
+    # revision legitimately produces nothing wrote no file to read a mission out
+    # of, so the derived scope came back empty and the artifacts that revision
+    # drops stayed on disk: --prune reported nothing to do, and applying the
+    # directory went on redeploying exactly the workload the plan had removed. An
+    # empty desired set is a state to reconcile, not an absence of scope. Deriving
+    # it from `written` remains the fallback for callers that hold no plan.
+    missions = (
+        set(mission_ids) if mission_ids is not None
+        else {
+            found.mission
+            for found in (_artifact_mission(p) for p in written)
+            if found.owner is ArtifactOwner.MISSION and found.mission
+        }
+    )
+    if not missions and not include_unmissioned:
         return []
     # Listed rather than globbed. `Path.glob` swallows the OSError scandir
     # raises, so an output directory that cannot be read comes back as an empty
@@ -1609,7 +1721,13 @@ def stale_rendered_artifacts(output_dir: str | Path, written: list[Path]) -> lis
         if p.suffix in (".yaml", ".yml", ".json")
         and p.name not in current
         and _is_rendered_artifact(p)
-        and _artifact_mission(p) in missions
+        # An artifact with no mission is not an unowned one. The
+        # WorkloadPriorityClass bundle is cluster-scoped, so it carries no
+        # fingerprint and mission scoping alone can never retire it: turning
+        # --emit-priority-classes off left the classes on disk for the next apply
+        # to reinstate. A caller that writes such artifacts says so, and
+        # `attribute_stale` still holds each renderer to the kinds only it emits.
+        and _in_scope(_artifact_mission(p), missions, include_unmissioned)
     )
 
 
@@ -1687,7 +1805,17 @@ def preflight_writable(planned: list[tuple[Path, Any]]) -> None:
             continue
         theirs = _artifact_mission(path)
         ours = _rendered_mission(rendered)
-        if theirs != ours:
+        # Spelled out per state rather than compared as values. A file whose
+        # documents disagree, or whose fingerprint is not a name, answers
+        # neither yes nor no, and a replacement is a delete followed by a
+        # write.
+        if theirs.owner is ArtifactOwner.MISSION:
+            same_owner = theirs.mission == ours
+        elif theirs.owner is ArtifactOwner.UNMISSIONED:
+            same_owner = ours is None
+        else:
+            same_owner = False
+        if not same_owner:
             conflicts.append(f"{path} belongs to a different mission")
     if conflicts:
         raise ValueError(

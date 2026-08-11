@@ -21,10 +21,10 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -57,7 +57,7 @@ jobs:
       # prints "skipped argo lint" and the step still passes, so a rendered
       # manifest that Argo would reject reads as a green smoke.
       - name: Cache the Argo CLI archive
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: argo-cache
         with:
           # The archive, not the unpacked binary: the published checksum is of the
@@ -101,7 +101,7 @@ jobs:
           python3 -m pytest -q -rs --cov=orbital_mission_compiler --cov-report=term-missing --cov-report=xml --cov-fail-under=70
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -338,10 +338,10 @@ jobs:
   mcp:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
