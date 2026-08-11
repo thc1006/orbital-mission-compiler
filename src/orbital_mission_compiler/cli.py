@@ -389,6 +389,22 @@ def _add_global_prune_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_staging_args(p: argparse.ArgumentParser) -> None:
+    """Add the flag naming where a render is assembled."""
+    p.add_argument(
+        "--staging-dir",
+        type=_absolute_directory,
+        default=None,
+        help="Absolute directory to assemble a render in before publishing it. "
+        "Publishing is a rename, so this has to be on the same filesystem as the "
+        "output directory, and it must not be somewhere consumers of the output "
+        "read: `kubectl apply -R` descends into dotted directories, so a render "
+        "staged inside the output can be collected before it has been verified. "
+        "By default it is the directory beside the output, which is refused when "
+        "the output is its own mount point because no rename can cross that.",
+    )
+
+
 def _add_policy_args(p: argparse.ArgumentParser) -> None:
     """Add the shared policy-gate flags to an artifact-producing subcommand."""
     p.add_argument("--unsafe-skip-policy", action="store_true", help=_UNSAFE_SKIP_POLICY_HELP)
@@ -458,6 +474,7 @@ def build_parser() -> argparse.ArgumentParser:
         "the ResourceClaimTemplate document).",
     )
     _add_lock_args(render_p)
+    _add_staging_args(render_p)
     _add_policy_args(render_p)
     render_p.set_defaults(func=cmd_render_argo)
 
@@ -504,6 +521,7 @@ def build_parser() -> argparse.ArgumentParser:
         "collisions on the cluster-scoped names.",
     )
     _add_lock_args(kueue_p)
+    _add_staging_args(kueue_p)
     _add_global_prune_args(kueue_p)
     _add_policy_args(kueue_p)
     kueue_p.set_defaults(func=cmd_render_kueue)
@@ -626,15 +644,7 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
 
 
 def _nearest_existing_ancestor(path: Path) -> Path:
-    """The closest existing directory at or above ``path``.
-
-    Staging goes here so publishing is a same-filesystem rename, without having
-    to create the output directory first: a denied plan or a rejected lint must
-    leave a path that did not exist before the command exactly as absent. When
-    the output directory does exist this is the directory itself, which is
-    deliberate -- an output directory that is a mount point has a parent on a
-    different filesystem, and a rename across that boundary cannot work.
-    """
+    """The closest existing directory at or above ``path``."""
     current = path.absolute()
     while not current.is_dir():
         parent = current.parent
@@ -642,6 +652,76 @@ def _nearest_existing_ancestor(path: Path) -> Path:
             break
         current = parent
     return current
+
+
+def _same_filesystem(a: Path, b: Path) -> bool:
+    """Whether a rename between these two can work.
+
+    Its own function so the refusal below can be exercised: an output directory
+    that is its own mount point is not something a test can conjure without
+    root.
+    """
+    return a.stat().st_dev == b.stat().st_dev
+
+
+class StagingUnavailable(Exception):
+    """There is nowhere to stage this render that a consumer will not read."""
+
+
+def _staging_root(out_dir: Path, staging_dir: str | None = None) -> Path:
+    """Where a render assembles its output before publishing it.
+
+    Two constraints, and they pull apart. Publishing is a rename, so staging has
+    to share a filesystem with the output directory. And the output directory is
+    what a consumer reads: `kubectl apply -R -f <dir>` descends into directories
+    whose names begin with a dot and collects dotted files at the top level too,
+    measured on v1.36.3, so staging inside it is not hidden from anyone. A
+    recursive apply during a gated render would collect manifests the linter has
+    not passed, and a backup a failed cleanup left behind is a second copy of the
+    previous generation sitting where it will be applied.
+
+    So it goes beside the output rather than inside it. When the output does not
+    exist yet the nearest existing ancestor is already outside it and is used as
+    before, which is what keeps a rejected render from creating a directory that
+    was not there.
+
+    An output directory that is its own mount point has a parent on another
+    filesystem and no rename can cross that. Only the operator knows where else
+    on that filesystem to write, so this refuses and says so rather than falling
+    back inside and quietly exposing the staged set.
+    """
+    # Whatever the output will be renamed into is what staging has to share a
+    # filesystem with: the directory itself once it exists, and the nearest
+    # existing ancestor before that, since publishing creates the rest.
+    anchor = out_dir if out_dir.is_dir() else _nearest_existing_ancestor(out_dir)
+    if staging_dir is not None:
+        chosen = Path(staging_dir)
+        if not _same_filesystem(chosen, anchor):
+            raise StagingUnavailable(
+                f"--staging-dir {chosen} is on a different filesystem from {anchor}, "
+                "and publishing is a rename, which cannot cross one"
+            )
+        return chosen
+    if not out_dir.is_dir():
+        # Nothing to shadow yet, and the ancestor is already outside the output
+        # that a rejected render must leave absent.
+        return anchor
+    beside = out_dir.absolute().parent
+    if beside == out_dir.absolute():
+        raise StagingUnavailable(
+            f"{out_dir} is its own parent, so there is nowhere beside it to stage "
+            "a render that a consumer of the output would not read"
+        )
+    if not beside.is_dir() or not _same_filesystem(beside, out_dir):
+        raise StagingUnavailable(
+            f"{out_dir} is on a different filesystem from {beside}, so a render cannot "
+            "be staged beside it and published by rename"
+        )
+    # Whether it can actually be written is left to the attempt in
+    # _make_staging. os.access answers about the mode bits and not about ACLs or
+    # a read-only mount, and a pre-check that is right less often than the
+    # operation it guards only hides which one is doing the work.
+    return beside
 
 
 class PublishLockUnavailable(Exception):
@@ -891,6 +971,28 @@ def publish_lock_path(
     return Path(lock_dir or _default_lock_dir()) / f"orbital-publish-{digest}.lock"
 
 
+def _make_staging(out_dir: Path, staging_dir: str | None, prefix: str) -> Path:
+    """A directory to assemble in, or a refusal that says how to get one.
+
+    The creation is here rather than at each call site because every way it can
+    fail means the same thing to the caller: there is nowhere to stage this
+    render. Left to escape, a parent this process cannot write reached the
+    command line as a PermissionError traceback.
+    """
+    root = _staging_root(out_dir, staging_dir)
+    try:
+        return Path(tempfile.mkdtemp(prefix=prefix, dir=root))
+    except OSError as exc:
+        # Where an unwritable parent lands. Staging used to go inside the output,
+        # which the operator can write by definition; beside it needs the parent,
+        # and a directory handed to a team inside a parent someone else owns is
+        # ordinary. It has to be the documented could-not-run answer rather than
+        # a PermissionError traceback.
+        raise StagingUnavailable(
+            f"a staging directory could not be created in {root}: {exc}"
+        ) from exc
+
+
 @contextlib.contextmanager
 def _publish_lock(
     out_dir: Path, lock_timeout: float = _DEFAULT_LOCK_TIMEOUT,
@@ -1090,7 +1192,8 @@ def _discard_backup(backup_dir: Path, leftover_backups: list[str] | None) -> Non
 
 
 def _publish(
-    staged: list[Path], out_dir: Path, leftover_backups: list[str] | None = None
+    staged: list[Path], out_dir: Path, leftover_backups: list[str] | None = None,
+    staging_dir: str | None = None,
 ) -> list[Path]:
     """Move a rendered set into the output directory, all of it or none of it.
 
@@ -1105,7 +1208,10 @@ def _publish(
     while not probe.is_dir():
         created_dirs.append(probe)
         probe = probe.parent
-    backup_dir = Path(tempfile.mkdtemp(prefix=".orbital-publish-backup-", dir=probe))
+    # Beside the output, not inside it. What a rename displaces is the whole of
+    # the previous generation, and a cleanup that fails leaves it where a
+    # recursive apply collects it alongside the new set.
+    backup_dir = _make_staging(out_dir, staging_dir, ".orbital-publish-backup-")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     displaced: dict[Path, Path] = {}
@@ -1221,9 +1327,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
     plan = load_mission_plan(args.input)
     scope, owners = _scope_of(plan), _owner_of(plan)
     out_dir = Path(args.output_dir)
-    staging = Path(tempfile.mkdtemp(
-        prefix=".argo-lint-staging-", dir=_nearest_existing_ancestor(out_dir)
-    ))
+    staging = _make_staging(out_dir, args.staging_dir, ".argo-lint-staging-")
     carried: list[Path] = []
     result_stale: dict[str, object] = {}
     lock_stack = contextlib.ExitStack()
@@ -1424,7 +1528,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
             preflight_writable(
                 [(out_dir / path.name, path.read_text(encoding="utf-8")) for path in written]
             )
-            published = _publish(written, out_dir, leftover_backups)
+            published = _publish(written, out_dir, leftover_backups, args.staging_dir)
             # Outside the publish try below. _publish has returned, so the
             # manifests are live; an OSError from the scan reported by that
             # handler asserts a rollback that did not happen.
@@ -1623,9 +1727,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
         # some from the last, with nothing saying so. The Job and the classes it
         # references are exactly such a set -- a Job from the new render beside
         # priority classes from the old one names values that have moved.
-        staging = Path(tempfile.mkdtemp(
-            prefix=".kueue-render-staging-", dir=_nearest_existing_ancestor(out_dir)
-        ))
+        staging = _make_staging(out_dir, args.staging_dir, ".kueue-render-staging-")
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
             staged: list[Path] = []
@@ -1634,7 +1736,7 @@ def cmd_render_kueue(args: argparse.Namespace) -> None:
                 atomic_write(staged_file, text)
                 staged.append(staged_file)
             try:
-                written = _publish(staged, out_dir, leftover_backups)
+                written = _publish(staged, out_dir, leftover_backups, args.staging_dir)
             except PublishRolledBackPartially as exc:
                 print(json.dumps({
                     "status": "error", "reason": "rollback-incomplete",
@@ -1798,6 +1900,23 @@ def main() -> None:
     args = parser.parse_args()
     try:
         args.func(args)
+    except StagingUnavailable as exc:
+        # The command could not run: same family as policy_engine_unavailable,
+        # and the same exit code. Nothing was staged and nothing published, so
+        # this is never a verdict.
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "reason": "staging_unavailable",
+                    "error": str(exc),
+                    "hint": "give --staging-dir a directory on the output's filesystem "
+                    "that consumers of the output do not read",
+                }
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
     except MissionPlanUnreadable as exc:
         # The run never started, which is the family policy_engine_unavailable is
         # in. Exit 2 rather than 1 because 1 is a verdict everywhere else on this
