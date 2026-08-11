@@ -1655,6 +1655,7 @@ def _in_scope(
     missions: set[str],
     include_unmissioned: bool,
     installation: str | None = None,
+    owners: set[str] | None = None,
 ) -> bool:
     """Whether a stale candidate is this render's to reconcile.
 
@@ -1670,7 +1671,13 @@ def _in_scope(
     deleted as though it were the bundle.
     """
     if found.owner is ArtifactOwner.MISSION:
-        return found.mission in missions
+        if found.mission not in missions:
+            return False
+        # The label is 64 bits of a digest and the raw id is annotated beside
+        # it. Two ids colliding is unlikely; the consequence is a delete, so the
+        # cheap half of the check is worth making. A caller that holds no raw
+        # ids reconciles by fingerprint alone rather than matching nothing.
+        return owners is None or found.owner_id is None or found.owner_id in owners
     if found.owner is not ArtifactOwner.UNMISSIONED:
         return False
     if found.scope == SCOPE_INSTALLATION:
@@ -1809,6 +1816,7 @@ def stale_rendered_artifacts(
     written: list[Path],
     *,
     mission_ids: Collection[str] | None = None,
+    owner_ids: Collection[str] | None = None,
     include_unmissioned: bool = False,
     installation: str | None = None,
 ) -> list[Path]:
@@ -1886,7 +1894,10 @@ def stale_rendered_artifacts(
         # --emit-priority-classes off left the classes on disk for the next apply
         # to reinstate. A caller that writes such artifacts says so, and
         # `attribute_stale` still holds each renderer to the kinds only it emits.
-        and _in_scope(_artifact_mission(p), missions, include_unmissioned, installation)
+        and _in_scope(
+            _artifact_mission(p), missions, include_unmissioned, installation,
+            set(owner_ids) if owner_ids is not None else None,
+        )
     )
 
 
