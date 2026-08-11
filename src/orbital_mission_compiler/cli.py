@@ -142,15 +142,6 @@ def _scope_of(plan: MissionPlan) -> frozenset[str]:
     return frozenset({mission_fingerprint(plan.mission_id)})
 
 
-def _render_scope(source: str | Path) -> tuple[frozenset[str], frozenset[str]]:
-    """The same, for a command that has not loaded the plan yet.
-
-    Both halves together: the fingerprints the artifacts carry, and the raw ids
-    they are digests of.
-    """
-    plan = load_mission_plan(source)
-    return _scope_of(plan), _owner_of(plan)
-
 
 def _report_stale(
     result: dict[str, object], output_dir: str, written: list[Path], prune: bool,
@@ -534,12 +525,20 @@ def cmd_compile(args: argparse.Namespace) -> None:
     print(json.dumps({"status": "ok", "workflows": len(payload["workflows"])}, indent=2))
 
 
-def _render_argo(args: argparse.Namespace, output_dir: str | Path) -> list[Path]:
+def _render_argo(
+    args: argparse.Namespace, output_dir: str | Path, plan: MissionPlan
+) -> list[Path]:
+    # The plan object, not the path it came from. The reconciliation scope is
+    # taken from the same load, and two reads of one file can answer
+    # differently: a file replaced in between renders one plan's manifests and
+    # reconciles them under another plan's scope. `_load_or_accept_plan` exists
+    # so a caller that has judged a plan renders the object it judged.
+    #
     # args.namespace goes straight through: the writer supplies one for a DRA
     # bundle, whose two documents have to share it, and leaves an ordinary render
     # namespace-less so it is chosen when the manifest is applied.
     return write_individual_workflows(
-        args.input, output_dir, enforce_policy=not args.unsafe_skip_policy,
+        plan, output_dir, enforce_policy=not args.unsafe_skip_policy,
         policy_engine=args.policy_engine, bundle=args.bundle, decision=args.decision,
         dra_fallback=args.dra_fallback, namespace=args.namespace,
         service_account=args.service_account,
@@ -574,7 +573,8 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
     # it is printed: read after the render instead, the same failure arrives with
     # manifests already on disk and the report denies it. Once, because three
     # reads of one file are three chances for it to answer differently.
-    scope, owners = _render_scope(args.input)
+    plan = load_mission_plan(args.input)
+    scope, owners = _scope_of(plan), _owner_of(plan)
     # The same lock the gate takes. Without it an ungated render can replace files
     # in the directory a gated run has just snapshotted and linted and is about to
     # publish into, and the gate's verdict would then describe a directory that no
@@ -609,7 +609,7 @@ def cmd_render_argo(args: argparse.Namespace) -> None:
         )
         raise SystemExit(2) from exc
     with lock_stack:
-        written = _render_argo(args, args.output_dir)
+        written = _render_argo(args, args.output_dir, plan)
         result: dict[str, object] = {"status": "ok", "files": [str(p) for p in written]}
         try:
             _report_stale(
@@ -1218,7 +1218,8 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
     # Before the staging directory exists, for the same reason the ungated path
     # reads it before rendering: an input this command cannot use has to be
     # refused while there is still nothing to explain away.
-    scope, owners = _render_scope(args.input)
+    plan = load_mission_plan(args.input)
+    scope, owners = _scope_of(plan), _owner_of(plan)
     out_dir = Path(args.output_dir)
     staging = Path(tempfile.mkdtemp(
         prefix=".argo-lint-staging-", dir=_nearest_existing_ancestor(out_dir)
@@ -1227,7 +1228,7 @@ def _render_argo_with_lint_gate(args: argparse.Namespace) -> None:
     result_stale: dict[str, object] = {}
     lock_stack = contextlib.ExitStack()
     try:
-        written = _render_argo(args, staging)
+        written = _render_argo(args, staging, plan)
 
         # Resolved after the prune-only case below and before every other one.
         # A plan is allowed to render nothing, and an empty render must not be
